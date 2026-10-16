@@ -1,0 +1,14 @@
+{
+  "name": "relay",
+  "version": "0.1.0",
+  "description": "Hand prompts from a planning session to Claude Code and bring status back, through files in the workspace.",
+  "author": {
+    "name": "Azat Davliatshin"
+  },
+  "keywords": [
+    "workflow",
+    "handover",
+    "status",
+    "runner"
+  ]
+}
