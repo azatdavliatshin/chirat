@@ -5,8 +5,10 @@
 #              [--ssh-key <path>] [--description <text>]
 #
 # Creates <dir>/<name> (default dir: ~/code), fills {{NAME}} / {{DESCRIPTION}},
-# writes <workspace>/.gitconfig and prints the includeIf block to add to
-# ~/.gitconfig. Never overwrites an existing directory and never edits
+# renames CLAUDE.md.in to CLAUDE.md, writes <workspace>/.gitconfig, runs
+# `git init -b main` in the workspace with a .gitignore that leaves repos/
+# out, and prints the includeIf block to add to ~/.gitconfig plus how to add
+# a private remote. Never overwrites an existing directory and never edits
 # ~/.gitconfig.
 
 set -euo pipefail
@@ -64,6 +66,7 @@ cp -R "$template" "$ws"
 mkdir -p "$ws/.claude"
 mv "$ws/dot-claude/settings.local.json.in" "$ws/.claude/settings.local.json"
 rmdir "$ws/dot-claude"
+mv "$ws/CLAUDE.md.in" "$ws/CLAUDE.md"
 
 fill() { # fill <file>: replace placeholders in place
   local f=$1 text
@@ -83,13 +86,24 @@ if [ -n "$ssh_key" ]; then
   git config -f "$ws/.gitconfig" core.sshCommand "ssh -i '$ssh_key'"
 fi
 
+# The workspace is its own private repository; the clones under repos/ are
+# separate repositories and must not become submodules of it.
+printf '%s\n' "repos/" ".DS_Store" >"$ws/.gitignore"
+git init -q -b main "$ws"
+
 cat <<EOF
-Created workspace: $ws
+Created workspace: $ws (git repository, branch main, nothing committed yet)
 
 Add this block to ~/.gitconfig (relay-init does not edit it):
 
 [includeIf "gitdir:$ws/"]
     path = $ws/.gitconfig
+
+To keep the workspace on a private remote (optional; pushes stay manual):
+
+  git -C "$ws" add -A && git -C "$ws" commit -m "docs: workspace bootstrap"
+  git -C "$ws" remote add origin git@github.com:<you>/$ws_name-workspace.git
+  git -C "$ws" push -u origin main
 
 Next steps:
   1. Create a Claude Project with $ws as its root folder.

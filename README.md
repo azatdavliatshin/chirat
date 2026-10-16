@@ -17,10 +17,11 @@ session: `/plugin marketplace add <path-or-github>` (a local clone path, or
 ## Template
 
 `template/` is the workspace layout the loop expects: a `CLAUDE.md` with the
-workspace rules, `docs/` (plans, status, scope, analysis, …) with a private
-`docs/WORKFLOW.md`, an empty `repos/` for the git clones, and
-`.claude/settings.local.json` with permissions for headless runs (`git push`
-and `npm publish` denied). Create a new workspace with:
+workspace rules (stored as `CLAUDE.md.in` so it is not picked up as project
+memory while you work on this repository), `docs/` (plans, status, scope,
+analysis, …) with a private `docs/WORKFLOW.md`, an empty `repos/` for the
+git clones, and `.claude/settings.local.json` with permissions for headless
+runs (`git push` and `npm publish` denied). Create a new workspace with:
 
 ```bash
 bin/relay-init <name> [dir] --name "<git name>" --email <git email> [--ssh-key <path>] [--description "<text>"]
@@ -30,6 +31,15 @@ It copies the template to `<dir>/<name>` (default `~/code/<name>`), fills in
 the name and description, and writes a workspace `.gitconfig` with your git
 identity (and `core.sshCommand` when `--ssh-key` is given). It never edits
 `~/.gitconfig`; instead it prints the `includeIf` block to add there, so every
-repo cloned under `repos/` picks up that identity. It refuses to overwrite an
-existing directory. An existing project does not need the template — install
-the plugin and keep its layout.
+repo cloned under `repos/` picks up that identity. The workspace becomes its
+own private git repository (`git init -b main`, with `repos/` and `.DS_Store`
+ignored) so plans and status notes have a history; the output shows how to
+attach a private remote. It refuses to overwrite an existing directory. An
+existing project does not need the template — install the plugin and keep
+its layout.
+
+Two commit tiers follow from that layout. Inside `repos/*`, Claude Code
+commits only at the checkpoints a prompt defines, on the prompt's branch, and
+never pushes or touches `main`; you review, merge and push. In the workspace
+itself, `docs:` commits are routine (`/relay:next` makes one per run) and
+pushes are yours.

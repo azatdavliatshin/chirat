@@ -7,8 +7,9 @@
 # Refused staged paths:
 #   - any `.claude/` or `.planning/` directory
 #   - `*.local.md`, `settings.local.json`, `.DS_Store`
-#   - `docs/...` when the repo is `<ws>/repos/<x>` and `<ws>/docs/WORKFLOW.md`
-#     exists (the workspace's own docs must never reach the repo)
+#   - workspace planning files: `docs/**/*.prompt-*.md`, `docs/WORKFLOW.md`,
+#     `docs/PARKED.md`, `docs/scope/BASELINE_*.md` (a repo may carry its own
+#     `docs/`; only these workspace-shaped names are refused)
 
 set -uo pipefail
 
@@ -54,12 +55,6 @@ top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || exit 0
 staged=$(git -C "$top" diff --cached --name-only 2>/dev/null) || exit 0
 [ -n "$staged" ] || exit 0
 
-in_workspace=0
-parent=$(dirname "$top")
-if [ "$(basename "$parent")" = repos ] && [ -f "$(dirname "$parent")/docs/WORKFLOW.md" ]; then
-  in_workspace=1
-fi
-
 bad=()
 while IFS= read -r path; do
   base=${path##*/}
@@ -69,9 +64,10 @@ while IFS= read -r path; do
   case $base in
     *.local.md | settings.local.json | .DS_Store) bad+=("$path"); continue ;;
   esac
-  if [ "$in_workspace" = 1 ]; then
-    case $path in docs/*) bad+=("$path"); continue ;; esac
-  fi
+  case $path in
+    docs/*.prompt-*.md | docs/WORKFLOW.md | docs/PARKED.md | docs/scope/BASELINE_*.md)
+      bad+=("$path"); continue ;;
+  esac
 done <<<"$staged"
 
 [ ${#bad[@]} -eq 0 ] && exit 0

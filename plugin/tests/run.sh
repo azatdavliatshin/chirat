@@ -32,7 +32,7 @@ prompt() { # prompt <name> <status> <mtime YYYYMMDDhhmm>
   cat >"$ws/docs/plans/$1" <<EOF
 ---
 model: sonnet
-status: $2        # pending | running | done | failed
+status: $2        # pending | running | blocked | done | failed
 repo: demo
 branch: feat/x
 ---
@@ -44,9 +44,11 @@ EOF
 }
 
 prompt demo.prompt-1.md "done" 202601010000
-prompt demo.prompt-2.md pending 202601020000
-prompt other.prompt-2.md pending 202601030000
+prompt demo.prompt-2.md pending 202601030000
+prompt other.prompt-2.md pending 202601020000
 prompt demo.prompt-3.md failed 202601040000
+prompt other.prompt-4.md blocked 202601050000
+prompt other.prompt-5.md pending 202601060000
 echo "notes, not a prompt" >"$ws/docs/plans/demo.md"
 
 # --- relay-prompt get ----------------------------------------------------
@@ -66,7 +68,7 @@ fi
 
 # --- relay-prompt next ---------------------------------------------------
 
-eq "next: highest number, then newest mtime" \
+eq "next: lowest number, then oldest mtime" \
   "$ws/docs/plans/other.prompt-2.md" "$("$rp" next "$ws")"
 
 # --- relay-prompt set ----------------------------------------------------
@@ -76,7 +78,7 @@ before_body=$(sed -n '/^# Body/,$p' "$f")
 "$rp" set "$f" status running
 eq "set existing key" running "$("$rp" get "$f" status)"
 eq "set keeps trailing comment" \
-  "status: running        # pending | running | done | failed" "$(grep '^status:' "$f" | head -n 1)"
+  "status: running        # pending | running | blocked | done | failed" "$(grep '^status:' "$f" | head -n 1)"
 eq "set leaves body untouched" "$before_body" "$(sed -n '/^# Body/,$p' "$f")"
 eq "set touches only front matter" "status: not front matter" "$(grep '^status: not' "$f")"
 
@@ -84,9 +86,12 @@ eq "set touches only front matter" "status: not front matter" "$(grep '^status: 
 eq "set adds missing key" plugin "$("$rp" get "$f" worktree)"
 eq "added key stays inside front matter" 2 "$(grep -c '^---$' "$f")"
 
-eq "next skips non-pending" "$ws/docs/plans/demo.prompt-2.md" "$("$rp" next "$ws")"
+eq "next skips running" "$ws/docs/plans/demo.prompt-2.md" "$("$rp" next "$ws")"
 
 "$rp" set "$ws/docs/plans/demo.prompt-2.md" status "done"
+eq "next skips done, failed and blocked" "$ws/docs/plans/other.prompt-5.md" "$("$rp" next "$ws")"
+
+"$rp" set "$ws/docs/plans/other.prompt-5.md" status blocked
 if out=$("$rp" next "$ws"); then
   ko "next exits 1 when nothing is pending" "printed $out"
 else
@@ -122,16 +127,29 @@ eq "guard handles cd <repo> && git commit" 2 "$(hook "$ws" "cd repos/demo && git
 eq "guard ignores non-commit commands" 0 "$(hook "$repo" "git status")"
 git -C "$repo" rm -q --cached .claude/settings.local.json
 
-mkdir -p "$repo/docs"
-echo "x" >"$repo/docs/plan.md"
-git -C "$repo" add docs/plan.md
-eq "guard refuses docs/ inside a workspace repo" 2 "$(hook "$repo" "git commit -m test")"
-if grep -q "docs/plan.md" "$tmp/stderr" && ! grep -q "settings.local.json" "$tmp/stderr"; then
-  ok "guard reports only the docs/ path"
+mkdir -p "$repo/docs/scope" "$repo/docs/plans"
+echo "x" >"$repo/docs/README.md"
+git -C "$repo" add docs/README.md
+eq "guard allows a plain docs/README.md" 0 "$(hook "$repo" "git commit -m test")"
+
+echo "x" >"$repo/docs/plans/demo.prompt-1.md"
+git -C "$repo" add docs/plans/demo.prompt-1.md
+eq "guard refuses docs/**/*.prompt-*.md" 2 "$(hook "$repo" "git commit -m test")"
+if grep -q "docs/plans/demo.prompt-1.md" "$tmp/stderr" && ! grep -q "docs/README.md" "$tmp/stderr"; then
+  ok "guard reports only the prompt path"
 else
-  ko "guard reports only the docs/ path" "$(cat "$tmp/stderr")"
+  ko "guard reports only the prompt path" "$(cat "$tmp/stderr")"
 fi
-git -C "$repo" rm -q --cached docs/plan.md
+git -C "$repo" rm -q --cached docs/plans/demo.prompt-1.md
+
+for wsfile in docs/WORKFLOW.md docs/PARKED.md docs/scope/BASELINE_2026-01-01.md; do
+  echo "x" >"$repo/$wsfile"
+  git -C "$repo" add "$wsfile"
+  eq "guard refuses $wsfile" 2 "$(hook "$repo" "git commit -m test")"
+  git -C "$repo" rm -q --cached "$wsfile"
+done
+eq "guard allows docs/README.md alone again" 0 "$(hook "$repo" "git commit -m test")"
+git -C "$repo" rm -q --cached docs/README.md
 
 plain=$tmp/plain
 git init -q -b main "$plain"
@@ -139,6 +157,10 @@ mkdir -p "$plain/docs"
 echo "x" >"$plain/docs/guide.md"
 git -C "$plain" add docs/guide.md
 eq "guard allows docs/ outside a workspace" 0 "$(hook "$plain" "git commit -m test")"
+echo "x" >"$plain/docs/x.prompt-2.md"
+git -C "$plain" add docs/x.prompt-2.md
+eq "guard refuses prompt files outside a workspace too" 2 "$(hook "$plain" "git commit -m test")"
+git -C "$plain" rm -q --cached docs/x.prompt-2.md
 
 echo "x" >"$plain/notes.local.md"
 git -C "$plain" add -f notes.local.md

@@ -3,10 +3,15 @@
 #
 #   relay-prompt get  <file> <key>           print the value of <key>
 #   relay-prompt set  <file> <key> <value>   set <key> in place, keep the rest
-#   relay-prompt next <workspace>            print the newest pending prompt
+#   relay-prompt next <workspace>            print the next pending prompt
 #
 # Front matter is the block between a first line `---` and the next `---`.
 # Values are single-line `key: value`; a trailing ` # comment` is ignored.
+#
+# `status` is one of: pending | running | blocked | done | failed. `next`
+# considers only `pending` files under <workspace>/docs/plans/*.prompt-N.md,
+# lowest N first, oldest mtime as tie-break (a queue), and exits 1 when the
+# queue is empty.
 
 set -euo pipefail
 
@@ -85,7 +90,7 @@ cmd_next() {
     status=$(cmd_get "$f" status 2>/dev/null) || continue
     [ "$status" = pending ] || continue
     m=$(mtime "$f")
-    if [ "$n" -gt "$best_n" ] || { [ "$n" -eq "$best_n" ] && [ "$m" -gt "$best_m" ]; }; then
+    if [ "$best_n" -lt 0 ] || [ "$n" -lt "$best_n" ] || { [ "$n" -eq "$best_n" ] && [ "$m" -lt "$best_m" ]; }; then
       best=$f best_n=$n best_m=$m
     fi
   done

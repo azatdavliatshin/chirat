@@ -5,9 +5,10 @@ Private. Never leaves this folder; never goes into a repo.
 ## 1. What is in this folder
 
 ```
-<workspace>/                   ← AI workspace, NOT a git repo; root of the Claude Project
+<workspace>/                   ← AI workspace, its own private git repo; root of the Claude Project
 ├── CLAUDE.md                  main context for Claude Code sessions
 ├── .gitconfig                 git identity, included from ~/.gitconfig
+├── .gitignore                 repos/, .DS_Store — the clones are separate repos
 ├── .claude/settings.local.json
 ├── docs/
 │   ├── WORKFLOW.md            this file
@@ -19,7 +20,7 @@ Private. Never leaves this folder; never goes into a repo.
 │   ├── status/                session handovers — memory between sessions
 │   ├── estimates/ qa/ guides/ ci/
 │   └── emails/                drafts of anything public
-└── repos/<name>/              git repositories; commits/pushes happen here
+└── repos/<name>/              git repositories (ignored here); code commits happen there
 ```
 
 ## 2. Principle: parent folder = AI workspace, repos stay clean
@@ -35,8 +36,11 @@ failed runs.
 - `~/.claude/settings.json`: no co-author / attribution trailer.
 - `.git/info/exclude` in each clone: `CLAUDE.local.md`, `.claude/`,
   `.planning/`, `*.local.md`.
-- **The human commits and pushes.** Claude prepares; commit/push only on
-  explicit request, `git status` reviewed first.
+- **Two tiers.** In `repos/*` Claude commits only at the checkpoints a
+  prompt defines, on the prompt's branch, and never pushes or touches
+  `main`; the human reviews, merges and pushes. In the workspace, `docs:`
+  commits are routine (`/relay:next` makes one per run); pushes are the
+  human's.
 - Before every commit `git status` must not show `.claude/`,
   `settings.local.json`, `*.local.md`, `.DS_Store`, or anything from this
   workspace's `docs/`.
@@ -52,15 +56,18 @@ failed runs.
   ```
   ---
   model: sonnet | opus | fable
-  status: pending | running | done | failed
+  status: pending | running | blocked | done | failed
   repo: <folder under repos/>
   branch: <branch name>
   worktree: <optional suffix → repos/<repo>-<suffix>>
   ---
   ```
+  `blocked` = a human decision is needed; the question is at the top of the
+  status file. Set it back to `pending` to re-queue.
 - `docs/status/` is the memory between sessions: at the end of a session
   write `docs/status/YYYY-MM-DD-<topic>.md` (done / not done / open
   questions / branch + last commit hash), or run `/relay:handover`.
+  `docs/status/runs/` holds the runner's raw output per run.
 - Anything public is drafted in `docs/emails/` and re-read by the human
   before posting.
 
