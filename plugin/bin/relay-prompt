@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# relay-prompt — read and edit the YAML front matter of prompt files.
+#
+#   relay-prompt get  <file> <key>           print the value of <key>
+#   relay-prompt set  <file> <key> <value>   set <key> in place, keep the rest
+#   relay-prompt next <workspace>            print the newest pending prompt
+#
+# Front matter is the block between a first line `---` and the next `---`.
+# Values are single-line `key: value`; a trailing ` # comment` is ignored.
+
+set -euo pipefail
+
+usage() {
+  sed -n '4,6p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 64
+}
+
+die() {
+  echo "relay-prompt: $*" >&2
+  exit 1
+}
+
+has_front_matter() {
+  [ "$(head -n 1 "$1")" = "---" ] &&
+    awk 'NR > 1 && $0 == "---" { found = 1; exit } END { exit !found }' "$1"
+}
+
+cmd_get() {
+  local file=$1 key=$2
+  [ -f "$file" ] || die "no such file: $file"
+  has_front_matter "$file" || die "no front matter: $file"
+  awk -v key="$key" '
+    NR == 1 { next }
+    $0 == "---" { exit 1 }
+    {
+      k = $0; sub(/:.*/, "", k)
+      if (k != key) next
+      v = $0; sub(/^[^:]*:[ \t]*/, "", v)
+      sub(/[ \t]+#.*$/, "", v); sub(/[ \t]+$/, "", v)
+      print v; found = 1; exit 0
+    }
+    END { if (!found) exit 1 }
+  ' "$file"
+}
+
+cmd_set() {
+  local file=$1 key=$2 value=$3 tmp
+  [ -f "$file" ] || die "no such file: $file"
+  has_front_matter "$file" || die "no front matter: $file"
+  case $value in *$'\n'*) die "value must be a single line" ;; esac
+  tmp=$(mktemp "${file}.XXXXXX")
+  awk -v key="$key" -v value="$value" '
+    NR == 1 { print; next }
+    !done && $0 == "---" {
+      if (!seen) print key ": " value
+      done = 1; print; next
+    }
+    !done {
+      k = $0; sub(/:.*/, "", k)
+      if (k == key) {
+        comment = ""
+        if (match($0, /[ \t]+#.*$/)) comment = substr($0, RSTART)
+        print key ": " value comment; seen = 1; next
+      }
+    }
+    { print }
+  ' "$file" >"$tmp"
+  # Keep the original file's permissions; mv alone would carry mktemp's 0600.
+  chmod "$(stat -f %Lp "$file" 2>/dev/null || stat -c %a "$file")" "$tmp"
+  mv "$tmp" "$file"
+}
+
+mtime() {
+  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"
+}
+
+cmd_next() {
+  local ws=$1 f n status best="" best_n=-1 best_m=-1 m
+  [ -d "$ws/docs/plans" ] || die "no docs/plans in workspace: $ws"
+  for f in "$ws"/docs/plans/*.prompt-*.md; do
+    [ -f "$f" ] || continue
+    n=${f##*.prompt-}
+    n=${n%.md}
+    case $n in '' | *[!0-9]*) continue ;; esac
+    status=$(cmd_get "$f" status 2>/dev/null) || continue
+    [ "$status" = pending ] || continue
+    m=$(mtime "$f")
+    if [ "$n" -gt "$best_n" ] || { [ "$n" -eq "$best_n" ] && [ "$m" -gt "$best_m" ]; }; then
+      best=$f best_n=$n best_m=$m
+    fi
+  done
+  [ -n "$best" ] || exit 1
+  printf '%s\n' "$best"
+}
+
+[ $# -ge 1 ] || usage
+case $1 in
+  get) [ $# -eq 3 ] || usage; cmd_get "$2" "$3" ;;
+  set) [ $# -eq 4 ] || usage; cmd_set "$2" "$3" "$4" ;;
+  next) [ $# -eq 2 ] || usage; cmd_next "$2" ;;
+  -h | --help) usage ;;
+  *) usage ;;
+esac
