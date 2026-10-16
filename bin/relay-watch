@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# relay-watch — poll workspaces for pending prompts and run them headless.
+#
+#   relay-watch [--once] [--dry-run] [--interval N] [--tmux] [--version]
+#
+# Config: ~/.config/relay/workspaces ($XDG_CONFIG_HOME honoured) — one absolute
+# workspace path per line, `#` comments, leading `~` expanded.
+#
+# Every --interval seconds (default 60) each workspace is asked for its next
+# pending prompt (`relay-prompt next`). For a hit, relay-watch takes the lock
+# <ws>/docs/status/runs/.lock, runs from <ws>
+#
+#   claude -p "/relay:next <file>" --model <model> --permission-mode acceptEdits
+#          --permission-prompts none --output-format json
+#
+# with stdout in <ws>/docs/status/runs/<stem>.<YYYYMMDD-HHMMSS>.json and stderr
+# appended to the matching .err, and marks the prompt `failed` if the run left
+# it `running`. One line per run goes to ~/.local/state/relay/watch.log
+# ($XDG_STATE_HOME honoured) and to stdout:
+#
+#   <iso time> <tab> <ws> <tab> <file> <tab> <model> <tab> <exit> <tab> <seconds>
+#
+#   --once        single pass over all workspaces, then exit 0
+#   --dry-run     print the claude command instead of running it
+#   --interval N  seconds between passes (default 60)
+#   --tmux        start relay-watch (with the remaining flags) in a detached
+#                 tmux session named `relay`; refuses if it already exists
+#   --version     print the version and exit
+#
+# Needs bash, git, claude; jq is optional. macOS first (BSD date and stat),
+# but nothing here is macOS-only.
+
+set -uo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(dirname "$here")
+relay_prompt=$root/plugin/bin/relay-prompt
+config=${XDG_CONFIG_HOME:-$HOME/.config}/relay/workspaces
+log=${XDG_STATE_HOME:-$HOME/.local/state}/relay/watch.log
+session=relay
+
+usage() { # usage [exit code]
+  sed -n '4p' "$0" | sed 's/^# \{0,1\}//' >&2
+  echo "config: $config (one absolute workspace path per line, # comments)" >&2
+  exit "${1:-64}"
+}
+
+die() {
+  echo "relay-watch: $*" >&2
+  exit 1
+}
+
+version() {
+  sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$root/plugin/.claude-plugin/plugin.json" 2>/dev/null | head -n 1
+}
+
+once=0 dry_run=0 interval=60 use_tmux=0
+pass_through=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --once) once=1; pass_through+=("$1"); shift ;;
+    --dry-run) dry_run=1; pass_through+=("$1"); shift ;;
+    --interval)
+      [ $# -ge 2 ] || usage
+      case $2 in '' | *[!0-9]*) die "--interval needs a whole number of seconds" ;; esac
+      interval=$2; pass_through+=("$1" "$2"); shift 2 ;;
+    --tmux) use_tmux=1; shift ;;
+    --version) echo "relay-watch $(version)"; exit 0 ;;
+    -h | --help) usage ;;
+    *) usage ;;
+  esac
+done
+
+[ -x "$relay_prompt" ] || die "relay-prompt not found next to this script: $relay_prompt"
+[ -f "$config" ] || { echo "relay-watch: no config file: $config" >&2; usage 1; }
+
+if [ "$use_tmux" = 1 ]; then
+  command -v tmux >/dev/null 2>&1 || die "tmux not installed"
+  if tmux has-session -t "=$session" 2>/dev/null; then
+    die "tmux session '$session' already exists; attach with: tmux attach -t $session"
+  fi
+  cmd=$(printf '%q ' "$here/relay-watch" "${pass_through[@]}")
+  tmux new-session -d -s "$session" -n watch "$cmd"
+  echo "relay-watch running in tmux session '$session'; attach with: tmux attach -t $session"
+  exit 0
+fi
+
+mkdir -p "$(dirname "$log")"
+
+now_iso() { date +%Y-%m-%dT%H:%M:%S%z; }
+now_stamp() { date +%Y%m%d-%H%M%S; }
+
+workspaces() {
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%%#*}
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] || continue
+    line=${line/#\~/$HOME}
+    line=${line%/}
+    printf '%s\n' "$line"
+  done <"$config"
+}
+
+log_line() { # log_line <ws> <file> <model> <exit> <seconds>
+  local line
+  line=$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$(now_iso)" "$1" "$2" "$3" "$4" "$5")
+  printf '%s\n' "$line" >>"$log"
+  printf '%s\n' "$line"
+}
+
+lock_dir="" current_file="" current_err=""
+release_lock() {
+  [ -n "$lock_dir" ] && rmdir "$lock_dir" 2>/dev/null
+  lock_dir=""
+}
+
+# A prompt left `running` would never be picked up again, and one left
+# `pending` (claude exited before /relay:next claimed it — plugin missing,
+# login expired, …) would be retried every pass forever. Either way the run
+# did not finish on its own: mark it failed, with a note in its .err file.
+fail_if_unfinished() { # fail_if_unfinished <file> <err file> <note>
+  local status
+  status=$("$relay_prompt" get "$1" status 2>/dev/null) || status=""
+  case $status in running | pending) ;; *) return 1 ;; esac
+  "$relay_prompt" set "$1" status failed
+  echo "relay-watch $(now_iso): $3 with the prompt still '$status'; set to failed" >>"$2"
+}
+
+interrupted() {
+  if [ -n "$current_file" ]; then
+    fail_if_unfinished "$current_file" "$current_err" "relay-watch was interrupted"
+  fi
+  release_lock
+  exit 130
+}
+trap interrupted INT TERM
+
+run_one() { # run_one <ws> <prompt file>
+  local ws=$1 file=$2 rel stem model runs stamp out err started exit_code
+  rel=${file#"$ws"/}
+  stem=${rel##*/}
+  stem=${stem%.md}
+  model=$("$relay_prompt" get "$file" model 2>/dev/null) || model=""
+  [ -n "$model" ] || model=sonnet
+  runs=$ws/docs/status/runs
+  mkdir -p "$runs" || return
+
+  if ! mkdir "$runs/.lock" 2>/dev/null; then
+    echo "relay-watch: $ws is locked ($runs/.lock), skipping" >&2
+    return
+  fi
+  lock_dir=$runs/.lock
+
+  stamp=$(now_stamp)
+  out=$runs/$stem.$stamp.json
+  err=$runs/$stem.$stamp.err
+  started=$(date +%s)
+
+  if [ "$dry_run" = 1 ]; then
+    printf 'cd %q && claude -p %q --model %q --permission-mode acceptEdits --permission-prompts none --output-format json >%q 2>>%q\n' \
+      "$ws" "/relay:next $rel" "$model" "$out" "$err"
+    release_lock
+    log_line "$ws" "$rel" "$model" dry-run 0
+    return
+  fi
+
+  current_file=$file current_err=$err
+  (
+    cd "$ws" || exit 127
+    claude -p "/relay:next $rel" --model "$model" \
+      --permission-mode acceptEdits --permission-prompts none \
+      --output-format json
+  ) </dev/null >"$out" 2>>"$err"
+  exit_code=$?
+
+  fail_if_unfinished "$file" "$err" "claude exited $exit_code"
+  current_file="" current_err=""
+  release_lock
+  log_line "$ws" "$rel" "$model" "$exit_code" "$(( $(date +%s) - started ))"
+}
+
+pass() {
+  local ws file
+  while IFS= read -r ws; do
+    if [ ! -d "$ws/docs/plans" ]; then
+      echo "relay-watch: not a workspace (no docs/plans): $ws" >&2
+      continue
+    fi
+    file=$("$relay_prompt" next "$ws" 2>/dev/null) || continue
+    run_one "$ws" "$file"
+  done < <(workspaces)
+}
+
+if [ "$once" = 1 ]; then
+  pass
+  exit 0
+fi
+
+while :; do
+  pass
+  sleep "$interval"
+done

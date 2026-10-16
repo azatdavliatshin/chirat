@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# Tests for bin/relay-watch with a fake `claude` on PATH and a throwaway
+# workspace. Usage: tests/relay-watch.sh
+
+set -uo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(dirname "$here")
+watch=$root/bin/relay-watch
+rp=$root/plugin/bin/relay-prompt
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+pass=0
+fail=0
+
+ok() { pass=$((pass + 1)); echo "ok   $1"; }
+ko() { fail=$((fail + 1)); echo "FAIL $1"; [ $# -gt 1 ] && echo "     $2"; }
+
+eq() { # eq <name> <expected> <actual>
+  if [ "$2" = "$3" ]; then ok "$1"; else ko "$1" "expected [$2], got [$3]"; fi
+}
+
+has() { # has <name> <file> <fixed string>
+  if grep -qF -- "$3" "$2"; then ok "$1"; else ko "$1" "no [$3] in $2:"$'\n'"$(cat "$2")"; fi
+}
+
+exists() { # exists <name> <test flag> <path>
+  if test "$2" "$3"; then ok "$1"; else ko "$1" "test $2 $3 is false"; fi
+}
+
+absent() { # absent <name> <path>
+  if [ -e "$2" ]; then ko "$1" "$2 exists"; else ok "$1"; fi
+}
+
+first() { # first <glob...>: print the first existing match, or nothing
+  for f in "$@"; do [ -e "$f" ] && { printf '%s\n' "$f"; return; }; done
+  return 1
+}
+
+# --- fake claude -----------------------------------------------------------
+# Records argv (one per line) and $PWD, prints a JSON result, and acts on the
+# prompt named after `-p "/relay:next <file>"` like the real /relay:next:
+# claims it (`running`) and marks it `done`. FAKE_MODE=noflip stops after the
+# claim; FAKE_MODE=noclaim touches nothing. Exits with $FAKE_EXIT (default 0).
+
+mkdir -p "$tmp/bin"
+cat >"$tmp/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+set -u
+{ printf '%s\n' "$@"; echo "PWD=$PWD"; } >"$FAKE_ARGV"
+file=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    -p) file=${2#/relay:next }; shift 2 ;;
+    *) shift ;;
+  esac
+done
+echo '{"result":"ok"}'
+echo "fake claude stderr" >&2
+mode=${FAKE_MODE:-done}
+if [ -n "$file" ] && [ "$mode" != noclaim ]; then
+  "$RP" set "$file" status running
+  [ "$mode" = noflip ] || "$RP" set "$file" status done
+fi
+exit "${FAKE_EXIT:-0}"
+EOF
+chmod +x "$tmp/bin/claude"
+export PATH=$tmp/bin:$PATH RP=$rp FAKE_ARGV=$tmp/argv
+
+# --- workspace + config ---------------------------------------------------
+
+export HOME=$tmp XDG_CONFIG_HOME=$tmp/config XDG_STATE_HOME=$tmp/state
+ws=$tmp/ws
+mkdir -p "$ws"/docs/{plans,status} "$ws"/repos "$XDG_CONFIG_HOME/relay"
+prompt() { # prompt <name> <model> <status>
+  cat >"$ws/docs/plans/$1" <<EOF
+---
+model: $2
+status: $3
+repo: demo
+branch: feat/x
+---
+# $1
+EOF
+}
+prompt demo.prompt-1.md opus pending
+prompt demo.prompt-2.md sonnet pending
+cat >"$XDG_CONFIG_HOME/relay/workspaces" <<EOF
+# workspaces, one per line; ~ is expanded
+~/ws/   # trailing slash and comment on purpose
+
+$tmp/not-a-workspace
+EOF
+log=$XDG_STATE_HOME/relay/watch.log
+
+# --- version / config -----------------------------------------------------
+
+eq "--version" "relay-watch $(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$root/plugin/.claude-plugin/plugin.json")" "$("$watch" --version)"
+XDG_CONFIG_HOME=$tmp/nowhere "$watch" --once >/dev/null 2>"$tmp/stderr"
+eq "missing config exits 1" 1 $?
+has "missing config prints usage" "$tmp/stderr" "relay-watch [--once]"
+
+# --- --dry-run ------------------------------------------------------------
+
+out=$("$watch" --once --dry-run 2>"$tmp/stderr")
+eq "dry-run exits 0" 0 $?
+has "dry-run prints the claude command" <(printf '%s\n' "$out") "claude -p /relay:next\\ docs/plans/demo.prompt-1.md --model opus --permission-mode acceptEdits --permission-prompts none --output-format json"
+eq "dry-run leaves the prompt pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-1.md" status)"
+eq "dry-run runs nothing" "" "$(first "$ws"/docs/status/runs/*)"
+exists "dry-run creates runs/" -d "$ws/docs/status/runs"
+has "dry-run warns about a non-workspace path" "$tmp/stderr" "not a workspace (no docs/plans): $tmp/not-a-workspace"
+eq "dry-run logs one line" 1 "$(wc -l <"$log" | tr -d ' ')"
+: >"$log"
+
+# --- --once: happy path ---------------------------------------------------
+
+out=$("$watch" --once 2>"$tmp/stderr")
+eq "once exits 0" 0 $?
+json=$(first "$ws"/docs/status/runs/demo.prompt-1.*.json)
+err=${json%.json}.err
+exists "writes runs/<stem>.<ts>.json" -f "$json"
+case ${json##*/} in demo.prompt-1.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].json) ok "timestamp is YYYYMMDD-HHMMSS" ;; *) ko "timestamp is YYYYMMDD-HHMMSS" "$json" ;; esac
+eq "json holds claude's stdout" '{"result":"ok"}' "$(cat "$json")"
+eq "err holds claude's stderr" "fake claude stderr" "$(cat "$err")"
+eq "runs the lower-numbered prompt" "/relay:next docs/plans/demo.prompt-1.md" "$(sed -n '/^-p$/{n;p;}' "$FAKE_ARGV")"
+eq "passes the prompt's model" opus "$(sed -n '/^--model$/{n;p;}' "$FAKE_ARGV")"
+has "passes --permission-mode acceptEdits" "$FAKE_ARGV" "acceptEdits"
+has "passes --permission-prompts none" "$FAKE_ARGV" "--permission-prompts"
+has "passes --output-format json" "$FAKE_ARGV" "--output-format"
+eq "runs from the workspace root" "PWD=$ws" "$(grep '^PWD=' "$FAKE_ARGV")"
+eq "prompt-1 is done afterwards" "done" "$("$rp" get "$ws/docs/plans/demo.prompt-1.md" status)"
+eq "prompt-2 is still pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
+absent "lock released" "$ws/docs/status/runs/.lock"
+eq "one log line" 1 "$(wc -l <"$log" | tr -d ' ')"
+line=$(cat "$log")
+eq "log line echoed to stdout" "$line" "$out"
+IFS=$'\t' read -r l_ts l_ws l_file l_model l_exit l_secs <<<"$line"
+case $l_ts in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*) ok "log: iso timestamp" ;; *) ko "log: iso timestamp" "$l_ts" ;; esac
+eq "log: workspace" "$ws" "$l_ws"
+eq "log: file" "docs/plans/demo.prompt-1.md" "$l_file"
+eq "log: model" opus "$l_model"
+eq "log: exit" 0 "$l_exit"
+case $l_secs in '' | *[!0-9]*) ko "log: seconds" "$l_secs" ;; *) ok "log: seconds" ;; esac
+
+# --- --once: claude exits without flipping the status ---------------------
+
+FAKE_MODE=noflip FAKE_EXIT=3 "$watch" --once >"$tmp/out" 2>"$tmp/stderr"
+eq "once still exits 0 when claude fails" 0 $?
+eq "prompt-2 set to failed" failed "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
+err2=$(first "$ws"/docs/status/runs/demo.prompt-2.*.err)
+has "err notes the forced failure" "$err2" "claude exited 3 with the prompt still 'running'; set to failed"
+has "err keeps claude's own stderr first" "$err2" "fake claude stderr"
+eq "log: exit code 3" 3 "$(tail -n 1 "$log" | cut -f5)"
+eq "log: model sonnet by default" sonnet "$(tail -n 1 "$log" | cut -f4)"
+absent "lock released after failure" "$ws/docs/status/runs/.lock"
+
+# --- --once: claude exits before claiming the prompt ----------------------
+
+prompt demo.prompt-3.md sonnet pending
+FAKE_MODE=noclaim FAKE_EXIT=1 "$watch" --once >/dev/null 2>&1
+eq "unclaimed prompt set to failed (no retry loop)" failed "$("$rp" get "$ws/docs/plans/demo.prompt-3.md" status)"
+err3=$(first "$ws"/docs/status/runs/demo.prompt-3.*.err)
+has "err notes the prompt was still pending" "$err3" "claude exited 1 with the prompt still 'pending'; set to failed"
+rm -f "$ws/docs/plans/demo.prompt-3.md"
+
+# --- --once: nothing pending ----------------------------------------------
+
+out=$("$watch" --once 2>/dev/null)
+eq "once with empty queue exits 0" 0 $?
+eq "once with empty queue prints nothing" "" "$out"
+eq "once with empty queue logs nothing" 3 "$(wc -l <"$log" | tr -d ' ')"
+
+# --- lock held → skip -----------------------------------------------------
+
+"$rp" set "$ws/docs/plans/demo.prompt-2.md" status pending
+mkdir "$ws/docs/status/runs/.lock"
+: >"$FAKE_ARGV"
+"$watch" --once >/dev/null 2>"$tmp/stderr"
+eq "locked workspace: exit 0" 0 $?
+has "locked workspace: says so on stderr" "$tmp/stderr" "is locked"
+eq "locked workspace: claude not called" "" "$(cat "$FAKE_ARGV")"
+eq "locked workspace: prompt stays pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
+exists "locked workspace: lock left alone" -d "$ws/docs/status/runs/.lock"
+rmdir "$ws/docs/status/runs/.lock"
+
+# --- model missing → sonnet; --interval validation -----------------------
+
+prompt demo.prompt-3.md "" pending
+sed -i.bak '/^model:/d' "$ws/docs/plans/demo.prompt-3.md" && rm -f "$ws/docs/plans/demo.prompt-3.md.bak"
+"$watch" --once >/dev/null 2>&1
+eq "runs prompt-2 before prompt-3" "/relay:next docs/plans/demo.prompt-2.md" "$(sed -n '/^-p$/{n;p;}' "$FAKE_ARGV")"
+"$watch" --once >/dev/null 2>&1
+eq "no model key → sonnet" sonnet "$(sed -n '/^--model$/{n;p;}' "$FAKE_ARGV")"
+"$watch" --once --interval abc >/dev/null 2>&1
+eq "--interval rejects non-numbers" 1 $?
+"$watch" --bogus >/dev/null 2>&1
+eq "unknown flag → usage (64)" 64 $?
+
+# --- summary -------------------------------------------------------------
+
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]
