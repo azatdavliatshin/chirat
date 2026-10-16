@@ -10,7 +10,9 @@ the target repo and branch, and `status: pending`. A runner — or you, typing
 where the planning session picks it up. Code commits happen only at the
 checkpoints a prompt defines, on the prompt's branch; merging and pushing
 stay with the human, and a commit guard keeps workspace files out of the
-repository.
+repository (a workspace repository itself — one with `docs/WORKFLOW.md` at its
+top level — may commit its own `docs/` files; `.claude/`, `*.local.md` and the
+rest are still refused).
 
 Install the plugin from this repository's marketplace, inside a Claude Code
 session: `/plugin marketplace add <path-or-github>` (a local clone path, or
@@ -75,16 +77,24 @@ Each pass takes, per workspace, the next pending prompt (lowest `N` in
 
 ```
 claude -p "/relay:next docs/plans/<topic>.prompt-N.md" --model <model> \
-  --permission-mode acceptEdits --permission-prompts none --output-format json
+  --permission-mode auto --permission-prompts none --output-format json
 ```
 
-`<model>` comes from the prompt's front matter (`sonnet` if absent).
-`--permission-mode acceptEdits` lets the run edit files without prompting;
-anything else that would prompt is denied by `--permission-prompts none`,
-so put the commands a run needs into `.claude/settings.local.json` of the
-workspace (the template already allows `git`, `npm test`, `shellcheck` and
-denies `git push` and `npm publish`). Never use
-`--dangerously-skip-permissions`.
+`<model>` comes from the prompt's front matter (`sonnet` if absent). The
+permission mode defaults to `auto`; override it with
+`relay-watch --permission-mode <mode>` or the environment variable
+`RELAY_PERMISSION_MODE` (the flag wins over the variable, the variable over
+the default). `auto` is the default because a classifier reviews each action
+instead of matching it against prefix rules, and prefix rules cannot match
+compound commands (`a && b`, `for …; do …`, `… | tail`): under `acceptEdits`
+those were denied and blocked runs that `auto` finished without a denial. To
+fall back, pass `--permission-mode acceptEdits` and list every command a run
+needs in `.claude/settings.local.json` of the workspace (the template already
+allows `git`, `npm test`, `shellcheck`). `--permission-prompts none` stays in
+both modes: anything the classifier would have asked about is denied rather
+than waiting for a human who is not there, so such a run ends `blocked` or
+`failed` instead of hanging. The template denies `git push` and
+`npm publish`. Never use `--dangerously-skip-permissions`.
 
 Outputs land in the workspace, under `docs/status/runs/`: the JSON result
 in `<topic>.prompt-N.<YYYYMMDD-HHMMSS>.json`, stderr in the matching

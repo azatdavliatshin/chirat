@@ -104,7 +104,12 @@ plugin is enabled): `relay-prompt get <file> <key>`,
    is `done` when the body was carried out (including a clean stop at a
    checkpoint the prompt defines), `blocked` when a human decision is
    needed to continue, otherwise `failed`. Write the status file in every
-   case. Then, if the workspace root is a git repository (`git -C <ws>
+   case. Then, when the run used `repos/<repo>` directly (no `worktree`),
+   return it to `main` so a human `git merge` lands there: if
+   `git -C repos/<repo> status --porcelain` is empty run
+   `git -C repos/<repo> checkout main`, otherwise leave the tree as it is and
+   say so in the status file. A worktree run leaves its worktree as is.
+   Then, if the workspace root is a git repository (`git -C <ws>
    rev-parse --git-dir` succeeds), record the run there:
    `git -C <ws> add docs ':!docs/status/runs'` and then
    `git -C <ws> commit -m "docs: <topic> <final>"`.

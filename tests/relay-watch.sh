@@ -108,12 +108,31 @@ has "missing config prints usage" "$tmp/stderr" "relay-watch [--once]"
 
 out=$("$watch" --once --dry-run 2>"$tmp/stderr")
 eq "dry-run exits 0" 0 $?
-has "dry-run prints the claude command" <(printf '%s\n' "$out") "claude -p /relay:next\\ docs/plans/demo.prompt-1.md --model opus --permission-mode acceptEdits --permission-prompts none --output-format json"
+has "dry-run prints the claude command" <(printf '%s\n' "$out") "claude -p /relay:next\\ docs/plans/demo.prompt-1.md --model opus --permission-mode auto --permission-prompts none --output-format json"
 eq "dry-run leaves the prompt pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-1.md" status)"
 eq "dry-run runs nothing" "" "$(first "$ws"/docs/status/runs/*)"
 exists "dry-run creates runs/" -d "$ws/docs/status/runs"
 has "dry-run warns about a non-workspace path" "$tmp/stderr" "not a workspace (no docs/plans): $tmp/not-a-workspace"
 eq "dry-run logs one line" 1 "$(wc -l <"$log" | tr -d ' ')"
+eq "log: mode column shows auto" auto "$(cut -f7 "$log")"
+: >"$log"
+
+# --- permission mode: default auto, flag > env > default -------------------
+
+mode_of() { # mode_of <env value or -> <flag args...>; prints the mode in the dry-run command
+  local env=$1; shift
+  if [ "$env" = - ]; then
+    "$watch" --once --dry-run "$@" 2>/dev/null | grep -o -e '--permission-mode [^ ]*'
+  else
+    RELAY_PERMISSION_MODE=$env "$watch" --once --dry-run "$@" 2>/dev/null | grep -o -e '--permission-mode [^ ]*'
+  fi
+}
+eq "mode: default is auto" "--permission-mode auto" "$(mode_of -)"
+eq "mode: flag overrides default" "--permission-mode acceptEdits" "$(mode_of - --permission-mode acceptEdits)"
+eq "mode: env overrides default" "--permission-mode plan" "$(mode_of plan)"
+eq "mode: flag beats env" "--permission-mode acceptEdits" "$(mode_of plan --permission-mode acceptEdits)"
+"$watch" --once --dry-run --permission-mode >/dev/null 2>&1
+eq "mode: flag without value exits 64" 64 $?
 : >"$log"
 
 # --- --once: happy path ---------------------------------------------------
@@ -134,7 +153,7 @@ eq "json holds claude's stdout" '{"result":"ok"}' "$(cat "$json")"
 eq "err holds claude's stderr" "fake claude stderr" "$(cat "$err")"
 eq "runs the lower-numbered prompt" "/relay:next docs/plans/demo.prompt-1.md" "$(sed -n '/^-p$/{n;p;}' "$FAKE_ARGV")"
 eq "passes the prompt's model" opus "$(sed -n '/^--model$/{n;p;}' "$FAKE_ARGV")"
-has "passes --permission-mode acceptEdits" "$FAKE_ARGV" "acceptEdits"
+eq "passes --permission-mode auto by default" auto "$(sed -n '/^--permission-mode$/{n;p;}' "$FAKE_ARGV")"
 has "passes --permission-prompts none" "$FAKE_ARGV" "--permission-prompts"
 has "passes --output-format json" "$FAKE_ARGV" "--output-format"
 eq "runs from the workspace root" "PWD=$ws" "$(grep '^PWD=' "$FAKE_ARGV")"
@@ -148,12 +167,13 @@ eq "run log: no pending runs/ changes" "" "$(git -C "$ws" status --porcelain -- 
 eq "one log line" 1 "$(wc -l <"$log" | tr -d ' ')"
 line=$(cat "$log")
 eq "log line echoed to stdout" "$line" "$out"
-IFS=$'\t' read -r l_ts l_ws l_file l_model l_exit l_secs <<<"$line"
+IFS=$'\t' read -r l_ts l_ws l_file l_model l_exit l_secs l_mode <<<"$line"
 case $l_ts in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*) ok "log: iso timestamp" ;; *) ko "log: iso timestamp" "$l_ts" ;; esac
 eq "log: workspace" "$ws" "$l_ws"
 eq "log: file" "docs/plans/demo.prompt-1.md" "$l_file"
 eq "log: model" opus "$l_model"
 eq "log: exit" 0 "$l_exit"
+eq "log: mode" auto "$l_mode"
 case $l_secs in '' | *[!0-9]*) ko "log: seconds" "$l_secs" ;; *) ok "log: seconds" ;; esac
 
 # --- --once: claude exits without flipping the status ---------------------

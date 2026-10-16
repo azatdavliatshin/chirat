@@ -9,7 +9,9 @@
 #   - `*.local.md`, `settings.local.json`, `.DS_Store`
 #   - workspace planning files: `docs/**/*.prompt-*.md`, `docs/WORKFLOW.md`,
 #     `docs/PARKED.md`, `docs/scope/BASELINE_*.md` (a repo may carry its own
-#     `docs/`; only these workspace-shaped names are refused)
+#     `docs/`; only these workspace-shaped names are refused). Skipped in a
+#     workspace repo — one whose HEAD contains `docs/WORKFLOW.md` — where those
+#     files are the content.
 
 set -uo pipefail
 
@@ -55,6 +57,15 @@ top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || exit 0
 staged=$(git -C "$top" diff --cached --name-only 2>/dev/null) || exit 0
 [ -n "$staged" ] || exit 0
 
+# The marker must already be in HEAD (or, in a repo with no commits yet, on
+# disk), so staging a WORKFLOW.md does not make a code repo a workspace.
+workspace_repo=0
+if git -C "$top" rev-parse --verify -q HEAD >/dev/null; then
+  git -C "$top" cat-file -e HEAD:docs/WORKFLOW.md 2>/dev/null && workspace_repo=1
+elif [ -f "$top/docs/WORKFLOW.md" ]; then
+  workspace_repo=1
+fi
+
 bad=()
 while IFS= read -r path; do
   base=${path##*/}
@@ -64,6 +75,7 @@ while IFS= read -r path; do
   case $base in
     *.local.md | settings.local.json | .DS_Store) bad+=("$path"); continue ;;
   esac
+  [ "$workspace_repo" = 1 ] && continue
   case $path in
     docs/*.prompt-*.md | docs/WORKFLOW.md | docs/PARKED.md | docs/scope/BASELINE_*.md)
       bad+=("$path"); continue ;;

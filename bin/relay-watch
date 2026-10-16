@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # relay-watch — poll workspaces for pending prompts and run them headless.
 #
-#   relay-watch [--once] [--dry-run] [--interval N] [--tmux] [--version]
+#   relay-watch [--once] [--dry-run] [--interval N] [--permission-mode M] [--tmux] [--version]
 #   relay-watch install [dir]
 #
 # Config: ~/.config/relay/workspaces ($XDG_CONFIG_HOME honoured) — one absolute
@@ -11,7 +11,7 @@
 # pending prompt (`relay-prompt next`). For a hit, relay-watch takes the lock
 # <ws>/docs/status/runs/.lock, runs from <ws>
 #
-#   claude -p "/relay:next <file>" --model <model> --permission-mode acceptEdits
+#   claude -p "/relay:next <file>" --model <model> --permission-mode <mode>
 #          --permission-prompts none --output-format json
 #
 # with stdout in <ws>/docs/status/runs/<stem>.<YYYYMMDD-HHMMSS>.json and stderr
@@ -21,10 +21,13 @@
 # ($XDG_STATE_HOME honoured) and to stdout:
 #
 #   <iso time> <tab> <ws> <tab> <file> <tab> <model> <tab> <exit> <tab> <seconds>
+#   <tab> <permission mode>
 #
 #   --once        single pass over all workspaces, then exit 0
 #   --dry-run     print the claude command instead of running it
 #   --interval N  seconds between passes (default 60)
+#   --permission-mode M  claude permission mode, passed through verbatim;
+#                 default `auto`, or $RELAY_PERMISSION_MODE (flag wins)
 #   --tmux        start relay-watch (with the remaining flags) in a detached
 #                 tmux session named `relay`; refuses if it already exists
 #   --version     print the version and exit
@@ -96,6 +99,7 @@ if [ "${1:-}" = install ]; then
 fi
 
 once=0 dry_run=0 interval=60 use_tmux=0
+mode=${RELAY_PERMISSION_MODE:-auto}
 pass_through=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -105,6 +109,10 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || usage
       case $2 in '' | *[!0-9]*) die "--interval needs a whole number of seconds" ;; esac
       interval=$2; pass_through+=("$1" "$2"); shift 2 ;;
+    --permission-mode)
+      [ $# -ge 2 ] || usage
+      [ -n "$2" ] || die "--permission-mode needs a value"
+      mode=$2; pass_through+=("$1" "$2"); shift 2 ;;
     --tmux) use_tmux=1; shift ;;
     --version) echo "relay-watch $(version)"; exit 0 ;;
     -h | --help) usage ;;
@@ -146,7 +154,7 @@ workspaces() {
 
 log_line() { # log_line <ws> <file> <model> <exit> <seconds>
   local line
-  line=$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$(now_iso)" "$1" "$2" "$3" "$4" "$5")
+  line=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' "$(now_iso)" "$1" "$2" "$3" "$4" "$5" "$mode")
   printf '%s\n' "$line" >>"$log"
   printf '%s\n' "$line"
 }
@@ -226,8 +234,8 @@ run_one() { # run_one <ws> <prompt file>
   started=$(date +%s)
 
   if [ "$dry_run" = 1 ]; then
-    printf 'cd %q && claude -p %q --model %q --permission-mode acceptEdits --permission-prompts none --output-format json >%q 2>>%q\n' \
-      "$ws" "/relay:next $rel" "$model" "$out" "$err"
+    printf 'cd %q && claude -p %q --model %q --permission-mode %q --permission-prompts none --output-format json >%q 2>>%q\n' \
+      "$ws" "/relay:next $rel" "$model" "$mode" "$out" "$err"
     release_lock
     log_line "$ws" "$rel" "$model" dry-run 0
     return
@@ -238,7 +246,7 @@ run_one() { # run_one <ws> <prompt file>
   (
     cd "$ws" || exit 127
     claude -p "/relay:next $rel" --model "$model" \
-      --permission-mode acceptEdits --permission-prompts none \
+      --permission-mode "$mode" --permission-prompts none \
       --output-format json
   ) </dev/null >"$out" 2>>"$err" &
   child=$!

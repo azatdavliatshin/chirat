@@ -127,6 +127,7 @@ eq "guard handles cd <repo> && git commit" 2 "$(hook "$ws" "cd repos/demo && git
 eq "guard ignores non-commit commands" 0 "$(hook "$repo" "git status")"
 git -C "$repo" rm -q --cached .claude/settings.local.json
 
+git -C "$repo" -c user.name=t -c user.email=t@t commit -q -m init
 mkdir -p "$repo/docs/scope" "$repo/docs/plans"
 echo "x" >"$repo/docs/README.md"
 git -C "$repo" add docs/README.md
@@ -165,6 +166,30 @@ git -C "$plain" rm -q --cached docs/x.prompt-2.md
 echo "x" >"$plain/notes.local.md"
 git -C "$plain" add -f notes.local.md
 eq "guard refuses *.local.md anywhere" 2 "$(hook "$plain" "git commit -m test")"
+
+# A workspace repo (top level has docs/WORKFLOW.md) may commit its own docs.
+wsrepo=$tmp/wsrepo
+git init -q -b main "$wsrepo"
+mkdir -p "$wsrepo/docs/plans"
+echo "x" >"$wsrepo/docs/WORKFLOW.md"
+echo "x" >"$wsrepo/docs/plans/x.prompt-1.md"
+echo "x" >"$wsrepo/docs/PARKED.md"
+git -C "$wsrepo" add docs
+git -C "$wsrepo" -c user.name=t -c user.email=t@t commit -q -m init
+echo "y" >>"$wsrepo/docs/WORKFLOW.md"
+echo "y" >"$wsrepo/docs/plans/x.prompt-2.md"
+git -C "$wsrepo" add docs
+eq "guard lets a workspace repo commit docs/ planning files" 0 "$(hook "$wsrepo" "git commit -m test")"
+mkdir -p "$wsrepo/.claude"
+echo "{}" >"$wsrepo/.claude/settings.local.json"
+echo "x" >"$wsrepo/.DS_Store"
+git -C "$wsrepo" add -f .claude/settings.local.json .DS_Store
+eq "guard still refuses .claude and .DS_Store in a workspace repo" 2 "$(hook "$wsrepo" "git commit -m test")"
+if grep -q "settings.local.json" "$tmp/stderr" && grep -q ".DS_Store" "$tmp/stderr" && ! grep -q "docs/" "$tmp/stderr"; then
+  ok "guard reports only the non-docs paths in a workspace repo"
+else
+  ko "guard reports only the non-docs paths in a workspace repo" "$(cat "$tmp/stderr")"
+fi
 
 # --- summary -------------------------------------------------------------
 
