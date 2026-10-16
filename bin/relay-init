@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# relay-init — create a new workspace from template/.
+#
+#   relay-init <name> [dir] --name <git name> --email <git email>
+#              [--ssh-key <path>] [--description <text>]
+#
+# Creates <dir>/<name> (default dir: ~/code), fills {{NAME}} / {{DESCRIPTION}},
+# writes <workspace>/.gitconfig and prints the includeIf block to add to
+# ~/.gitconfig. Never overwrites an existing directory and never edits
+# ~/.gitconfig.
+
+set -euo pipefail
+
+usage() {
+  sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 64
+}
+
+die() {
+  echo "relay-init: $*" >&2
+  exit 1
+}
+
+here=$(cd "$(dirname "$0")" && pwd)
+template=$(dirname "$here")/template
+[ -d "$template" ] || die "template not found: $template"
+
+ws_name="" parent="" git_name="" git_email="" ssh_key="" description=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    --name) [ $# -ge 2 ] || usage; git_name=$2; shift 2 ;;
+    --email) [ $# -ge 2 ] || usage; git_email=$2; shift 2 ;;
+    --ssh-key) [ $# -ge 2 ] || usage; ssh_key=$2; shift 2 ;;
+    --description) [ $# -ge 2 ] || usage; description=$2; shift 2 ;;
+    -h | --help) usage ;;
+    -*) die "unknown option: $1" ;;
+    *)
+      if [ -z "$ws_name" ]; then ws_name=$1
+      elif [ -z "$parent" ]; then parent=$1
+      else usage
+      fi
+      shift
+      ;;
+  esac
+done
+
+[ -n "$ws_name" ] && [ -n "$git_name" ] && [ -n "$git_email" ] || usage
+case $ws_name in */* | .* | *[[:space:]]*) die "invalid name: $ws_name" ;; esac
+[ -n "$description" ] || description="TODO: one paragraph on what $ws_name is."
+
+parent=${parent:-$HOME/code}
+parent=${parent/#\~/$HOME}
+mkdir -p "$parent"
+parent=$(cd "$parent" && pwd)
+ws=$parent/$ws_name
+[ ! -e "$ws" ] || die "already exists, not overwriting: $ws"
+
+if [ -n "$ssh_key" ]; then
+  ssh_key=${ssh_key/#\~/$HOME}
+  [ -f "$ssh_key" ] || echo "relay-init: warning: ssh key not found: $ssh_key" >&2
+fi
+
+cp -R "$template" "$ws"
+mkdir -p "$ws/.claude"
+mv "$ws/dot-claude/settings.local.json.in" "$ws/.claude/settings.local.json"
+rmdir "$ws/dot-claude"
+
+fill() { # fill <file>: replace placeholders in place
+  local f=$1 text
+  text=$(cat "$f"; echo x)
+  text=${text%x}
+  text=${text//'{{NAME}}'/"$ws_name"}
+  text=${text//'{{DESCRIPTION}}'/"$description"}
+  printf '%s' "$text" >"$f"
+}
+while IFS= read -r f; do
+  fill "$f"
+done < <(grep -rlF '{{' "$ws" || true)
+
+git config -f "$ws/.gitconfig" user.name "$git_name"
+git config -f "$ws/.gitconfig" user.email "$git_email"
+if [ -n "$ssh_key" ]; then
+  git config -f "$ws/.gitconfig" core.sshCommand "ssh -i '$ssh_key'"
+fi
+
+cat <<EOF
+Created workspace: $ws
+
+Add this block to ~/.gitconfig (relay-init does not edit it):
+
+[includeIf "gitdir:$ws/"]
+    path = $ws/.gitconfig
+
+Next steps:
+  1. Create a Claude Project with $ws as its root folder.
+  2. git clone your repository into $ws/repos/
+  3. Write $ws/docs/scope/BASELINE_$(date +%Y-%m-%d).md
+EOF

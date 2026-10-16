@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(node --version)",
+      "Bash(npm --version)",
+      "Bash(npm ci)",
+      "Bash(npm install)",
+      "Bash(npm test)",
+      "Bash(npm run *)",
+      "Bash(bash bin/*)",
+      "Bash(shellcheck *)",
+      "Bash(claude plugin validate *)",
+      "Bash(tmux ls*)"
+    ],
+    "deny": [
+      "Bash(npm publish*)",
+      "Bash(git push *)",
+      "Bash(claude --dangerously-skip-permissions*)"
+    ]
+  }
+}
