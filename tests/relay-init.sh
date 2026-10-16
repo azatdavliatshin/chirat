@@ -80,7 +80,7 @@ eq ".gitconfig has no other keys" 3 "$(git config -f "$ws/.gitconfig" --list | w
 eq "git rev-parse works in the workspace" "true" "$(git -C "$ws" rev-parse --is-inside-work-tree 2>/dev/null)"
 eq "workspace branch is main" main "$(git -C "$ws" symbolic-ref --short HEAD 2>/dev/null)"
 eq "workspace has no commits" "" "$(git -C "$ws" log --oneline 2>/dev/null)"
-eq ".gitignore content" "$(printf 'repos/\n.DS_Store')" "$(cat "$ws/.gitignore")"
+eq ".gitignore content" "$(printf 'repos/\n.claude/\n.DS_Store')" "$(cat "$ws/.gitignore")"
 mkdir -p "$ws/repos/x"
 echo "y" >"$ws/repos/x/file"
 touch "$ws/.DS_Store"
@@ -93,6 +93,11 @@ if git -C "$ws" status --porcelain | grep -q 'DS_Store'; then
   ko ".DS_Store is ignored by the workspace repo"
 else
   ok ".DS_Store is ignored by the workspace repo"
+fi
+if git -C "$ws" status --porcelain --ignored | grep -q '^!! .claude/'; then
+  ok ".claude/ is ignored by the workspace repo"
+else
+  ko ".claude/ is ignored by the workspace repo" "$(git -C "$ws" status --porcelain --ignored)"
 fi
 
 # --- output --------------------------------------------------------------

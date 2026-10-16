@@ -8,8 +8,8 @@ Private. Never leaves this folder; never goes into a repo.
 <workspace>/                   ← AI workspace, its own private git repo; root of the Claude Project
 ├── CLAUDE.md                  main context for Claude Code sessions
 ├── .gitconfig                 git identity, included from ~/.gitconfig
-├── .gitignore                 repos/, .DS_Store — the clones are separate repos
-├── .claude/settings.local.json
+├── .gitignore                 repos/, .claude/, .DS_Store — clones are separate repos
+├── .claude/settings.local.json   local permissions (ignored; template is the source)
 ├── docs/
 │   ├── WORKFLOW.md            this file
 │   ├── PARKED.md              deferred ideas / questions
@@ -67,7 +67,11 @@ failed runs.
 - `docs/status/` is the memory between sessions: at the end of a session
   write `docs/status/YYYY-MM-DD-<topic>.md` (done / not done / open
   questions / branch + last commit hash), or run `/relay:handover`.
-  `docs/status/runs/` holds the runner's raw output per run.
+  `docs/status/runs/` holds the runner's raw output per run; those files
+  are versioned here as the run log.
+- After merging a branch that touches `plugin/` in the relay repo, run
+  `claude plugin update relay@relay` (or uninstall and reinstall): the
+  installed plugin is a cache snapshot, not a live link to the clone.
 - Anything public is drafted in `docs/emails/` and re-read by the human
   before posting.
 

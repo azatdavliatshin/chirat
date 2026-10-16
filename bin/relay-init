@@ -7,7 +7,7 @@
 # Creates <dir>/<name> (default dir: ~/code), fills {{NAME}} / {{DESCRIPTION}},
 # renames CLAUDE.md.in to CLAUDE.md, writes <workspace>/.gitconfig, runs
 # `git init -b main` in the workspace with a .gitignore that leaves repos/
-# out, and prints the includeIf block to add to ~/.gitconfig plus how to add
+# and .claude/ out, and prints the includeIf block to add to ~/.gitconfig plus how to add
 # a private remote. Never overwrites an existing directory and never edits
 # ~/.gitconfig.
 
@@ -87,8 +87,9 @@ if [ -n "$ssh_key" ]; then
 fi
 
 # The workspace is its own private repository; the clones under repos/ are
-# separate repositories and must not become submodules of it.
-printf '%s\n' "repos/" ".DS_Store" >"$ws/.gitignore"
+# separate repositories and must not become submodules of it. .claude/ holds
+# local permissions whose source of truth is the template, not the history.
+printf '%s\n' "repos/" ".claude/" ".DS_Store" >"$ws/.gitignore"
 git init -q -b main "$ws"
 
 cat <<EOF

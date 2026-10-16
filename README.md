@@ -34,9 +34,10 @@ the name and description, and writes a workspace `.gitconfig` with your git
 identity (and `core.sshCommand` when `--ssh-key` is given). It never edits
 `~/.gitconfig`; instead it prints the `includeIf` block to add there, so every
 repo cloned under `repos/` picks up that identity. The workspace becomes its
-own private git repository (`git init -b main`, with `repos/` and `.DS_Store`
-ignored) so plans and status notes have a history; the output shows how to
-attach a private remote. It refuses to overwrite an existing directory. An
+own private git repository (`git init -b main`, with `repos/`, `.claude/` and
+`.DS_Store` ignored — the template is the source of truth for
+`settings.local.json`) so plans and status notes have a history; the output
+shows how to attach a private remote. It refuses to overwrite an existing directory. An
 existing project does not need the template — install the plugin and keep
 its layout.
 
@@ -87,8 +88,9 @@ denies `git push` and `npm publish`). Never use
 
 Outputs land in the workspace, under `docs/status/runs/`: the JSON result
 in `<topic>.prompt-N.<YYYYMMDD-HHMMSS>.json`, stderr in the matching
-`.err`. They are workspace files and go into the workspace's `docs:` commits,
-so the run log stays with the plans and status notes. A `.lock` directory
+`.err`. They are kept in the workspace repository as the run log: the JSON
+holds the result and metadata, not a transcript, and goes into the
+workspace's `docs:` commits with the plans and status notes. A `.lock` directory
 there keeps two watchers off the same workspace; a locked workspace is
 skipped. If `claude` exits and the prompt is still `running` (the run died)
 or still `pending` (the skill never started — plugin missing, login expired),
@@ -128,3 +130,8 @@ Typical use: `bin/relay-watch --once --dry-run` to see what would run, then
   `blocked` means the run needs a human decision; the question is at the top
   of the status file, and setting the prompt back to `pending` re-queues it.
   Only `pending` is ever picked up.
+- **Updating the plugin.** `/plugin install` copies the plugin into Claude
+  Code's cache; it is a snapshot, not a live link to the clone. After merging
+  a branch that touches `plugin/`, run `claude plugin update relay@relay` (or
+  `/plugin uninstall relay@relay` and `/plugin install relay@relay`) so
+  sessions and the runner use the new version.
