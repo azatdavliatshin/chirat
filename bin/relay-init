@@ -110,4 +110,9 @@ Next steps:
   1. Create a Claude Project with $ws as its root folder.
   2. git clone your repository into $ws/repos/
   3. Write $ws/docs/scope/BASELINE_$(date +%Y-%m-%d).md
+  4. Put relay-watch and relay-prompt on your PATH (once per machine):
+       relay-watch install
+  5. To run prompts headless, add the workspace to ~/.config/relay/workspaces:
+       echo "$ws" >> ~/.config/relay/workspaces
+     then start the watcher with: relay-watch --tmux
 EOF

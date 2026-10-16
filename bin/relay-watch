@@ -2,6 +2,7 @@
 # relay-watch — poll workspaces for pending prompts and run them headless.
 #
 #   relay-watch [--once] [--dry-run] [--interval N] [--tmux] [--version]
+#   relay-watch install [dir]
 #
 # Config: ~/.config/relay/workspaces ($XDG_CONFIG_HOME honoured) — one absolute
 # workspace path per line, `#` comments, leading `~` expanded.
@@ -26,13 +27,25 @@
 #   --tmux        start relay-watch (with the remaining flags) in a detached
 #                 tmux session named `relay`; refuses if it already exists
 #   --version     print the version and exit
+#   install [dir] symlink relay-watch and relay-prompt into dir (default
+#                 ~/.local/bin); refuses to replace anything that is not a
+#                 symlink, hints at PATH if dir is not on it
+#
+# SIGINT/SIGTERM during a run stops claude, puts the prompt back to `pending`
+# (note in the .err file), releases the lock and logs the run with
+# `interrupted` in the exit column.
 #
 # Needs bash, git, claude; jq is optional. macOS first (BSD date and stat),
 # but nothing here is macOS-only.
 
 set -uo pipefail
 
-here=$(cd "$(dirname "$0")" && pwd)
+self=$0
+while [ -L "$self" ]; do # installed as a symlink: find the real script
+  link=$(readlink "$self")
+  case $link in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
+done
+here=$(cd "$(dirname "$self")" && pwd)
 root=$(dirname "$here")
 relay_prompt=$root/plugin/bin/relay-prompt
 config=${XDG_CONFIG_HOME:-$HOME/.config}/relay/workspaces
@@ -54,6 +67,32 @@ version() {
   sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' \
     "$root/plugin/.claude-plugin/plugin.json" 2>/dev/null | head -n 1
 }
+
+install() { # install [dir]: symlink the two commands into dir
+  local dir=${1:-$HOME/.local/bin} src name target
+  dir=${dir/#\~/$HOME}
+  mkdir -p "$dir" || die "cannot create $dir"
+  for src in "$here/relay-watch" "$relay_prompt"; do
+    name=${src##*/}
+    target=$dir/$name
+    if [ -e "$target" ] && [ ! -L "$target" ]; then
+      die "$target exists and is not a symlink, not overwriting"
+    fi
+    ln -sf "$src" "$target" || die "cannot link $target"
+    echo "$target -> $src"
+  done
+  case ":$PATH:" in
+    *":${dir%/}:"*) ;;
+    *) echo "relay-watch: $dir is not on PATH; add: export PATH=\"$dir:\$PATH\"" ;;
+  esac
+}
+
+if [ "${1:-}" = install ]; then
+  [ $# -le 2 ] || usage
+  [ -x "$relay_prompt" ] || die "relay-prompt not found next to this script: $relay_prompt"
+  install "${2:-}"
+  exit 0
+fi
 
 once=0 dry_run=0 interval=60 use_tmux=0
 pass_through=()
@@ -129,9 +168,26 @@ fail_if_unfinished() { # fail_if_unfinished <file> <err file> <note>
   echo "relay-watch $(now_iso): $3 with the prompt still '$status'; set to failed" >>"$2"
 }
 
+# Stopping the watcher is not the prompt's fault: an unfinished prompt goes
+# back to `pending` so the next watcher start retries it.
+current_ws="" current_model="" current_started="" child=""
 interrupted() {
+  local status
+  if [ -n "$child" ]; then
+    pkill -TERM -P "$child" 2>/dev/null
+    kill -TERM "$child" 2>/dev/null
+    wait "$child" 2>/dev/null
+  fi
   if [ -n "$current_file" ]; then
-    fail_if_unfinished "$current_file" "$current_err" "relay-watch was interrupted"
+    status=$("$relay_prompt" get "$current_file" status 2>/dev/null) || status=""
+    case $status in
+      running | pending)
+        "$relay_prompt" set "$current_file" status pending
+        echo "relay-watch $(now_iso): relay-watch was interrupted with the prompt still '$status'; set to pending" >>"$current_err"
+        ;;
+    esac
+    log_line "$current_ws" "${current_file#"$current_ws"/}" "$current_model" interrupted \
+      "$(( $(date +%s) - current_started ))" >/dev/null
   fi
   release_lock
   exit 130
@@ -167,14 +223,18 @@ run_one() { # run_one <ws> <prompt file>
     return
   fi
 
-  current_file=$file current_err=$err
+  current_file=$file current_err=$err current_ws=$ws current_model=$model current_started=$started
+  # Background + wait, so a signal reaches the trap while claude is running.
   (
     cd "$ws" || exit 127
     claude -p "/relay:next $rel" --model "$model" \
       --permission-mode acceptEdits --permission-prompts none \
       --output-format json
-  ) </dev/null >"$out" 2>>"$err"
+  ) </dev/null >"$out" 2>>"$err" &
+  child=$!
+  wait "$child"
   exit_code=$?
+  child=""
 
   fail_if_unfinished "$file" "$err" "claude exited $exit_code"
   current_file="" current_err=""
@@ -201,5 +261,8 @@ fi
 
 while :; do
   pass
-  sleep "$interval"
+  sleep "$interval" &
+  child=$!
+  wait "$child"
+  child=""
 done

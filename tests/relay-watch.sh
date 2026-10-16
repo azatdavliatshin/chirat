@@ -43,7 +43,8 @@ first() { # first <glob...>: print the first existing match, or nothing
 # Records argv (one per line) and $PWD, prints a JSON result, and acts on the
 # prompt named after `-p "/relay:next <file>"` like the real /relay:next:
 # claims it (`running`) and marks it `done`. FAKE_MODE=noflip stops after the
-# claim; FAKE_MODE=noclaim touches nothing. Exits with $FAKE_EXIT (default 0).
+# claim; FAKE_MODE=noclaim touches nothing; FAKE_MODE=sleep claims and then
+# sleeps 30 seconds. Exits with $FAKE_EXIT (default 0).
 
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/claude" <<'EOF'
@@ -62,7 +63,8 @@ echo "fake claude stderr" >&2
 mode=${FAKE_MODE:-done}
 if [ -n "$file" ] && [ "$mode" != noclaim ]; then
   "$RP" set "$file" status running
-  [ "$mode" = noflip ] || "$RP" set "$file" status done
+  [ "$mode" = sleep ] && sleep 30
+  [ "$mode" = noflip ] || [ "$mode" = sleep ] || "$RP" set "$file" status done
 fi
 exit "${FAKE_EXIT:-0}"
 EOF
@@ -197,6 +199,49 @@ eq "no model key → sonnet" sonnet "$(sed -n '/^--model$/{n;p;}' "$FAKE_ARGV")"
 eq "--interval rejects non-numbers" 1 $?
 "$watch" --bogus >/dev/null 2>&1
 eq "unknown flag → usage (64)" 64 $?
+
+# --- SIGTERM during a run → pending, logged, lock released ----------------
+
+prompt demo.prompt-9.md sonnet pending
+lines_before=$(wc -l <"$log" | tr -d ' ')
+FAKE_MODE="sleep" "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+for _ in $(seq 1 100); do
+  [ "$("$rp" get "$ws/docs/plans/demo.prompt-9.md" status)" = running ] && break
+  sleep 0.1
+done
+eq "sleeping run has claimed the prompt" running "$("$rp" get "$ws/docs/plans/demo.prompt-9.md" status)"
+kill -TERM "$wpid"
+wait "$wpid"
+eq "SIGTERM: watcher exits 130" 130 $?
+eq "SIGTERM: prompt back to pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-9.md" status)"
+err9=$(first "$ws"/docs/status/runs/demo.prompt-9.*.err)
+has "SIGTERM: err notes the interruption" "$err9" "relay-watch was interrupted with the prompt still 'running'; set to pending"
+eq "SIGTERM: one more log line" $((lines_before + 1)) "$(wc -l <"$log" | tr -d ' ')"
+eq "SIGTERM: log exit column is interrupted" interrupted "$(tail -n 1 "$log" | cut -f5)"
+eq "SIGTERM: log names the prompt" docs/plans/demo.prompt-9.md "$(tail -n 1 "$log" | cut -f3)"
+absent "SIGTERM: lock released" "$ws/docs/status/runs/.lock"
+rm -f "$ws/docs/plans/demo.prompt-9.md"
+
+# --- install ----------------------------------------------------------------
+
+inst=$tmp/inst/bin
+"$watch" install "$inst" >"$tmp/out" 2>"$tmp/stderr"
+eq "install exits 0" 0 $?
+eq "install links relay-watch" "$watch" "$(readlink "$inst/relay-watch")"
+eq "install links relay-prompt" "$rp" "$(readlink "$inst/relay-prompt")"
+has "install hints at PATH when needed" "$tmp/out" "is not on PATH"
+"$watch" install "$inst" >"$tmp/out" 2>&1
+eq "install is repeatable" 0 $?
+eq "installed symlink finds the plugin" "$("$watch" --version)" "$("$inst/relay-watch" --version)"
+PATH=$inst:$PATH "$watch" install "$inst" >"$tmp/out" 2>&1
+if grep -qF "not on PATH" "$tmp/out"; then ko "no PATH hint when dir is on PATH"; else ok "no PATH hint when dir is on PATH"; fi
+rm "$inst/relay-prompt"
+echo "mine" >"$inst/relay-prompt"
+"$watch" install "$inst" >"$tmp/out" 2>"$tmp/stderr"
+eq "install refuses to overwrite a regular file" 1 $?
+has "install says why" "$tmp/stderr" "not a symlink"
+eq "install left the regular file alone" mine "$(cat "$inst/relay-prompt")"
 
 # --- summary -------------------------------------------------------------
 

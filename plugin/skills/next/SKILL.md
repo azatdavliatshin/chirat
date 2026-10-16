@@ -80,8 +80,9 @@ plugin is enabled): `relay-prompt get <file> <key>`,
      top of the status file.
 
 4. **Write the status file** `docs/status/YYYY-MM-DD-<topic>.md` (today's
-   date). If it already exists, append a new `## Run HH:MM` section instead
-   of overwriting. When the run ends `blocked` or `failed`, the first line
+   date). If that file already exists, do not rewrite it: append
+   `## Run HH:MM` with the same sections below, and leave the earlier runs
+   as they are. When the run ends `blocked` or `failed`, the first line
    after the title is the question or the reason. Sections, in this order:
    - `Done` — what was completed
    - `Not done` — what was skipped or remains, including "stopped at

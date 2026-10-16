@@ -17,9 +17,9 @@ the current directory; if you are inside `repos/<x>/`, it is two levels up).
 Write `docs/status/YYYY-MM-DD-<topic>.md` there, with today's date.
 
 `<topic>`: `$ARGUMENTS` if given; otherwise the current branch of the repo
-you worked in, with `/` replaced by `-`; otherwise `session`. If the file
-already exists, append a new `## Handover HH:MM` section instead of
-overwriting.
+you worked in, with `/` replaced by `-`; otherwise `session`. If that file
+already exists, do not rewrite it: append `## Handover HH:MM` with the same
+sections below, and leave the earlier content as it is.
 
 ## What
 

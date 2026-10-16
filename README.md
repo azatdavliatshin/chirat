@@ -119,6 +119,19 @@ Flags:
 Typical use: `bin/relay-watch --once --dry-run` to see what would run, then
 `bin/relay-watch --tmux` and `tmux attach -t relay` to look at it.
 
+`--tmux` is the normal way to run the watcher. A foreground watcher is one
+Ctrl-C (or closed terminal) away from an interrupted run; in tmux it keeps
+going when you close the terminal, and you attach only to look. If a watcher
+is stopped anyway (SIGINT or SIGTERM), it stops `claude`, puts the prompt it
+was running back to `pending` with a note in the `.err` file, releases the
+lock and logs the run with `interrupted` in the exit column; the next
+watcher start picks the prompt up again.
+
+`relay-watch install [dir]` symlinks `relay-watch` and `plugin/bin/relay-prompt`
+into `dir` (default `~/.local/bin`) so both are on your `PATH`, and prints a
+`PATH` hint if `dir` is not on it. It replaces existing symlinks but refuses
+to overwrite anything that is not one.
+
 ### One-time setup notes
 
 - **Git identity per workspace.** `relay-init` writes `<workspace>/.gitconfig`
