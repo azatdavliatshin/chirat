@@ -16,7 +16,8 @@
 #
 # with stdout in <ws>/docs/status/runs/<stem>.<YYYYMMDD-HHMMSS>.json and stderr
 # appended to the matching .err, and marks the prompt `failed` if the run left
-# it `running`. One line per run goes to ~/.local/state/relay/watch.log
+# it `running`. If <ws> is a git repository, the run log is then committed as
+# `docs: run log <stem>` (only docs/status/runs/; never pushed). One line per run goes to ~/.local/state/relay/watch.log
 # ($XDG_STATE_HOME honoured) and to stdout:
 #
 #   <iso time> <tab> <ws> <tab> <file> <tab> <model> <tab> <exit> <tab> <seconds>
@@ -194,6 +195,15 @@ interrupted() {
 }
 trap interrupted INT TERM
 
+# The run log is complete only once claude has exited, so the skill leaves
+# docs/status/runs/ out of its own commit and it is committed here. Failure
+# (not a git workspace, nothing to commit) is ignored.
+commit_run_log() { # commit_run_log <ws> <stem>
+  git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  git -C "$1" add -- docs/status/runs >/dev/null 2>&1 || return 0
+  git -C "$1" commit -q -m "docs: run log $2" -- docs/status/runs >/dev/null 2>&1 || true
+}
+
 run_one() { # run_one <ws> <prompt file>
   local ws=$1 file=$2 rel stem model runs stamp out err started exit_code
   rel=${file#"$ws"/}
@@ -238,6 +248,7 @@ run_one() { # run_one <ws> <prompt file>
 
   fail_if_unfinished "$file" "$err" "claude exited $exit_code"
   current_file="" current_err=""
+  commit_run_log "$ws" "$stem"
   release_lock
   log_line "$ws" "$rel" "$model" "$exit_code" "$(( $(date +%s) - started ))"
 }

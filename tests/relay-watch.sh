@@ -118,6 +118,12 @@ eq "dry-run logs one line" 1 "$(wc -l <"$log" | tr -d ' ')"
 
 # --- --once: happy path ---------------------------------------------------
 
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+git -C "$ws" init -q
+git -C "$ws" add docs/plans
+git -C "$ws" commit -q -m "docs: plans"
+rm -rf "$ws/docs/status/runs"
+
 out=$("$watch" --once 2>"$tmp/stderr")
 eq "once exits 0" 0 $?
 json=$(first "$ws"/docs/status/runs/demo.prompt-1.*.json)
@@ -135,6 +141,10 @@ eq "runs from the workspace root" "PWD=$ws" "$(grep '^PWD=' "$FAKE_ARGV")"
 eq "prompt-1 is done afterwards" "done" "$("$rp" get "$ws/docs/plans/demo.prompt-1.md" status)"
 eq "prompt-2 is still pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
 absent "lock released" "$ws/docs/status/runs/.lock"
+eq "run log commit message" "docs: run log demo.prompt-1" "$(git -C "$ws" log -1 --format=%s)"
+eq "run log commit holds only runs/ files" "docs/status/runs/${err##*/}
+docs/status/runs/${json##*/}" "$(git -C "$ws" show --name-only --format= HEAD | sort)"
+eq "run log: no pending runs/ changes" "" "$(git -C "$ws" status --porcelain -- docs/status/runs)"
 eq "one log line" 1 "$(wc -l <"$log" | tr -d ' ')"
 line=$(cat "$log")
 eq "log line echoed to stdout" "$line" "$out"

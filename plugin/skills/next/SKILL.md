@@ -3,7 +3,7 @@ name: next
 description: Run the next pending prompt file from docs/plans/ (or the one given), in the repo and branch its front matter names, then write a status file to docs/status/ and mark the prompt done, blocked or failed. Use when asked to take the next prompt, run a relay prompt, or process docs/plans.
 argument-hint: "[path/to/topic.prompt-N.md]"
 disable-model-invocation: true
-allowed-tools: Bash(relay-prompt *) Bash(git status *) Bash(git log *) Bash(git branch *) Bash(git rev-parse *) Bash(git worktree list *)
+allowed-tools: Bash(relay-prompt *) Bash(git -C *)
 ---
 
 # /relay:next
@@ -55,21 +55,29 @@ plugin is enabled): `relay-prompt get <file> <key>`,
 
 2. **Get to the right tree.** Let `R = repos/<repo>`.
    - `worktree` set: let `W = repos/<repo>-<worktree>`. If `W` does not
-     exist, from `R` run `git worktree add ../<repo>-<worktree> -b <branch>`
-     (if the branch already exists, `git worktree add ../<repo>-<worktree>
-     <branch>`). Work in `W`.
-   - `worktree` unset: work in `R`. If `git status --porcelain` is not empty
-     and the current branch is not `<branch>`, do not switch — fail with
-     "uncommitted changes on <current branch>". Otherwise
-     `git checkout <branch>`, or `git checkout -b <branch> main` if it does
-     not exist.
-   Confirm with `git rev-parse --abbrev-ref HEAD`.
+     exist, create it from `main`: if `git -C R rev-parse --verify main`
+     fails, fail with "branch main not found in <R>"; otherwise run
+     `git -C R worktree add ../<repo>-<worktree> -b <branch> main`
+     (if the branch already exists, `git -C R worktree add
+     ../<repo>-<worktree> <branch>`). Work in `W`.
+   - `worktree` unset: work in `R`. If `git -C R status --porcelain` is not
+     empty and the current branch is not `<branch>`, do not switch — fail
+     with "uncommitted changes on <current branch>". Otherwise
+     `git -C R checkout <branch>`, or `git -C R checkout -b <branch> main`
+     if it does not exist.
+   Confirm with `git -C <tree> rev-parse --abbrev-ref HEAD`.
 
 3. **Do the work.** Execute the prompt body exactly, in that tree. Honour its
    own checkpoints and stop where it says to stop. Rules that always apply:
+   - Never `cd`. Stay in the workspace root for the whole run; run tools with
+     paths from the root or with `-C`/`--prefix` flags (`git -C <tree> …`,
+     `bash repos/<repo>/tests/x.sh`). Under headless runs a `cd <dir> && …`
+     command matches no allow rule and is denied. Execute the prompt body the
+     same way; if something truly needs a working directory, say so in the
+     status file instead of guessing.
    - Commit protocol: commit at each checkpoint the prompt defines, on the
      prompt's branch; do not push; do not touch `main`. Before each commit
-     run `git status` and make sure only intended files are staged. Never
+     run `git -C <tree> status` and make sure only intended files are staged. Never
      tag or publish. If the prompt defines no checkpoints, do not commit.
    - Never put planning or status files inside `repos/`; they belong under
      the workspace `docs/`.
@@ -88,9 +96,9 @@ plugin is enabled): `relay-prompt get <file> <key>`,
    - `Not done` — what was skipped or remains, including "stopped at
      checkpoint X, waiting for …"
    - `Open questions` — decisions needed from the human
-   - `Branch` — branch name and `git log -1 --format=%h` (or "no commits")
+   - `Branch` — branch name and `git -C <tree> log -1 --format=%h` (or "no commits")
    - `Files touched` — paths relative to the repo
-   - `git status --short` — verbatim, in a fenced block
+   - `git -C <tree> status --short` — verbatim, in a fenced block
 
 5. **Close it.** `relay-prompt set <file> status <final>` where `<final>`
    is `done` when the body was carried out (including a clean stop at a
@@ -98,8 +106,10 @@ plugin is enabled): `relay-prompt get <file> <key>`,
    needed to continue, otherwise `failed`. Write the status file in every
    case. Then, if the workspace root is a git repository (`git -C <ws>
    rev-parse --git-dir` succeeds), record the run there:
-   `git -C <ws> add docs && git -C <ws> commit -m "docs: <topic> <final>"`.
-   Stage only `docs/`; ignore a failure of this commit (for example nothing
+   `git -C <ws> add docs ':!docs/status/runs'` and then
+   `git -C <ws> commit -m "docs: <topic> <final>"`.
+   Stage only `docs/`, never `docs/status/runs/` (relay-watch commits the run
+   log itself once this process has exited); ignore a failure of this commit (for example nothing
    to commit); never push the workspace.
 
 Finish with a three-line summary: prompt file, final status, status file path.
