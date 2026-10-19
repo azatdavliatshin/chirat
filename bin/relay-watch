@@ -35,6 +35,11 @@
 #                 ~/.local/bin); refuses to replace anything that is not a
 #                 symlink, hints at PATH if dir is not on it
 #
+# A pending prompt with an unmet `after: <branch>` is skipped by `next`. When a
+# pass finds nothing to run, each such prompt is logged as
+#   <iso time> <tab> waiting <tab> <ws> <tab> <file> <tab> after=<branch>
+# at most once per 10 minutes (state in <log dir>/waiting.seen).
+#
 # SIGINT/SIGTERM during a run stops claude, puts the prompt back to `pending`
 # (note in the .err file), releases the lock and logs the run with
 # `interrupted` in the exit column.
@@ -134,7 +139,8 @@ if [ "$use_tmux" = 1 ]; then
   exit 0
 fi
 
-mkdir -p "$(dirname "$log")"
+state_dir=$(dirname "$log")
+mkdir -p "$state_dir"
 
 now_iso() { date +%Y-%m-%dT%H:%M:%S%z; }
 now_stamp() { date +%Y%m%d-%H%M%S; }
@@ -261,6 +267,23 @@ run_one() { # run_one <ws> <prompt file>
   log_line "$ws" "$rel" "$model" "$exit_code" "$(( $(date +%s) - started ))"
 }
 
+# Log each waiting prompt at most once per 10 minutes; the last-logged time
+# lives in a state file so a restart does not repeat the line.
+note_waiting() { # note_waiting <ws>
+  local ws=$1 seen=$state_dir/waiting.seen f after rel now last
+  now=$(date +%s)
+  while IFS=$'\t' read -r f after _; do
+    [ -n "$f" ] || continue
+    rel=${f#"$ws"/}
+    last=$(awk -F'\t' -v k="$ws	$rel" '$2 "\t" $3 == k { print $1 }' "$seen" 2>/dev/null | tail -n 1)
+    if [ -n "$last" ] && [ $((now - last)) -lt 600 ]; then continue; fi
+    printf '%s\t%s\t%s\n' "$now" "$ws" "$rel" >>"$seen"
+    line=$(printf '%s\twaiting\t%s\t%s\t%s' "$(now_iso)" "$ws" "$rel" "$after")
+    printf '%s\n' "$line" >>"$log"
+    printf '%s\n' "$line"
+  done < <("$relay_prompt" waiting "$ws" 2>/dev/null)
+}
+
 pass() {
   local ws file
   while IFS= read -r ws; do
@@ -268,7 +291,7 @@ pass() {
       echo "relay-watch: not a workspace (no docs/plans): $ws" >&2
       continue
     fi
-    file=$("$relay_prompt" next "$ws" 2>/dev/null) || continue
+    file=$("$relay_prompt" next "$ws" 2>/dev/null) || { note_waiting "$ws"; continue; }
     run_one "$ws" "$file"
   done < <(workspaces)
 }

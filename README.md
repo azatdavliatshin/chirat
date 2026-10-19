@@ -142,6 +142,22 @@ into `dir` (default `~/.local/bin`) so both are on your `PATH`, and prints a
 `PATH` hint if `dir` is not on it. It replaces existing symlinks but refuses
 to overwrite anything that is not one.
 
+### Prompt front matter
+
+| Key | Values | Meaning |
+|---|---|---|
+| `model` | `sonnet` \| `opus` \| `fable` | model the runner passes to `claude` (`sonnet` if absent) |
+| `status` | `pending` \| `running` \| `blocked` \| `done` \| `failed` | queue state; only `pending` is picked up |
+| `repo` | folder under `repos/` | required |
+| `branch` | branch name | required |
+| `worktree` | suffix | optional; work in `repos/<repo>-<suffix>` |
+| `after` | branch name | optional; the prompt waits until that branch is merged into `main` of `repos/<repo>`. A branch that no longer exists counts as merged if a done prompt used it as `branch:` or `main` has a merge commit naming it; a branch that never existed is a planning error: the prompt keeps waiting and `relay-prompt` warns. `relay-prompt waiting <ws>` lists what is held back and why; `relay-watch` logs a `waiting` line per held prompt at most every 10 minutes. |
+
+Planning-side rule: a prompt that depends on another prompt's branch declares
+`after:` and is enqueued as `pending`; nothing is parked as `blocked` for that
+reason any more. `/relay:next <file>` with an unsatisfied `after:` refuses and
+ends `blocked`, so an explicit path cannot bypass the dependency.
+
 ### One-time setup notes
 
 - **Git identity per workspace.** `relay-init` writes `<workspace>/.gitconfig`

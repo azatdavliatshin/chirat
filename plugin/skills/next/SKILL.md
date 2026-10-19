@@ -30,6 +30,7 @@ Front matter keys:
 | `repo` | folder name under `repos/` | required |
 | `branch` | branch name | required |
 | `worktree` | suffix, optional | work in `repos/<repo>-<worktree>` instead |
+| `after` | branch name, optional | eligible only once that branch is merged into `main` of `repos/<repo>` (a deleted branch counts as merged) |
 
 Statuses: `pending` waits in the queue; `running` is claimed; `done` means
 the body was carried out; `blocked` means a human decision is needed before
@@ -47,6 +48,10 @@ plugin is enabled): `relay-prompt get <file> <key>`,
    argument: run `relay-prompt next .`; if it exits non-zero, say "no pending
    prompt" and stop without writing anything. Let `<topic>` be the file name
    without `.md` (e.g. `relay.prompt-3`). Read `repo`, `branch`, `worktree`.
+   If the prompt has `after:`, run `relay-prompt check . <file>`; when it
+   exits non-zero the dependency is unmet even for an explicit path: write the
+   status file (reason first line) and go to step 5 with `blocked`, without
+   claiming it or touching any tree.
    If `repo` or `branch` is empty or `repos/<repo>` is not a git repository,
    go to step 5 with `failed`.
 
