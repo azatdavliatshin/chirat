@@ -116,10 +116,11 @@ plugin is enabled): `relay-prompt get <file> <key>`,
    say so in the status file. A worktree run leaves its worktree as is.
    Then, if the workspace root is a git repository (`git -C <ws>
    rev-parse --git-dir` succeeds), record the run there:
-   `git -C <ws> add docs ':!docs/status/runs'` and then
+   `git -C <ws> add docs ':!docs/status/runs' ':!docs/status/LATEST'` and then
    `git -C <ws> commit -m "docs: <topic> <final>"`.
-   Stage only `docs/`, never `docs/status/runs/` (relay-watch commits the run
-   log itself once this process has exited); ignore a failure of this commit (for example nothing
+   Stage only `docs/`, never `docs/status/runs/` or `docs/status/LATEST`
+   (relay-watch writes the latter and commits both once this process has
+   exited); ignore a failure of this commit (for example nothing
    to commit); never push the workspace.
 
 Finish with a three-line summary: prompt file, final status, status file path.

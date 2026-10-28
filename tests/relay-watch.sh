@@ -120,6 +120,7 @@ eq "dry-run leaves the prompt pending" pending "$("$rp" get "$ws/docs/plans/demo
 eq "dry-run runs nothing" "" "$(first "$ws"/docs/status/runs/*)"
 exists "dry-run creates runs/" -d "$ws/docs/status/runs"
 has "dry-run warns about a non-workspace path" "$tmp/stderr" "not a workspace (no docs/plans): $tmp/not-a-workspace"
+absent "dry-run does not write LATEST" "$ws/docs/status/LATEST"
 eq "dry-run logs one line" 1 "$(wc -l <"$log" | tr -d ' ')"
 eq "log: mode column shows auto" auto "$(cut -f7 "$log")"
 : >"$log"
@@ -168,8 +169,19 @@ eq "prompt-1 is done afterwards" "done" "$("$rp" get "$ws/docs/plans/demo.prompt
 eq "prompt-2 is still pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
 absent "lock released" "$ws/docs/status/runs/.lock"
 eq "run log commit message" "docs: run log demo.prompt-1" "$(git -C "$ws" log -1 --format=%s)"
-eq "run log commit holds only runs/ files" "docs/status/runs/${err##*/}
+eq "run log commit holds runs/ files and LATEST" "docs/status/LATEST
+docs/status/runs/${err##*/}
 docs/status/runs/${json##*/}" "$(git -C "$ws" show --name-only --format= HEAD | sort)"
+eq "LATEST: no pending changes" "" "$(git -C "$ws" status --porcelain -- docs/status/LATEST)"
+eq "LATEST: one line after the first run" 1 "$(wc -l <"$ws/docs/status/LATEST" | tr -d ' ')"
+IFS=$'\t' read -r a_ts a_stem a_status a_branch a_commit a_exit a_secs <"$ws/docs/status/LATEST"
+case $a_ts in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*) ok "LATEST: iso timestamp" ;; *) ko "LATEST: iso timestamp" "$a_ts" ;; esac
+eq "LATEST: stem" demo.prompt-1 "$a_stem"
+eq "LATEST: status" "done" "$a_status"
+eq "LATEST: branch" feat/x "$a_branch"
+eq "LATEST: no repo → commit -" - "$a_commit"
+eq "LATEST: exit" 0 "$a_exit"
+case $a_secs in '' | *[!0-9]*) ko "LATEST: seconds" "$a_secs" ;; *) ok "LATEST: seconds" ;; esac
 eq "run log: no pending runs/ changes" "" "$(git -C "$ws" status --porcelain -- docs/status/runs)"
 eq "one log line" 1 "$(wc -l <"$log" | tr -d ' ')"
 line=$(cat "$log")
@@ -195,6 +207,9 @@ eq "prompt-2 set to failed" failed "$("$rp" get "$ws/docs/plans/demo.prompt-2.md
 err2=$(first "$ws"/docs/status/runs/demo.prompt-2.*.err)
 has "err notes the forced failure" "$err2" "claude exited 3 with the prompt still 'running'; set to failed"
 has "err keeps claude's own stderr first" "$err2" "fake claude stderr"
+eq "LATEST: second run appends a line" 2 "$(wc -l <"$ws/docs/status/LATEST" | tr -d ' ')"
+eq "LATEST: forced failure recorded" "demo.prompt-2	failed	feat/x	-	3" "$(tail -n 1 "$ws/docs/status/LATEST" | cut -f2-6)"
+eq "LATEST: first line untouched" demo.prompt-1 "$(head -n 1 "$ws/docs/status/LATEST" | cut -f2)"
 eq "log: exit code 3" 3 "$(tail -n 1 "$log" | cut -f5)"
 eq "log: model sonnet by default" sonnet "$(tail -n 1 "$log" | cut -f4)"
 absent "lock released after failure" "$ws/docs/status/runs/.lock"
@@ -259,6 +274,8 @@ eq "SIGTERM: prompt back to pending" pending "$("$rp" get "$ws/docs/plans/demo.p
 err9=$(first "$ws"/docs/status/runs/demo.prompt-9.*.err)
 has "SIGTERM: err notes the interruption" "$err9" "relay-watch was interrupted with the prompt still 'running'; set to pending"
 eq "SIGTERM: one more log line" $((lines_before + 1)) "$(wc -l <"$log" | tr -d ' ')"
+eq "SIGTERM: LATEST records interrupted" "demo.prompt-9	pending	feat/x	-	interrupted" "$(tail -n 1 "$ws/docs/status/LATEST" | cut -f2-6)"
+eq "SIGTERM: LATEST committed" "" "$(git -C "$ws" status --porcelain -- docs/status/LATEST)"
 eq "SIGTERM: log exit column is interrupted" interrupted "$(tail -n 1 "$log" | cut -f5)"
 eq "SIGTERM: log names the prompt" docs/plans/demo.prompt-9.md "$(tail -n 1 "$log" | cut -f3)"
 absent "SIGTERM: lock released" "$ws/docs/status/runs/.lock"
@@ -286,6 +303,15 @@ eq "waiting prompt stays pending, claude not run" pending "$("$rp" get "$ws/docs
 git -C "$wr" merge -q --no-edit dep
 "$watch" --once >/dev/null 2>&1
 eq "merged dependency: prompt runs" "done" "$("$rp" get "$ws/docs/plans/demo.prompt-5.md" status)"
+
+lines=$(wc -l <"$ws/docs/status/LATEST" | tr -d ' ')
+git -C "$wr" branch feat/x
+want=$(git -C "$wr" rev-parse --short feat/x)
+prompt demo.prompt-6.md sonnet pending
+"$watch" --once >/dev/null 2>&1
+eq "LATEST: commit is the short hash of the branch" "$want" "$(tail -n 1 "$ws/docs/status/LATEST" | cut -f5)"
+eq "LATEST: one line per run, none for waiting/misnamed" $((lines + 1)) "$(wc -l <"$ws/docs/status/LATEST" | tr -d ' ')"
+rm -f "$ws/docs/plans/demo.prompt-6.md"
 
 # --- misnamed pending file, logged once ----------------------------------------
 

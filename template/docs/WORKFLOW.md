@@ -87,3 +87,16 @@ failed runs.
 - One concern per session; side issues → one line in `docs/PARKED.md`.
 - Before ending: `git status` in each clone, update the status file, make
   sure nothing from the workspace leaked into a repo.
+
+## 6. Hearing back from the runner
+
+Default: **no timer**. For each finished run `relay-watch` appends one line
+to `docs/status/LATEST` (tab-separated: time, prompt stem, status, branch,
+commit, exit code, seconds). The planning chat reads that file — the last
+line, or the lines newer than the last one it reported — in exactly two
+cases: the human says "check", or it has just enqueued a prompt and wants to
+confirm the watcher picked it up (`running` shows in the prompt's front
+matter, not in LATEST — say so). Otherwise it does not look.
+
+Opt-in timer: `cowork_poll: off` (default) | `cowork_poll_active` /
+`cowork_poll_idle` (minutes) in this file's header or `CLAUDE.md`.

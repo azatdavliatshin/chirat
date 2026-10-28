@@ -17,7 +17,8 @@
 # with stdout in <ws>/docs/status/runs/<stem>.<YYYYMMDD-HHMMSS>.json and stderr
 # appended to the matching .err, and marks the prompt `failed` if the run left
 # it `running`. If <ws> is a git repository, the run log is then committed as
-# `docs: run log <stem>` (only docs/status/runs/; never pushed). One line per run goes to ~/.local/state/relay/watch.log
+# `docs: run log <stem>` (docs/status/runs/ and docs/status/LATEST; never
+# pushed). One line per run goes to ~/.local/state/relay/watch.log
 # ($XDG_STATE_HOME honoured) and to stdout:
 #
 #   <iso time> <tab> <ws> <tab> <file> <tab> <model> <tab> <exit> <tab> <seconds>
@@ -48,6 +49,18 @@
 # SIGINT/SIGTERM during a run stops claude, puts the prompt back to `pending`
 # (note in the .err file), releases the lock and logs the run with
 # `interrupted` in the exit column.
+#
+# Each finished run also appends one line to <ws>/docs/status/LATEST, the file
+# the planning side reads instead of polling (not written by --dry-run, nor
+# for waiting / misnamed lines):
+#
+#   <iso time> <tab> <stem> <tab> <status> <tab> <branch> <tab> <commit>
+#   <tab> <exit> <tab> <seconds>
+#
+# status is the prompt's front-matter status after the run (pending after an
+# interrupt); branch is its `branch:` key or -; commit is the short hash of
+# that branch in repos/<repo>, or - if there is none; exit is claude's exit
+# code or `interrupted`.
 #
 # After each run a desktop notification names the prompt and its final
 # status (done / blocked / failed), so the human can read the status file and
@@ -197,7 +210,7 @@ fail_if_unfinished() { # fail_if_unfinished <file> <err file> <note>
 # back to `pending` so the next watcher start retries it.
 current_ws="" current_model="" current_started="" child=""
 interrupted() {
-  local status
+  local status secs
   if [ -n "$child" ]; then
     pkill -TERM -P "$child" 2>/dev/null
     kill -TERM "$child" 2>/dev/null
@@ -211,8 +224,10 @@ interrupted() {
         echo "relay-watch $(now_iso): relay-watch was interrupted with the prompt still '$status'; set to pending" >>"$current_err"
         ;;
     esac
-    log_line "$current_ws" "${current_file#"$current_ws"/}" "$current_model" interrupted \
-      "$(( $(date +%s) - current_started ))" >/dev/null
+    secs=$(( $(date +%s) - current_started ))
+    write_latest "$current_ws" "$current_file" "$(basename "$current_file" .md)" interrupted "$secs"
+    commit_run_log "$current_ws" "$(basename "$current_file" .md)"
+    log_line "$current_ws" "${current_file#"$current_ws"/}" "$current_model" interrupted "$secs" >/dev/null
   fi
   release_lock
   exit 130
@@ -220,12 +235,29 @@ interrupted() {
 trap interrupted INT TERM
 
 # The run log is complete only once claude has exited, so the skill leaves
-# docs/status/runs/ out of its own commit and it is committed here. Failure
+# docs/status/runs/ and docs/status/LATEST out of its own commit; both are
+# committed here. Failure
 # (not a git workspace, nothing to commit) is ignored.
 commit_run_log() { # commit_run_log <ws> <stem>
   git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
-  git -C "$1" add -- docs/status/runs >/dev/null 2>&1 || return 0
-  git -C "$1" commit -q -m "docs: run log $2" -- docs/status/runs >/dev/null 2>&1 || true
+  local paths=(docs/status/runs)
+  [ -e "$1/docs/status/LATEST" ] && paths+=(docs/status/LATEST)
+  git -C "$1" add -- "${paths[@]}" >/dev/null 2>&1 || return 0
+  git -C "$1" commit -q -m "docs: run log $2" -- "${paths[@]}" >/dev/null 2>&1 || true
+}
+
+# One line per run for the planning side; created on first write, never
+# truncated.
+write_latest() { # write_latest <ws> <file> <stem> <exit> <seconds>
+  local ws=$1 file=$2 status branch repo commit=- hash
+  status=$("$relay_prompt" get "$file" status 2>/dev/null) || status=""
+  branch=$("$relay_prompt" get "$file" branch 2>/dev/null) || branch=""
+  repo=$("$relay_prompt" get "$file" repo 2>/dev/null) || repo=""
+  if [ -n "$branch" ] && [ -n "$repo" ]; then
+    hash=$(git -C "$ws/repos/$repo" rev-parse --short --verify -q "refs/heads/$branch" 2>/dev/null) && [ -n "$hash" ] && commit=$hash
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(now_iso)" "$3" "${status:--}" "${branch:--}" "$commit" "$4" "$5" \
+    >>"$ws/docs/status/LATEST"
 }
 
 notify() { # notify <ws> <stem> <status>: desktop notification, best effort
@@ -237,7 +269,7 @@ notify() { # notify <ws> <stem> <status>: desktop notification, best effort
 }
 
 run_one() { # run_one <ws> <prompt file>
-  local ws=$1 file=$2 rel stem model runs stamp out err started exit_code
+  local ws=$1 file=$2 rel stem model runs stamp out err started exit_code secs
   rel=${file#"$ws"/}
   stem=${rel##*/}
   stem=${stem%.md}
@@ -281,9 +313,11 @@ run_one() { # run_one <ws> <prompt file>
   fail_if_unfinished "$file" "$err" "claude exited $exit_code"
   notify "$ws" "$stem" "$("$relay_prompt" get "$file" status 2>/dev/null || echo unknown)"
   current_file="" current_err=""
+  secs=$(( $(date +%s) - started ))
+  write_latest "$ws" "$file" "$stem" "$exit_code" "$secs"
   commit_run_log "$ws" "$stem"
   release_lock
-  log_line "$ws" "$rel" "$model" "$exit_code" "$(( $(date +%s) - started ))"
+  log_line "$ws" "$rel" "$model" "$exit_code" "$secs"
 }
 
 # Log each waiting prompt at most once per 10 minutes; the last-logged time

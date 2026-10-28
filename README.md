@@ -115,6 +115,14 @@ workspace on a timer; a `blocked` notification says a decision is waiting
 at the top of the status file. Set `RELAY_NOTIFY=0` to turn it off; on
 systems without `osascript` nothing is sent.
 
+For the planning side there is one more file: after each finished run the
+watcher appends a line to `docs/status/LATEST` in the workspace
+(tab-separated: time, prompt stem, final status, branch, short commit of that
+branch in `repos/<repo>`, exit code or `interrupted`, seconds) and commits it
+with the run log. A planning chat does not need a timer: it reads that file
+when you say "check", or right after it enqueued a prompt. `--dry-run` writes
+nothing, and `waiting` / `misnamed` lines stay in the watch log only.
+
 One line per run goes to `~/.local/state/relay/watch.log` (or under
 `$XDG_STATE_HOME`) and to stdout, tab-separated: time, workspace, prompt
 file, model, `claude`'s exit code, seconds.

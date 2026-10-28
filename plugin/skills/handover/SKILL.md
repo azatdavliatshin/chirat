@@ -2,7 +2,7 @@
 name: handover
 description: Write a docs/status/ handover file for the current session — done, not done, open questions, branch and last commit, files touched, git status. Use at the end of an interactive session, or when asked to hand over or write a status note.
 argument-hint: "[topic]"
-allowed-tools: Bash(git status *) Bash(git log *) Bash(git branch *) Bash(git rev-parse *) Bash(git diff *)
+allowed-tools: Bash(tail *) Bash(git status *) Bash(git log *) Bash(git branch *) Bash(git rev-parse *) Bash(git diff *)
 ---
 
 # /relay:handover
@@ -28,6 +28,8 @@ Base it on what actually happened in this conversation. Sections, in order:
 - `Done` — what was completed this session
 - `Not done` — what was started and left, or planned and skipped
 - `Open questions` — decisions needed from the human
+- `State` — the last line of `docs/status/LATEST` quoted verbatim (omit if
+  the file does not exist), so a new planning chat starts from it
 - `Branch` — for each repo under `repos/` touched this session: branch name
   and `git log -1 --format=%h` (or "no commits")
 - `Files touched` — paths, repo-relative, grouped by repo; workspace files
