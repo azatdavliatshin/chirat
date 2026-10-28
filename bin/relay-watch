@@ -39,6 +39,11 @@
 # (note in the .err file), releases the lock and logs the run with
 # `interrupted` in the exit column.
 #
+# After each run a desktop notification names the prompt and its final
+# status (done / blocked / failed), so the human can read the status file and
+# ping the planning session instead of that session polling. macOS only
+# (osascript); silently skipped elsewhere or with RELAY_NOTIFY=0.
+#
 # Needs bash, git, claude; jq is optional. macOS first (BSD date and stat),
 # but nothing here is macOS-only.
 
@@ -212,6 +217,14 @@ commit_run_log() { # commit_run_log <ws> <stem>
   git -C "$1" commit -q -m "docs: run log $2" -- docs/status/runs >/dev/null 2>&1 || true
 }
 
+notify() { # notify <ws> <stem> <status>: desktop notification, best effort
+  [ "${RELAY_NOTIFY:-1}" != 0 ] || return 0
+  command -v osascript >/dev/null 2>&1 || return 0
+  local title="relay: $3" text="$2 — ${1##*/}/docs/status"
+  case $3 in blocked) text="$2 needs a decision — question at the top of its status file" ;; esac
+  osascript -e "display notification \"$text\" with title \"$title\"" >/dev/null 2>&1 || true
+}
+
 run_one() { # run_one <ws> <prompt file>
   local ws=$1 file=$2 rel stem model runs stamp out err started exit_code
   rel=${file#"$ws"/}
@@ -255,6 +268,7 @@ run_one() { # run_one <ws> <prompt file>
   child=""
 
   fail_if_unfinished "$file" "$err" "claude exited $exit_code"
+  notify "$ws" "$stem" "$("$relay_prompt" get "$file" status 2>/dev/null || echo unknown)"
   current_file="" current_err=""
   commit_run_log "$ws" "$stem"
   release_lock

@@ -107,6 +107,14 @@ or still `pending` (the skill never started — plugin missing, login expired),
 the watcher sets it to `failed` and says so in the `.err` file, so nothing
 loops or hangs; set it back to `pending` to retry.
 
+When a run ends, the watcher posts a desktop notification (macOS,
+`osascript`): the title is `relay: done`, `relay: blocked` or
+`relay: failed`, the text names the prompt. The point is that the person
+planning the work gets told, instead of a planning session polling the
+workspace on a timer; a `blocked` notification says a decision is waiting
+at the top of the status file. Set `RELAY_NOTIFY=0` to turn it off; on
+systems without `osascript` nothing is sent.
+
 One line per run goes to `~/.local/state/relay/watch.log` (or under
 `$XDG_STATE_HOME`) and to stdout, tab-separated: time, workspace, prompt
 file, model, `claude`'s exit code, seconds.

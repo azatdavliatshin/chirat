@@ -69,7 +69,14 @@ fi
 exit "${FAKE_EXIT:-0}"
 EOF
 chmod +x "$tmp/bin/claude"
-export PATH=$tmp/bin:$PATH RP=$rp FAKE_ARGV=$tmp/argv
+
+# Fake osascript: records its arguments so the notification can be checked.
+cat >"$tmp/bin/osascript" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >>"$FAKE_OSA"
+EOF
+chmod +x "$tmp/bin/osascript"
+export PATH=$tmp/bin:$PATH RP=$rp FAKE_ARGV=$tmp/argv FAKE_OSA=$tmp/osa
 
 # --- workspace + config ---------------------------------------------------
 
@@ -175,11 +182,15 @@ eq "log: model" opus "$l_model"
 eq "log: exit" 0 "$l_exit"
 eq "log: mode" auto "$l_mode"
 case $l_secs in '' | *[!0-9]*) ko "log: seconds" "$l_secs" ;; *) ok "log: seconds" ;; esac
+has "notification names the prompt" "$FAKE_OSA" "demo.prompt-1"
+has "notification carries the final status" "$FAKE_OSA" 'title "relay: done"'
+rm -f "$FAKE_OSA"
 
 # --- --once: claude exits without flipping the status ---------------------
 
-FAKE_MODE=noflip FAKE_EXIT=3 "$watch" --once >"$tmp/out" 2>"$tmp/stderr"
+RELAY_NOTIFY=0 FAKE_MODE=noflip FAKE_EXIT=3 "$watch" --once >"$tmp/out" 2>"$tmp/stderr"
 eq "once still exits 0 when claude fails" 0 $?
+absent "RELAY_NOTIFY=0 sends nothing" "$FAKE_OSA"
 eq "prompt-2 set to failed" failed "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
 err2=$(first "$ws"/docs/status/runs/demo.prompt-2.*.err)
 has "err notes the forced failure" "$err2" "claude exited 3 with the prompt still 'running'; set to failed"
