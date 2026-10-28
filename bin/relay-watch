@@ -46,9 +46,26 @@
 # pass logs it, once per file ever (state in <log dir>/misnamed.seen):
 #   <iso time> <tab> misnamed <tab> <ws> <tab> <file> <tab> <reason>
 #
-# SIGINT/SIGTERM during a run stops claude, puts the prompt back to `pending`
-# (note in the .err file), releases the lock and logs the run with
-# `interrupted` in the exit column.
+# The lock directory records its owners: watcher.pid (relay-watch), prompt
+# (path relative to the workspace), run (<stem>.<stamp>, the basename of the
+# .json/.err), started (iso time) and, once claude is up, claude.pid. claude
+# runs in its own process group (group id = claude.pid). Before every
+# `relay-prompt next`, a lock whose claude (or, before claude started, whose
+# watcher) is dead is stale: the prompt is put back to `pending` if it still
+# says `running`, a note goes to the run's .err, an empty .json is removed, the
+# lock is removed and a line with `recovered` in the exit column is logged. A
+# live claude.pid means the workspace is in progress and is skipped, whatever
+# the prompt's status says. Known limitation: a dead PID reused by an unrelated
+# process makes a lock look alive until that process exits; liveness is
+# `kill -0`, no timeouts or other heuristics.
+#
+# SIGINT/SIGTERM/SIGHUP (tmux kill-session) during a run: TERM to claude's
+# whole process group, KILL after $RELAY_STOP_GRACE seconds (default 15) and
+# another 5 s to be reaped. Once claude is gone the prompt goes back to
+# `pending` (note in the .err file), the lock is released and the run is logged
+# with `interrupted` in the exit column. If claude survives even KILL, the
+# prompt and the lock are left as they are and the exit column says
+# `interrupted-alive`; the next start then waits for that claude.
 #
 # Each finished run also appends one line to <ws>/docs/status/LATEST, the file
 # the planning side reads instead of polling (not written by --dry-run, nor
@@ -188,9 +205,36 @@ log_line() { # log_line <ws> <file> <model> <exit> <seconds>
   printf '%s\n' "$line"
 }
 
+stop_grace=${RELAY_STOP_GRACE:-15}
+case $stop_grace in '' | *[!0-9]*) die "RELAY_STOP_GRACE needs a whole number of seconds" ;; esac
+
+# alive <pid>: running (a zombie that is not reaped yet does not count)
+alive() {
+  kill -0 "$1" 2>/dev/null || return 1
+  case $(ps -o stat= -p "$1" 2>/dev/null) in Z*) return 1 ;; esac
+  return 0
+}
+
+# wait_gone <pid> <seconds>: poll every 0.5 s; success once <pid> is gone
+wait_gone() {
+  local n=$(($2 * 2))
+  while alive "$1"; do
+    [ "$n" -gt 0 ] || return 1
+    n=$((n - 1))
+    sleep 0.5
+  done
+}
+
+# remove_lock <dir>: the five files by name, then the directory
+remove_lock() {
+  local f
+  for f in watcher.pid prompt run started claude.pid; do rm -f "$1/$f"; done
+  rmdir "$1" 2>/dev/null
+}
+
 lock_dir="" current_file="" current_err=""
 release_lock() {
-  [ -n "$lock_dir" ] && rmdir "$lock_dir" 2>/dev/null
+  [ -n "$lock_dir" ] && remove_lock "$lock_dir"
   lock_dir=""
 }
 
@@ -208,31 +252,50 @@ fail_if_unfinished() { # fail_if_unfinished <file> <err file> <note>
 
 # Stopping the watcher is not the prompt's fault: an unfinished prompt goes
 # back to `pending` so the next watcher start retries it.
-current_ws="" current_model="" current_started="" child=""
+current_ws="" current_model="" current_started="" child="" claude_pid="" sig=""
 interrupted() {
   local status secs
+  trap '' INT TERM HUP
   if [ -n "$child" ]; then
-    pkill -TERM -P "$child" 2>/dev/null
     kill -TERM "$child" 2>/dev/null
     wait "$child" 2>/dev/null
+  fi
+  if [ -n "$claude_pid" ]; then
+    kill -TERM -- "-$claude_pid" 2>/dev/null
+    if ! wait_gone "$claude_pid" "$stop_grace"; then
+      kill -KILL -- "-$claude_pid" 2>/dev/null
+      wait_gone "$claude_pid" 5
+    fi
+    if alive "$claude_pid"; then
+      status=$("$relay_prompt" get "$current_file" status 2>/dev/null) || status=""
+      echo "relay-watch $(now_iso): interrupted, but claude $claude_pid could not be stopped; prompt left '$status', lock kept" >>"$current_err"
+      secs=$(( $(date +%s) - current_started ))
+      log_line "$current_ws" "${current_file#"$current_ws"/}" "$current_model" interrupted-alive "$secs" >/dev/null
+      exit 130
+    fi
+    wait "$claude_pid" 2>/dev/null
+    claude_pid=""
   fi
   if [ -n "$current_file" ]; then
     status=$("$relay_prompt" get "$current_file" status 2>/dev/null) || status=""
     case $status in
       running | pending)
         "$relay_prompt" set "$current_file" status pending
-        echo "relay-watch $(now_iso): relay-watch was interrupted with the prompt still '$status'; set to pending" >>"$current_err"
+        echo "relay-watch $(now_iso): relay-watch was interrupted with the prompt still '$status'; set to pending${sig:+ ($sig)}" >>"$current_err"
         ;;
     esac
     secs=$(( $(date +%s) - current_started ))
     write_latest "$current_ws" "$current_file" "$(basename "$current_file" .md)" interrupted "$secs"
+    release_lock
     commit_run_log "$current_ws" "$(basename "$current_file" .md)"
     log_line "$current_ws" "${current_file#"$current_ws"/}" "$current_model" interrupted "$secs" >/dev/null
   fi
   release_lock
   exit 130
 }
-trap interrupted INT TERM
+trap 'sig=SIGINT; interrupted' INT
+trap 'sig=SIGTERM; interrupted' TERM
+trap 'sig=SIGHUP; interrupted' HUP
 
 # The run log is complete only once claude has exited, so the skill leaves
 # docs/status/runs/ and docs/status/LATEST out of its own commit; both are
@@ -285,9 +348,19 @@ run_one() { # run_one <ws> <prompt file>
   lock_dir=$runs/.lock
 
   stamp=$(now_stamp)
+  # A second run within the same second must not reuse (and truncate) the
+  # files of the first, e.g. right after a recovery.
+  while [ -e "$runs/$stem.$stamp.json" ] || [ -e "$runs/$stem.$stamp.err" ]; do
+    sleep 1
+    stamp=$(now_stamp)
+  done
   out=$runs/$stem.$stamp.json
   err=$runs/$stem.$stamp.err
   started=$(date +%s)
+  printf '%s\n' "$$" >"$lock_dir/watcher.pid"
+  printf '%s\n' "$rel" >"$lock_dir/prompt"
+  printf '%s\n' "$stem.$stamp" >"$lock_dir/run"
+  now_iso >"$lock_dir/started"
 
   if [ "$dry_run" = 1 ]; then
     printf 'cd %q && claude -p %q --model %q --permission-mode %q --permission-prompts none --output-format json >%q 2>>%q\n' \
@@ -299,25 +372,97 @@ run_one() { # run_one <ws> <prompt file>
 
   current_file=$file current_err=$err current_ws=$ws current_model=$model current_started=$started
   # Background + wait, so a signal reaches the trap while claude is running.
+  # Job control gives the background job its own process group; the subshell
+  # execs claude, so its PID is claude's and the group id.
+  set -m
   (
     cd "$ws" || exit 127
-    claude -p "/relay:next $rel" --model "$model" \
+    exec claude -p "/relay:next $rel" --model "$model" \
       --permission-mode "$mode" --permission-prompts none \
       --output-format json
   ) </dev/null >"$out" 2>>"$err" &
-  child=$!
-  wait "$child"
+  claude_pid=$!
+  set +m
+  printf '%s\n' "$claude_pid" >"$lock_dir/claude.pid"
+  wait "$claude_pid"
   exit_code=$?
-  child=""
+  claude_pid=""
 
   fail_if_unfinished "$file" "$err" "claude exited $exit_code"
   notify "$ws" "$stem" "$("$relay_prompt" get "$file" status 2>/dev/null || echo unknown)"
   current_file="" current_err=""
   secs=$(( $(date +%s) - started ))
   write_latest "$ws" "$file" "$stem" "$exit_code" "$secs"
-  commit_run_log "$ws" "$stem"
   release_lock
+  commit_run_log "$ws" "$stem"
   log_line "$ws" "$rel" "$model" "$exit_code" "$secs"
+}
+
+iso_to_epoch() { # iso_to_epoch <iso time>: epoch seconds, or nothing
+  date -j -f %Y-%m-%dT%H:%M:%S%z "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null
+}
+
+# recover_stale <ws>: heal a lock left by a dead watcher/claude (rules in the
+# header). Returns 1 when the workspace is in progress and must be skipped.
+recover_stale() {
+  local ws=$1 runs lock cpid="" wpid="" rel="" run="" started="" p f status
+  local err="" stem now secs=0 t model="-" first="-" word prompts=()
+  runs=$ws/docs/status/runs
+  lock=$runs/.lock
+  [ -d "$lock" ] || return 0
+  [ -f "$lock/claude.pid" ] && cpid=$(<"$lock/claude.pid")
+  [ -f "$lock/watcher.pid" ] && wpid=$(<"$lock/watcher.pid")
+  [ -f "$lock/prompt" ] && rel=$(<"$lock/prompt")
+  [ -f "$lock/run" ] && run=$(<"$lock/run")
+  [ -f "$lock/started" ] && started=$(<"$lock/started")
+  if [ -n "$cpid" ] && alive "$cpid"; then
+    echo "relay-watch: $ws: in progress, lock held by claude $cpid (${rel:--})" >&2
+    return 1
+  fi
+  if [ -z "$cpid" ] && [ -n "$wpid" ] && alive "$wpid"; then
+    echo "relay-watch: $ws: in progress, lock held by watcher $wpid (${rel:--})" >&2
+    return 1
+  fi
+
+  # Stale. Which prompt(s) were running?
+  if [ -n "$rel" ]; then
+    prompts=("$ws/$rel")
+  else
+    for p in "$ws"/docs/plans/*.prompt-*.md; do
+      [ -f "$p" ] && [ "$("$relay_prompt" get "$p" status 2>/dev/null)" = running ] && prompts+=("$p")
+    done
+  fi
+  now=$(date +%s)
+  if [ -n "$started" ] && t=$(iso_to_epoch "$started") && [ -n "$t" ]; then secs=$((now - t)); fi
+  [ "$secs" -ge 0 ] || secs=0
+
+  for p in ${prompts[@]+"${prompts[@]}"}; do
+    stem=${p##*/}
+    stem=${stem%.md}
+    status=$("$relay_prompt" get "$p" status 2>/dev/null) || status=unknown
+    word="recovered: watcher/claude died with the prompt '$status'"
+    if [ "$status" = running ]; then
+      "$relay_prompt" set "$p" status pending
+      word="$word; set to pending"
+    fi
+    if [ -n "$run" ]; then
+      err=$runs/$run.err
+    else
+      err=""
+      for f in "$runs/$stem".*.err; do [ -e "$f" ] && err=$f; done
+      [ -n "$err" ] || err=$runs/$stem.$(now_stamp).err
+    fi
+    echo "relay-watch $(now_iso): $word" >>"$err"
+    [ -s "${err%.err}.json" ] || rm -f "${err%.err}.json"
+    if [ "$first" = - ]; then
+      first=${p#"$ws"/}
+      model=$("$relay_prompt" get "$p" model 2>/dev/null) || model=-
+    fi
+  done
+  remove_lock "$lock"
+  echo "relay-watch: $ws: recovered stale lock (claude ${cpid:--} dead)" >&2
+  log_line "$ws" "$first" "${model:--}" recovered "$secs"
+  return 0
 }
 
 # Log each waiting prompt at most once per 10 minutes; the last-logged time
@@ -357,6 +502,10 @@ pass() {
   while IFS= read -r ws; do
     if [ ! -d "$ws/docs/plans" ]; then
       echo "relay-watch: not a workspace (no docs/plans): $ws" >&2
+      continue
+    fi
+    if ! recover_stale "$ws"; then
+      note_misnamed "$ws"
       continue
     fi
     if file=$("$relay_prompt" next "$ws" 2>/dev/null); then

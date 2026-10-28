@@ -39,12 +39,29 @@ first() { # first <glob...>: print the first existing match, or nothing
   return 1
 }
 
+wait_claude() { # wait_claude <prompt file>: until it is running and the lock has claude.pid
+  local _
+  for _ in $(seq 1 100); do
+    [ "$("$rp" get "$1" status)" = running ] && [ -s "$ws/docs/status/runs/.lock/claude.pid" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+gone() { # gone <pid>: wait up to 5 s until it no longer exists
+  local _
+  for _ in $(seq 1 50); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done
+  return 1
+}
+
 # --- fake claude -----------------------------------------------------------
 # Records argv (one per line) and $PWD, prints a JSON result, and acts on the
 # prompt named after `-p "/relay:next <file>"` like the real /relay:next:
 # claims it (`running`) and marks it `done`. FAKE_MODE=noflip stops after the
 # claim; FAKE_MODE=noclaim touches nothing; FAKE_MODE=sleep claims and then
-# sleeps 30 seconds. Exits with $FAKE_EXIT (default 0).
+# sleeps 30 seconds; FAKE_MODE=hang claims and sleeps but prints nothing (the
+# .json stays empty); FAKE_MODE=stubborn is sleep with TERM ignored. Exits with
+# $FAKE_EXIT (default 0).
 
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/claude" <<'EOF'
@@ -58,13 +75,16 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-echo '{"result":"ok"}'
-echo "fake claude stderr" >&2
 mode=${FAKE_MODE:-done}
+if [ "$mode" != hang ]; then
+  echo '{"result":"ok"}'
+  echo "fake claude stderr" >&2
+fi
+[ "$mode" = stubborn ] && trap '' TERM
 if [ -n "$file" ] && [ "$mode" != noclaim ]; then
   "$RP" set "$file" status running
-  [ "$mode" = sleep ] && sleep 30
-  [ "$mode" = noflip ] || [ "$mode" = sleep ] || "$RP" set "$file" status done
+  case $mode in sleep | hang | stubborn) sleep 30 ;; esac
+  case $mode in noflip | sleep | hang | stubborn) ;; *) "$RP" set "$file" status done ;; esac
 fi
 exit "${FAKE_EXIT:-0}"
 EOF
@@ -169,9 +189,10 @@ eq "prompt-1 is done afterwards" "done" "$("$rp" get "$ws/docs/plans/demo.prompt
 eq "prompt-2 is still pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
 absent "lock released" "$ws/docs/status/runs/.lock"
 eq "run log commit message" "docs: run log demo.prompt-1" "$(git -C "$ws" log -1 --format=%s)"
-eq "run log commit holds runs/ files and LATEST" "docs/status/LATEST
+eq "run log commit holds runs/ files, status.log and LATEST" "docs/status/LATEST
 docs/status/runs/${err##*/}
-docs/status/runs/${json##*/}" "$(git -C "$ws" show --name-only --format= HEAD | sort)"
+docs/status/runs/${json##*/}
+docs/status/runs/status.log" "$(git -C "$ws" show --name-only --format= HEAD | sort)"
 eq "LATEST: no pending changes" "" "$(git -C "$ws" status --porcelain -- docs/status/LATEST)"
 eq "LATEST: one line after the first run" 1 "$(wc -l <"$ws/docs/status/LATEST" | tr -d ' ')"
 IFS=$'\t' read -r a_ts a_stem a_status a_branch a_commit a_exit a_secs <"$ws/docs/status/LATEST"
@@ -234,13 +255,15 @@ eq "once with empty queue logs nothing" 3 "$(wc -l <"$log" | tr -d ' ')"
 
 "$rp" set "$ws/docs/plans/demo.prompt-2.md" status pending
 mkdir "$ws/docs/status/runs/.lock"
+echo $$ >"$ws/docs/status/runs/.lock/watcher.pid" # a live owner: this shell
 : >"$FAKE_ARGV"
 "$watch" --once >/dev/null 2>"$tmp/stderr"
 eq "locked workspace: exit 0" 0 $?
-has "locked workspace: says so on stderr" "$tmp/stderr" "is locked"
+has "locked workspace: says so on stderr" "$tmp/stderr" "in progress, lock held by watcher $$"
 eq "locked workspace: claude not called" "" "$(cat "$FAKE_ARGV")"
 eq "locked workspace: prompt stays pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
 exists "locked workspace: lock left alone" -d "$ws/docs/status/runs/.lock"
+rm -f "$ws/docs/status/runs/.lock/watcher.pid"
 rmdir "$ws/docs/status/runs/.lock"
 
 # --- model missing → sonnet; --interval validation -----------------------
@@ -262,24 +285,159 @@ prompt demo.prompt-9.md sonnet pending
 lines_before=$(wc -l <"$log" | tr -d ' ')
 FAKE_MODE="sleep" "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
 wpid=$!
-for _ in $(seq 1 100); do
-  [ "$("$rp" get "$ws/docs/plans/demo.prompt-9.md" status)" = running ] && break
-  sleep 0.1
-done
+lock=$ws/docs/status/runs/.lock
+wait_claude "$ws/docs/plans/demo.prompt-9.md"
 eq "sleeping run has claimed the prompt" running "$("$rp" get "$ws/docs/plans/demo.prompt-9.md" status)"
+cpid=$(cat "$lock/claude.pid" 2>/dev/null)
+for f in watcher.pid prompt run started claude.pid; do exists "lock holds $f" -s "$lock/$f"; done
+eq "lock: watcher.pid is the watcher" "$wpid" "$(cat "$lock/watcher.pid")"
+eq "lock: prompt" docs/plans/demo.prompt-9.md "$(cat "$lock/prompt")"
+case $(cat "$lock/run") in demo.prompt-9.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ok "lock: run is <stem>.<stamp>" ;; *) ko "lock: run is <stem>.<stamp>" "$(cat "$lock/run")" ;; esac
+exists "lock: run names the .err of this run" -e "$ws/docs/status/runs/$(cat "$lock/run").err"
+case $(cat "$lock/started") in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*) ok "lock: started is iso" ;; *) ko "lock: started is iso" "$(cat "$lock/started")" ;; esac
+has "lock: claude.pid is the fake claude" <(ps -o args= -p "$cpid") "bin/claude -p"
 kill -TERM "$wpid"
 wait "$wpid"
 eq "SIGTERM: watcher exits 130" 130 $?
 eq "SIGTERM: prompt back to pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-9.md" status)"
 err9=$(first "$ws"/docs/status/runs/demo.prompt-9.*.err)
-has "SIGTERM: err notes the interruption" "$err9" "relay-watch was interrupted with the prompt still 'running'; set to pending"
+has "SIGTERM: err notes the interruption" "$err9" "relay-watch was interrupted with the prompt still 'running'; set to pending (SIGTERM)"
 eq "SIGTERM: one more log line" $((lines_before + 1)) "$(wc -l <"$log" | tr -d ' ')"
 eq "SIGTERM: LATEST records interrupted" "demo.prompt-9	pending	feat/x	-	interrupted" "$(tail -n 1 "$ws/docs/status/LATEST" | cut -f2-6)"
 eq "SIGTERM: LATEST committed" "" "$(git -C "$ws" status --porcelain -- docs/status/LATEST)"
 eq "SIGTERM: log exit column is interrupted" interrupted "$(tail -n 1 "$log" | cut -f5)"
 eq "SIGTERM: log names the prompt" docs/plans/demo.prompt-9.md "$(tail -n 1 "$log" | cut -f3)"
 absent "SIGTERM: lock released" "$ws/docs/status/runs/.lock"
+if kill -0 "$cpid" 2>/dev/null; then ko "SIGTERM: claude is gone"; else ok "SIGTERM: claude is gone"; fi
 rm -f "$ws/docs/plans/demo.prompt-9.md"
+
+# --- lock owners, stale locks, stopping claude -----------------------------
+
+runs=$ws/docs/status/runs
+pf=$ws/docs/plans/demo.prompt-20.md
+
+# A dead watcher and a dead claude leave the prompt `running` and the lock.
+# recover <FAKE_MODE>: start, kill both with -9, leave wpid/cpid/err/json set.
+die_mid_run() {
+  FAKE_MODE=$1 "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
+  wpid=$!
+  wait_claude "$pf"
+  cpid=$(cat "$runs/.lock/claude.pid")
+  run=$(cat "$runs/.lock/run")
+  kill -9 "$wpid"
+  kill -9 "$cpid"
+  wait "$wpid" 2>/dev/null
+  gone "$cpid"
+}
+
+prompt demo.prompt-20.md sonnet pending
+: >"$log"
+rm -f "$runs/status.log"
+die_mid_run hang
+eq "dead run: prompt still running" running "$("$rp" get "$pf" status)"
+exists "dead run: lock left behind" -d "$runs/.lock"
+exists "dead run: .json is empty" -f "$runs/$run.json"
+"$watch" --once >"$tmp/out" 2>"$tmp/stderr"
+has "heal: stderr says so" "$tmp/stderr" "recovered stale lock (claude $cpid dead)"
+has "heal: err holds the note" "$runs/$run.err" "recovered: watcher/claude died with the prompt 'running'; set to pending"
+absent "heal: empty .json removed" "$runs/$run.json"
+absent "heal: lock gone" "$runs/.lock"
+eq "heal: first log line is recovered" recovered "$(head -n 1 "$log" | cut -f5)"
+eq "heal: log names the prompt" docs/plans/demo.prompt-20.md "$(head -n 1 "$log" | cut -f3)"
+eq "heal: then the prompt ran again" "done" "$("$rp" get "$pf" status)"
+eq "heal: two log lines (recovered, run)" 2 "$(wc -l <"$log" | tr -d ' ')"
+eq "status.log: pending → running, running → pending (recovery), pending → running, running → done" \
+  "pending	running
+running	pending
+pending	running
+running	done" "$(cut -f3,4 "$runs/status.log" | sed -n '1,4p;')"
+eq "status.log: recovery's parent is relay-watch" relay-watch "$(sed -n 2p "$runs/status.log" | cut -f7)"
+eq "status.log: claude's parent is the fake claude" claude "$(sed -n 4p "$runs/status.log" | cut -f7)"
+eq "status.log: file column" docs/plans/demo.prompt-20.md "$(sed -n 1p "$runs/status.log" | cut -f2)"
+before=$(wc -l <"$runs/status.log" | tr -d ' ')
+"$rp" set "$pf" model opus
+eq "status.log: other keys add nothing" "$before" "$(wc -l <"$runs/status.log" | tr -d ' ')"
+
+# A non-empty .json survives recovery.
+"$rp" set "$pf" status pending
+die_mid_run sleep
+"$watch" --once >/dev/null 2>&1
+exists "heal: non-empty .json kept" -s "$runs/$run.json"
+has "heal: note in err" "$runs/$run.err" "recovered:"
+eq "heal (sleep): prompt ran again" "done" "$("$rp" get "$pf" status)"
+
+# Legacy lock: an empty directory and a running prompt.
+"$rp" set "$pf" status running
+mkdir "$runs/.lock"
+rm -f "$runs"/demo.prompt-20.*.err
+: >"$log"
+"$watch" --once >/dev/null 2>&1
+eq "legacy lock: prompt ran again after recovery" "done" "$("$rp" get "$pf" status)"
+absent "legacy lock: lock gone" "$runs/.lock"
+has "legacy lock: fresh err has the note" "$(first "$runs"/demo.prompt-20.*.err)" "recovered: watcher/claude died with the prompt 'running'; set to pending"
+eq "legacy lock: recovered line logged" recovered "$(head -n 1 "$log" | cut -f5)"
+eq "legacy lock: log names the prompt" docs/plans/demo.prompt-20.md "$(head -n 1 "$log" | cut -f3)"
+
+# Legacy lock, nothing running: just removed, file column -.
+mkdir "$runs/.lock"
+: >"$log"
+"$watch" --once >/dev/null 2>&1
+absent "legacy lock without running prompt: lock gone" "$runs/.lock"
+eq "legacy lock without running prompt: file column -" - "$(head -n 1 "$log" | cut -f3)"
+
+# A live lock is respected, even when the prompt reads pending (not retried).
+"$rp" set "$pf" status pending
+FAKE_MODE="sleep" "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude "$pf"
+cpid=$(cat "$runs/.lock/claude.pid")
+"$rp" set "$pf" status pending
+: >"$FAKE_ARGV"
+"$watch" --once >"$tmp/out2" 2>"$tmp/stderr2"
+has "live lock: says in progress" "$tmp/stderr2" "in progress, lock held by claude $cpid (docs/plans/demo.prompt-20.md)"
+eq "live lock: prompt not retried" pending "$("$rp" get "$pf" status)"
+eq "live lock: claude not started again" "" "$(cat "$FAKE_ARGV")"
+exists "live lock: lock still there" -d "$runs/.lock"
+kill -TERM "$wpid"
+wait "$wpid"
+eq "live lock: first watcher still exits 130 on TERM" 130 $?
+if kill -0 "$cpid" 2>/dev/null; then ko "live lock: claude gone after TERM"; else ok "live lock: claude gone after TERM"; fi
+absent "live lock: lock released after TERM" "$runs/.lock"
+
+# SIGHUP behaves like SIGTERM.
+"$rp" set "$pf" status pending
+FAKE_MODE="sleep" "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude "$pf"
+cpid=$(cat "$runs/.lock/claude.pid")
+kill -HUP "$wpid"
+wait "$wpid"
+eq "SIGHUP: watcher exits 130" 130 $?
+eq "SIGHUP: prompt back to pending" pending "$("$rp" get "$pf" status)"
+absent "SIGHUP: lock released" "$runs/.lock"
+if kill -0 "$cpid" 2>/dev/null; then ko "SIGHUP: claude is gone"; else ok "SIGHUP: claude is gone"; fi
+has "SIGHUP: err names the signal" "$(find "$runs" -name 'demo.prompt-20.*.err' -print | sort | tail -n 1)" "(SIGHUP)"
+
+# A claude that ignores TERM is killed after the grace period.
+FAKE_MODE=stubborn RELAY_STOP_GRACE=2 "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude "$pf"
+cpid=$(cat "$runs/.lock/claude.pid")
+t0=$(date +%s)
+kill -TERM "$wpid"
+wait "$wpid"
+eq "stubborn: watcher exits 130" 130 $?
+if [ $(($(date +%s) - t0)) -le 20 ]; then ok "stubborn: stopped within 20 s"; else ko "stubborn: stopped within 20 s"; fi
+if kill -0 "$cpid" 2>/dev/null; then ko "stubborn: claude PID gone (KILL)"; else ok "stubborn: claude PID gone (KILL)"; fi
+eq "stubborn: prompt pending" pending "$("$rp" get "$pf" status)"
+absent "stubborn: lock released" "$runs/.lock"
+rm -f "$pf"
+
+# --dry-run takes and releases the lock.
+prompt demo.prompt-21.md sonnet pending
+"$watch" --once --dry-run >/dev/null 2>&1
+absent "dry-run: lock absent afterwards" "$runs/.lock"
+rm -f "$ws/docs/plans/demo.prompt-21.md"
 
 # --- after: waiting line, logged once --------------------------------------
 

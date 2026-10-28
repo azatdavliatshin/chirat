@@ -257,6 +257,31 @@ eq "lint line carries the reason" "name does not match <topic>.prompt-<N><suffix
 sprompt s.prompt-05b.md pending
 eq "leading zero with suffix is valid" "$sws/docs/plans/s.prompt-05b.md" "$("$rp" next "$sws")"
 
+# --- relay-prompt set: status.log ---------------------------------------
+
+slog=$ws/docs/status/runs/status.log
+rm -f "$slog"
+prompt log.prompt-1.md pending 202601010000
+lf=$ws/docs/plans/log.prompt-1.md
+"$rp" set "$lf" status running
+eq "status.log: one line after a status change" 1 "$(wc -l <"$slog" | tr -d ' ')"
+IFS=$'\t' read -r l_ts l_file l_old l_new l_pid l_ppid l_parent <"$slog"
+case $l_ts in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*) ok "status.log: iso time" ;; *) ko "status.log: iso time" "$l_ts" ;; esac
+eq "status.log: file relative to the workspace" docs/plans/log.prompt-1.md "$l_file"
+eq "status.log: old and new" "pending running" "$l_old $l_new"
+case $l_pid$l_ppid in *[!0-9]* | '') ko "status.log: pid and ppid are numbers" "$l_pid $l_ppid" ;; *) ok "status.log: pid and ppid are numbers" ;; esac
+case $l_parent in '' | -) ko "status.log: parent command named" "$l_parent" ;; *) ok "status.log: parent command named" ;; esac
+"$rp" set "$lf" status running
+eq "status.log: same value twice adds nothing" 1 "$(wc -l <"$slog" | tr -d ' ')"
+"$rp" set "$lf" worktree plugin
+eq "status.log: other keys add nothing" 1 "$(wc -l <"$slog" | tr -d ' ')"
+mkdir -p "$tmp/loose"
+cp "$lf" "$tmp/loose/p.md"
+"$rp" set "$tmp/loose/p.md" status "done" 2>"$tmp/err"
+eq "set outside docs/plans succeeds" "done" "$("$rp" get "$tmp/loose/p.md" status)"
+if grep -q "not logged" "$tmp/err"; then ok "set outside docs/plans warns"; else ko "set outside docs/plans warns" "$(cat "$tmp/err")"; fi
+eq "status.log: untouched by the loose file" 1 "$(wc -l <"$slog" | tr -d ' ')"
+
 # --- summary -------------------------------------------------------------
 
 echo

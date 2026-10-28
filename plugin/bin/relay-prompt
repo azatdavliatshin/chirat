@@ -8,6 +8,12 @@
 #   relay-prompt check <workspace> <file>    exit 0 if <file>'s after: is satisfied
 #   relay-prompt lint <workspace>            list pending/running files with a bad name
 #
+# A change of `status` by `set` appends one line to
+# <workspace>/docs/status/runs/status.log (who called, so an unexpected flip can
+# be traced): <iso time> <tab> <file rel to workspace> <tab> <old> <tab> <new>
+# <tab> <pid> <tab> <ppid> <tab> <parent command> (basename; a shell script is named
+# by its script). Other keys are not logged.
+#
 # Front matter is the block between a first line `---` and the next `---`.
 # Values are single-line `key: value`; a trailing ` # comment` is ignored.
 #
@@ -65,11 +71,40 @@ cmd_get() {
   ' "$file"
 }
 
+# log_status_change <file> <old> <new>: append to <ws>/docs/status/runs/status.log
+# (<ws> = the directory holding docs/plans/<file>). Never fails the caller.
+log_status_change() {
+  local dir ws rel runs parent
+  dir=$(cd "$(dirname "$1")" 2>/dev/null && pwd) || dir=""
+  if [ "${dir##*/}" != plans ] || [ "$(basename "$(dirname "$dir")")" != docs ]; then
+    echo "relay-prompt: warning: $1 is not under <workspace>/docs/plans/, status change not logged" >&2
+    return 0
+  fi
+  ws=$(dirname "$(dirname "$dir")")
+  rel=docs/plans/${1##*/}
+  runs=$ws/docs/status/runs
+  parent=$(ps -o comm= -p "$PPID" 2>/dev/null) || parent=""
+  parent=${parent##*/}
+  case $parent in # a script shows up as its interpreter: name the script instead
+    bash | sh | zsh | dash)
+      read -r _ arg _ <<<"$(ps -o args= -p "$PPID" 2>/dev/null)"
+      case ${arg:-} in '' | -*) ;; *) parent=${arg##*/} ;; esac
+      ;;
+  esac
+  parent=${parent:--}
+  if ! { mkdir -p "$runs" && printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date +%Y-%m-%dT%H:%M:%S%z)" "$rel" "$2" "$3" "$$" "$PPID" "$parent" >>"$runs/status.log"; } 2>/dev/null; then
+    echo "relay-prompt: warning: cannot write $runs/status.log" >&2
+  fi
+  return 0
+}
+
 cmd_set() {
-  local file=$1 key=$2 value=$3 tmp
+  local file=$1 key=$2 value=$3 tmp old=""
   [ -f "$file" ] || die "no such file: $file"
   has_front_matter "$file" || die "no front matter: $file"
   case $value in *$'\n'*) die "value must be a single line" ;; esac
+  [ "$key" = status ] && { old=$(cmd_get "$file" status 2>/dev/null) || old=""; }
   tmp=$(mktemp "${file}.XXXXXX")
   awk -v key="$key" -v value="$value" '
     NR == 1 { print; next }
@@ -90,6 +125,8 @@ cmd_set() {
   # Keep the original file's permissions; mv alone would carry mktemp's 0600.
   chmod "$(stat -f %Lp "$file" 2>/dev/null || stat -c %a "$file")" "$tmp"
   mv "$tmp" "$file"
+  if [ "$key" = status ] && [ "$old" != "$value" ]; then log_status_change "$file" "$old" "$value"; fi
+  return 0
 }
 
 mtime() {

@@ -148,10 +148,39 @@ Typical use: `bin/relay-watch --once --dry-run` to see what would run, then
 `--tmux` is the normal way to run the watcher. A foreground watcher is one
 Ctrl-C (or closed terminal) away from an interrupted run; in tmux it keeps
 going when you close the terminal, and you attach only to look. If a watcher
-is stopped anyway (SIGINT or SIGTERM), it stops `claude`, puts the prompt it
+is stopped anyway (SIGINT, SIGTERM or SIGHUP), it stops `claude`, puts the prompt it
 was running back to `pending` with a note in the `.err` file, releases the
 lock and logs the run with `interrupted` in the exit column; the next
 watcher start picks the prompt up again.
+
+#### Stale locks and stopping
+
+The `.lock` directory records who holds it: `watcher.pid`, `prompt` (path in
+the workspace), `run` (`<stem>.<stamp>`, the name shared by the run's `.json`
+and `.err`), `started`, and `claude.pid` once `claude` is up. `claude` runs in
+its own process group. Before it looks for a pending prompt, every pass checks
+the lock: a live `claude.pid` means the workspace is in progress and is
+skipped (also when the prompt was set to `pending` by hand meanwhile — it is
+not started a second time); a dead `claude.pid`, or no `claude.pid` and a dead
+`watcher.pid` (this includes an empty lock left by an older watcher), means
+the lock is stale. Recovery sets the prompt back to `pending` if it still
+says `running` (any other status is left alone), appends a `recovered:` note
+to the run's `.err`, removes the `.json` if it is empty, removes the lock and
+logs a line with `recovered` in the exit column. Liveness is `kill -0`; a dead
+PID reused by an unrelated process keeps the lock looking alive until that
+process exits.
+
+On SIGINT, SIGTERM or SIGHUP (what `tmux kill-session` sends) the watcher
+sends TERM to `claude`'s whole process group, KILL after 15 seconds
+(`RELAY_STOP_GRACE` overrides, for tests) and waits 5 more. Only then is the
+prompt put back to `pending` and the lock released. If `claude` survives even
+KILL, the prompt and the lock stay and the log line says `interrupted-alive`;
+the next watcher waits for that `claude`. `relay-watch recover` (planned) runs
+the same recovery on demand.
+
+Every change of a prompt's `status` made by `relay-prompt set` is appended to
+`docs/status/runs/status.log` (time, file, old, new, pid, parent pid, parent
+command), so an unexpected flip can be traced to its caller.
 
 `relay-watch install [dir]` symlinks `relay-watch` and `plugin/bin/relay-prompt`
 into `dir` (default `~/.local/bin`) so both are on your `PATH`, and prints a
@@ -171,7 +200,7 @@ existing ones.
 
 | Command | Effect |
 |---|---|
-| `get <file> <key>` / `set <file> <key> <value>` | read / write one front-matter key |
+| `get <file> <key>` / `set <file> <key> <value>` | read / write one front-matter key; a `status` change is logged to `docs/status/runs/status.log` |
 | `next <ws>` | print the next pending prompt; exit 1 if none |
 | `waiting <ws>` | list pending prompts held back by `after:` |
 | `check <ws> <file>` | exit 0 if the file's `after:` is satisfied |
