@@ -73,7 +73,7 @@ a leading `~` is expanded.
 ```
 
 Each pass takes, per workspace, the next pending prompt (lowest `N` in
-`<topic>.prompt-N.md`, oldest file first) and runs from the workspace root:
+`<topic>.prompt-<N><suffix>.md`, see "Prompt files"; oldest file first) and runs from the workspace root:
 
 ```
 claude -p "/relay:next docs/plans/<topic>.prompt-N.md" --model <model> \
@@ -149,6 +149,29 @@ watcher start picks the prompt up again.
 into `dir` (default `~/.local/bin`) so both are on your `PATH`, and prints a
 `PATH` hint if `dir` is not on it. It replaces existing symlinks but refuses
 to overwrite anything that is not one.
+
+### Prompt files
+
+A prompt file is `docs/plans/<topic>.prompt-<N><suffix>.md`: `N` is digits and
+`suffix` is empty, lowercase letters (`5b`) or a dash and `[a-z0-9-]` (`5-fix`).
+Nothing else is picked up (`prompt-x.md`, `prompt-5 draft.md`). Order: `N`
+numerically, plain `N` before any suffix, suffixes in byte order, then oldest
+file — `5`, `5-fix`, `5b`, `6`. That is how a prompt is inserted between two
+existing ones.
+
+`relay-prompt` commands:
+
+| Command | Effect |
+|---|---|
+| `get <file> <key>` / `set <file> <key> <value>` | read / write one front-matter key |
+| `next <ws>` | print the next pending prompt; exit 1 if none |
+| `waiting <ws>` | list pending prompts held back by `after:` |
+| `check <ws> <file>` | exit 0 if the file's `after:` is satisfied |
+| `lint <ws>` | list `pending`/`running` files in `docs/plans/` whose name does not match the pattern, as `<file>\t<reason>`; exit 1 if any |
+
+`relay-watch` logs each such file once as a `misnamed` line (time, `misnamed`,
+workspace, file, reason; state in `misnamed.seen` next to `waiting.seen`), next
+to the `waiting` lines; renaming the file to a valid name is enough.
 
 ### Prompt front matter
 

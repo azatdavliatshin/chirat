@@ -223,6 +223,40 @@ if grep -q "never-b does not exist" "$tmp/stderr"; then ok "after: never-existin
 printf -- '---\nmodel: sonnet\nstatus: pending\nrepo: demo\nbranch: feat/z\n---\n' >"$aws/docs/plans/c.prompt-2.md"
 eq "next skips a waiting prompt for a later free one" "$aws/docs/plans/c.prompt-2.md" "$("$rp" next "$aws" 2>/dev/null)"
 
+# --- suffixed prompt numbers, lint -----------------------------------------
+
+sws=$tmp/sws
+mkdir -p "$sws/docs/plans"
+sprompt() { # sprompt <name> <status>
+  printf -- '---\nmodel: sonnet\nstatus: %s\nrepo: demo\nbranch: feat/x\n---\n' "$2" >"$sws/docs/plans/$1"
+}
+eq "lint exits 0 on a clean workspace" 0 "$("$rp" lint "$sws" >/dev/null; echo $?)"
+sprompt s.prompt-6.md pending
+sprompt s.prompt-5b.md pending
+sprompt s.prompt-5-fix.md pending
+sprompt s.prompt-5.md pending
+echo "just notes" >"$sws/docs/plans/s.md"
+order=""
+for _ in 1 2 3 4; do
+  f=$("$rp" next "$sws") || break
+  order="$order ${f##*.prompt-}"
+  "$rp" set "$f" status "done"
+done
+eq "next order: N, plain N, suffixes in byte order" " 5.md 5-fix.md 5b.md 6.md" "$order"
+eq "lint ignores files without front matter and valid names" 0 "$("$rp" lint "$sws" >/dev/null; echo $?)"
+sprompt s.prompt-x.md pending
+sprompt "s.prompt-5 draft.md" pending
+sprompt s.prompt-7.md "done"
+eq "next never returns misnamed files" 1 "$("$rp" next "$sws" >/dev/null; echo $?)"
+lint_out=$("$rp" lint "$sws"); lint_rc=$?
+eq "lint exits 1 when files are misnamed" 1 "$lint_rc"
+eq "lint lists exactly the misnamed pending files" \
+  "$(printf '%s\n' "$sws/docs/plans/s.prompt-5 draft.md" "$sws/docs/plans/s.prompt-x.md")" \
+  "$(printf '%s\n' "$lint_out" | cut -f1)"
+eq "lint line carries the reason" "name does not match <topic>.prompt-<N><suffix>.md" "$(printf '%s\n' "$lint_out" | head -n 1 | cut -f2)"
+sprompt s.prompt-05b.md pending
+eq "leading zero with suffix is valid" "$sws/docs/plans/s.prompt-05b.md" "$("$rp" next "$sws")"
+
 # --- summary -------------------------------------------------------------
 
 echo

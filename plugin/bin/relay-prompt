@@ -6,14 +6,22 @@
 #   relay-prompt next <workspace>            print the next pending prompt
 #   relay-prompt waiting <workspace>         list pending prompts held back by after:
 #   relay-prompt check <workspace> <file>    exit 0 if <file>'s after: is satisfied
+#   relay-prompt lint <workspace>            list pending/running files with a bad name
 #
 # Front matter is the block between a first line `---` and the next `---`.
 # Values are single-line `key: value`; a trailing ` # comment` is ignored.
 #
 # `status` is one of: pending | running | blocked | done | failed. `next`
-# considers only `pending` files under <workspace>/docs/plans/*.prompt-N.md,
-# lowest N first, oldest mtime as tie-break (a queue), and exits 1 when the
-# queue is empty.
+# considers only `pending` files under <workspace>/docs/plans/, named
+# <topic>.prompt-<N><suffix>.md with N digits and suffix empty, [a-z]+ (`5b`)
+# or -[a-z0-9-]+ (`5-fix`). Order: N numerically, plain N before any suffix,
+# suffixes in byte order (5 < 5-fix < 5b < 6), oldest mtime as the last
+# tie-break (a queue). `next` exits 1 when the queue is empty.
+#
+# `lint` prints `<file> <tab> <reason>` for every docs/plans/*.md whose front
+# matter says status pending or running but whose name does not match the
+# pattern (such a file is never picked up); exit 1 if any, else 0. Files
+# without front matter are ignored.
 #
 # Optional `after: <branch>`: the prompt is eligible only once <branch> is
 # merged into main of <workspace>/repos/<repo>. A branch that no longer exists
@@ -22,9 +30,10 @@
 # a planning error: the prompt waits and a warning goes to stderr.
 
 set -euo pipefail
+export LC_ALL=C # byte-order suffix comparison and [a-z] without locale surprises
 
 usage() {
-  sed -n '4,8p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '4,9p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 64
 }
 
@@ -87,6 +96,16 @@ mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"
 }
 
+# parse_stem <file>: split <topic>.prompt-<N><suffix>.md into the globals
+# PROMPT_N (digits) and PROMPT_SUFFIX (maybe empty); return 1 on no match.
+# The one place the file name pattern lives.
+parse_stem() {
+  local base=${1##*/}
+  [[ $base =~ ^.+\.prompt-([0-9]+)([a-z]+|-[a-z0-9-]+)?\.md$ ]] || return 1
+  PROMPT_N=${BASH_REMATCH[1]}
+  PROMPT_SUFFIX=${BASH_REMATCH[2]:-}
+}
+
 # after_unmet <workspace> <file>: print why <file>'s after: is not satisfied
 # and return 1; return 0 (silent) when there is no after: or it is satisfied.
 after_unmet() {
@@ -128,6 +147,7 @@ cmd_waiting() {
   [ -d "$ws/docs/plans" ] || die "no docs/plans in workspace: $ws"
   for f in "$ws"/docs/plans/*.prompt-*.md; do
     [ -f "$f" ] || continue
+    parse_stem "$f" || continue
     status=$(cmd_get "$f" status 2>/dev/null) || continue
     [ "$status" = pending ] || continue
     reason=$(after_unmet "$ws" "$f" 2>/dev/null) && continue
@@ -136,20 +156,35 @@ cmd_waiting() {
   done
 }
 
+cmd_lint() {
+  local ws=$1 f status bad=0
+  [ -d "$ws/docs/plans" ] || die "no docs/plans in workspace: $ws"
+  for f in "$ws"/docs/plans/*.md; do
+    [ -f "$f" ] || continue
+    parse_stem "$f" && continue
+    status=$(cmd_get "$f" status 2>/dev/null) || continue
+    case $status in pending | running) ;; *) continue ;; esac
+    printf '%s\tname does not match <topic>.prompt-<N><suffix>.md\n' "$f"
+    bad=1
+  done
+  exit "$bad"
+}
+
 cmd_next() {
-  local ws=$1 f n status best="" best_n=-1 best_m=-1 m
+  local ws=$1 f n suf status best="" best_n="" best_s="" best_m="" m
   [ -d "$ws/docs/plans" ] || die "no docs/plans in workspace: $ws"
   for f in "$ws"/docs/plans/*.prompt-*.md; do
     [ -f "$f" ] || continue
-    n=${f##*.prompt-}
-    n=${n%.md}
-    case $n in '' | *[!0-9]*) continue ;; esac
+    parse_stem "$f" || continue
+    n=$((10#$PROMPT_N)) suf=$PROMPT_SUFFIX
     status=$(cmd_get "$f" status 2>/dev/null) || continue
     [ "$status" = pending ] || continue
     after_unmet "$ws" "$f" >/dev/null || continue
     m=$(mtime "$f")
-    if [ "$best_n" -lt 0 ] || [ "$n" -lt "$best_n" ] || { [ "$n" -eq "$best_n" ] && [ "$m" -lt "$best_m" ]; }; then
-      best=$f best_n=$n best_m=$m
+    if [ -z "$best" ] || [ "$n" -lt "$best_n" ] ||
+      { [ "$n" -eq "$best_n" ] && [[ $suf < $best_s ]]; } ||
+      { [ "$n" -eq "$best_n" ] && [ "$suf" = "$best_s" ] && [ "$m" -lt "$best_m" ]; }; then
+      best=$f best_n=$n best_s=$suf best_m=$m
     fi
   done
   [ -n "$best" ] || exit 1
@@ -163,6 +198,7 @@ case $1 in
   next) [ $# -eq 2 ] || usage; cmd_next "$2" ;;
   waiting) [ $# -eq 2 ] || usage; cmd_waiting "$2" ;;
   check) [ $# -eq 3 ] || usage; cmd_check "$2" "$3" ;;
+  lint) [ $# -eq 2 ] || usage; cmd_lint "$2" ;;
   -h | --help) usage ;;
   *) usage ;;
 esac

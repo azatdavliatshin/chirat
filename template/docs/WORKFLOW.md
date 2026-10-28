@@ -51,7 +51,9 @@ failed runs.
 
 - One task → one branch → one session. Plan first in `docs/plans/<topic>.md`
   (goal, file list, test plan, done criteria), then prompts
-  `<topic>.prompt-N.md` executed in fresh Claude Code sessions.
+  `<topic>.prompt-N.md` executed in fresh Claude Code sessions. To insert a
+  prompt between N and N+1, name it `<topic>.prompt-Nb.md` (or `N-fix`); it
+  runs after N.
 - Prompt front matter (read by `/relay:next` and the runner):
   ```
   ---

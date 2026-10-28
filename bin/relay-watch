@@ -40,6 +40,11 @@
 #   <iso time> <tab> waiting <tab> <ws> <tab> <file> <tab> after=<branch>
 # at most once per 10 minutes (state in <log dir>/waiting.seen).
 #
+# A pending or running file in docs/plans/ whose name does not match
+# <topic>.prompt-<N><suffix>.md is never picked up (`relay-prompt lint`). Each
+# pass logs it, once per file ever (state in <log dir>/misnamed.seen):
+#   <iso time> <tab> misnamed <tab> <ws> <tab> <file> <tab> <reason>
+#
 # SIGINT/SIGTERM during a run stops claude, puts the prompt back to `pending`
 # (note in the .err file), releases the lock and logs the run with
 # `interrupted` in the exit column.
@@ -298,6 +303,21 @@ note_waiting() { # note_waiting <ws>
   done < <("$relay_prompt" waiting "$ws" 2>/dev/null)
 }
 
+# Log each misnamed prompt file once; a file renamed to a valid name is simply
+# picked up by `next`. State: <ws><tab><rel> per line in misnamed.seen.
+note_misnamed() { # note_misnamed <ws>
+  local ws=$1 seen=$state_dir/misnamed.seen f reason rel line
+  while IFS=$'\t' read -r f reason; do
+    [ -n "$f" ] || continue
+    rel=${f#"$ws"/}
+    grep -qxF -- "$ws	$rel" "$seen" 2>/dev/null && continue
+    printf '%s\t%s\n' "$ws" "$rel" >>"$seen"
+    line=$(printf '%s\tmisnamed\t%s\t%s\t%s' "$(now_iso)" "$ws" "$rel" "$reason")
+    printf '%s\n' "$line" >>"$log"
+    printf '%s\n' "$line"
+  done < <("$relay_prompt" lint "$ws" 2>/dev/null)
+}
+
 pass() {
   local ws file
   while IFS= read -r ws; do
@@ -305,8 +325,12 @@ pass() {
       echo "relay-watch: not a workspace (no docs/plans): $ws" >&2
       continue
     fi
-    file=$("$relay_prompt" next "$ws" 2>/dev/null) || { note_waiting "$ws"; continue; }
-    run_one "$ws" "$file"
+    if file=$("$relay_prompt" next "$ws" 2>/dev/null); then
+      run_one "$ws" "$file"
+    else
+      note_waiting "$ws"
+    fi
+    note_misnamed "$ws"
   done < <(workspaces)
 }
 

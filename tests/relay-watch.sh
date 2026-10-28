@@ -287,6 +287,18 @@ git -C "$wr" merge -q --no-edit dep
 "$watch" --once >/dev/null 2>&1
 eq "merged dependency: prompt runs" "done" "$("$rp" get "$ws/docs/plans/demo.prompt-5.md" status)"
 
+# --- misnamed pending file, logged once ----------------------------------------
+
+prompt demo.prompt-x.md sonnet pending
+lines_before=$(wc -l <"$log" | tr -d ' ')
+out=$("$watch" --once 2>/dev/null)
+want=$(printf 'misnamed\t%s\tdocs/plans/demo.prompt-x.md\tname does not match <topic>.prompt-<N><suffix>.md' "$ws")
+case $out in *"$want") ok "misnamed line printed" ;; *) ko "misnamed line printed" "$out" ;; esac
+eq "misnamed line logged" $((lines_before + 1)) "$(wc -l <"$log" | tr -d ' ')"
+out=$("$watch" --once 2>/dev/null)
+eq "misnamed line not repeated" "" "$out"
+rm -f "$ws/docs/plans/demo.prompt-x.md"
+
 # --- install ----------------------------------------------------------------
 
 inst=$tmp/inst/bin
