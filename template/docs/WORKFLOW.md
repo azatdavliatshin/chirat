@@ -60,10 +60,13 @@ failed runs.
   repo: <folder under repos/>
   branch: <branch name>
   worktree: <optional suffix → repos/<repo>-<suffix>>
+  after: <optional branch; wait until it is merged into main>
   ---
   ```
   `blocked` = a human decision is needed; the question is at the top of the
-  status file. Set it back to `pending` to re-queue.
+  status file. Set it back to `pending` to re-queue. A prompt that depends
+  on another prompt's branch declares `after:` and stays `pending`; it is
+  not parked as `blocked` for that reason.
 - `docs/status/` is the memory between sessions: at the end of a session
   write `docs/status/YYYY-MM-DD-<topic>.md` (done / not done / open
   questions / branch + last commit hash), or run `/relay:handover`.

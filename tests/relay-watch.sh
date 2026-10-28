@@ -264,6 +264,29 @@ eq "SIGTERM: log names the prompt" docs/plans/demo.prompt-9.md "$(tail -n 1 "$lo
 absent "SIGTERM: lock released" "$ws/docs/status/runs/.lock"
 rm -f "$ws/docs/plans/demo.prompt-9.md"
 
+# --- after: waiting line, logged once --------------------------------------
+
+wr=$ws/repos/demo
+git init -q -b main "$wr"
+git -C "$wr" commit -q --allow-empty -m init
+git -C "$wr" branch dep
+git -C "$wr" checkout -q dep
+git -C "$wr" commit -q --allow-empty -m dep
+git -C "$wr" checkout -q main
+prompt demo.prompt-5.md sonnet pending
+"$rp" set "$ws/docs/plans/demo.prompt-5.md" after dep
+lines_before=$(wc -l <"$log" | tr -d ' ')
+out=$("$watch" --once 2>/dev/null)
+want=$(printf 'waiting\t%s\tdocs/plans/demo.prompt-5.md\tafter=dep' "$ws")
+case $out in *"$want") ok "waiting line printed" ;; *) ko "waiting line printed" "$out" ;; esac
+eq "waiting line logged" $((lines_before + 1)) "$(wc -l <"$log" | tr -d ' ')"
+out=$("$watch" --once 2>/dev/null)
+eq "waiting line not repeated within 10 minutes" "" "$out"
+eq "waiting prompt stays pending, claude not run" pending "$("$rp" get "$ws/docs/plans/demo.prompt-5.md" status)"
+git -C "$wr" merge -q --no-edit dep
+"$watch" --once >/dev/null 2>&1
+eq "merged dependency: prompt runs" "done" "$("$rp" get "$ws/docs/plans/demo.prompt-5.md" status)"
+
 # --- install ----------------------------------------------------------------
 
 inst=$tmp/inst/bin

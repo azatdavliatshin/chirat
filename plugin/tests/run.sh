@@ -191,6 +191,38 @@ else
   ko "guard reports only the non-docs paths in a workspace repo" "$(cat "$tmp/stderr")"
 fi
 
+# --- after: ----------------------------------------------------------------
+
+aws=$tmp/aws
+mkdir -p "$aws"/docs/plans "$aws"/repos
+ar=$aws/repos/demo
+git init -q -b main "$ar"
+git -C "$ar" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$ar" branch merged-b
+git -C "$ar" checkout -q -b open-b
+git -C "$ar" -c user.name=t -c user.email=t@t commit -q --allow-empty -m open
+git -C "$ar" checkout -q main
+aprompt() { # aprompt <name> <after>
+  printf -- '---\nmodel: sonnet\nstatus: pending\nrepo: demo\nbranch: feat/y\nafter: %s\n---\n# %s\n' "$2" "$1" >"$aws/docs/plans/$1"
+}
+ap=$aws/docs/plans/a.prompt-1.md
+aprompt a.prompt-1.md open-b
+if out=$("$rp" next "$aws" 2>/dev/null); then ko "after: unmerged branch is skipped" "picked $out"; else ok "after: unmerged branch is skipped"; fi
+eq "waiting lists the unmerged branch" "$ap	after=open-b	branch open-b is not merged into main" "$("$rp" waiting "$aws")"
+eq "check exits 1 on an unmerged branch" 1 "$("$rp" check "$aws" "$ap" >/dev/null; echo $?)"
+aprompt a.prompt-1.md merged-b
+eq "after: merged branch is picked" "$ap" "$("$rp" next "$aws")"
+eq "waiting is empty when satisfied" "" "$("$rp" waiting "$aws")"
+eq "check exits 0 when merged" 0 "$("$rp" check "$aws" "$ap" >/dev/null; echo $?)"
+git -C "$ar" branch -q -D merged-b
+printf -- '---\nmodel: sonnet\nstatus: done\nrepo: demo\nbranch: merged-b\n---\n' >"$aws/docs/plans/b.prompt-0.md"
+eq "after: deleted branch is picked" "$ap" "$("$rp" next "$aws")"
+aprompt a.prompt-1.md never-b
+if out=$("$rp" next "$aws" 2>"$tmp/stderr"); then ko "after: never-existing branch is skipped" "picked $out"; else ok "after: never-existing branch is skipped"; fi
+if grep -q "never-b does not exist" "$tmp/stderr"; then ok "after: never-existing branch warns"; else ko "after: never-existing branch warns" "$(cat "$tmp/stderr")"; fi
+printf -- '---\nmodel: sonnet\nstatus: pending\nrepo: demo\nbranch: feat/z\n---\n' >"$aws/docs/plans/c.prompt-2.md"
+eq "next skips a waiting prompt for a later free one" "$aws/docs/plans/c.prompt-2.md" "$("$rp" next "$aws" 2>/dev/null)"
+
 # --- summary -------------------------------------------------------------
 
 echo
