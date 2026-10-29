@@ -90,13 +90,33 @@ failed runs.
 
 ## 6. Hearing back from the runner
 
-Default: **no timer**. For each finished run `relay-watch` appends one line
-to `docs/status/LATEST` (tab-separated: time, prompt stem, status, branch,
-commit, exit code, seconds). The planning chat reads that file — the last
-line, or the lines newer than the last one it reported — in exactly two
-cases: the human says "check", or it has just enqueued a prompt and wants to
-confirm the watcher picked it up (`running` shows in the prompt's front
-matter, not in LATEST — say so). Otherwise it does not look.
+The planning chat does not poll on a fixed timer: every poll is a turn with
+its full context, and a 3-minute timer over a night is ~160 turns, almost
+all empty. Signal first.
 
-Opt-in timer: `cowork_poll: off` (default) | `cowork_poll_active` /
-`cowork_poll_idle` (minutes) in this file's header or `CLAUDE.md`.
+- **Log.** For each finished run `relay-watch` appends one line to
+  `docs/status/LATEST` (tab-separated: time, prompt stem, status, branch,
+  commit, exit code, seconds). On "check", or right after enqueueing a prompt,
+  the planning chat reads the last line (or the lines newer than the last one
+  it reported). `running` shows in the prompt's front matter, not in LATEST.
+- **Three modes.**
+  1. Human at the machine: `relay-watch` posts a macOS notification when a
+     run ends; the human reads the status file and pings the planning chat.
+  2. Human away, Mac awake: adaptive poll. First check at the expected run
+     length (sonnet ≈ 10 min, opus ≈ 20–25 min, from `docs/status/runs/`),
+     then every 10 min. Queue empty: one 60-min tick, then stop.
+  3. Night: no poll; the human writes first in the morning and the planning
+     chat catches up in one turn.
+- **Tick.** One shell command prints a fingerprint; it travels in the
+  reminder text, so an unchanged tick reads nothing and says nothing. Changed:
+  read the last LATEST line and the newest status file, report in one short
+  message, re-plan.
+  ```
+  W=/path/to/workspace; { grep -H '^status:' "$W"/docs/plans/*.prompt-*.md; ls "$W"/docs/status/*.md; tail -n 1 "$W"/docs/status/LATEST; find "$W"/docs/status/runs -name '*.json' -size +0 | wc -l; } 2>/dev/null | cksum
+  ```
+- **Unreachable.** If a tick cannot reach the Mac (asleep, app closed): one
+  retry after 10 min, then stop.
+- **Opt-out.** `cowork_poll: off` in this file's header or `CLAUDE.md` means
+  never tick, even when away.
+
+The `/relay:poll` skill carries the same rule for the planning session.
