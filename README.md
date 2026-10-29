@@ -142,6 +142,14 @@ Flags:
 | `--tmux` | start the watcher in a detached tmux session `relay`; refuses if it exists |
 | `--version` | print the version |
 
+### Operating the watcher
+
+- `relay-watch status [ws…]` — read-only: watcher, tmux session, log, and per workspace the queue, the lock and the last run; exit 1 when something is `STALE`.
+- `relay-watch recover [--dry-run] [ws…]` — the stale-lock recovery on demand; `--dry-run` only prints what it would do; refuses a workspace whose lock is live.
+- `relay-watch restart [--force]` — stop the watcher and start `--tmux` again with the same flags; refused while a `claude` is running unless `--force` (the prompt goes back to `pending`).
+
+A running watcher writes `watcher.pid` and `watcher.flags` (its flags, one per line) next to `watch.log` and removes them when it exits; `status` and `restart` read them. A bare workspace name (`aat`) selects the configured path ending in `/aat`.
+
 Typical use: `bin/relay-watch --once --dry-run` to see what would run, then
 `bin/relay-watch --tmux` and `tmux attach -t relay` to look at it.
 
@@ -161,9 +169,9 @@ and `.err`), `started`, and `claude.pid` once `claude` is up. `claude` runs in
 its own process group. Before it looks for a pending prompt, every pass checks
 the lock: a live `claude.pid` means the workspace is in progress and is
 skipped (also when the prompt was set to `pending` by hand meanwhile — it is
-not started a second time); a dead `claude.pid`, or no `claude.pid` and a dead
-`watcher.pid` (this includes an empty lock left by an older watcher), means
-the lock is stale. Recovery sets the prompt back to `pending` if it still
+not started a second time); a dead `claude.pid` or no `claude.pid`, together
+with a dead `watcher.pid` (this includes an empty lock left by an older
+watcher), means the lock is stale. Recovery sets the prompt back to `pending` if it still
 says `running` (any other status is left alone), appends a `recovered:` note
 to the run's `.err`, removes the `.json` if it is empty, removes the lock and
 logs a line with `recovered` in the exit column. Liveness is `kill -0`; a dead
@@ -175,8 +183,10 @@ sends TERM to `claude`'s whole process group, KILL after 15 seconds
 (`RELAY_STOP_GRACE` overrides, for tests) and waits 5 more. Only then is the
 prompt put back to `pending` and the lock released. If `claude` survives even
 KILL, the prompt and the lock stay and the log line says `interrupted-alive`;
-the next watcher waits for that `claude`. `relay-watch recover` (planned) runs
-the same recovery on demand.
+the next watcher waits for that `claude`. `relay-watch recover` runs
+the same recovery on demand. A lock whose `watcher.pid` is alive is never stale,
+whatever `claude.pid` says: the watcher is between `claude`'s exit and releasing
+the lock.
 
 Every change of a prompt's `status` made by `relay-prompt set` is appended to
 `docs/status/runs/status.log` (time, file, old, new, pid, parent pid, parent

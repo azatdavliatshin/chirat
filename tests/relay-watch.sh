@@ -503,6 +503,184 @@ eq "install refuses to overwrite a regular file" 1 $?
 has "install says why" "$tmp/stderr" "not a symlink"
 eq "install left the regular file alone" mine "$(cat "$inst/relay-prompt")"
 
+# --- status / recover / restart ------------------------------------------------
+
+# Fake tmux: has-session succeeds for names in $FAKE_TMUX_SESSIONS, new-session
+# records and (unless FAKE_TMUX_RUN=0) runs its command in the background,
+# list-panes prints $FAKE_TMUX_PANE_PID, a session killed (and logged) is gone, everything is appended to $FAKE_TMUX_LOG.
+cat >"$tmp/bin/tmux" <<'EOT'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_TMUX_LOG"
+case $1 in
+  has-session)
+    ! grep -qxF "kill-session -t ${3}" "$FAKE_TMUX_LOG" || exit 1 # killed since it was listed
+    for s in ${FAKE_TMUX_SESSIONS:-}; do [ "$s" = "${3#=}" ] && exit 0; done
+    exit 1 ;;
+  new-session)
+    [ "${FAKE_TMUX_RUN:-1}" = 0 ] || nohup bash -c "${*: -1}" </dev/null >/dev/null 2>&1 &
+    exit 0 ;;
+  list-panes) [ -z "${FAKE_TMUX_PANE_PID:-}" ] || echo "$FAKE_TMUX_PANE_PID"; exit 0 ;;
+esac
+exit 0
+EOT
+chmod +x "$tmp/bin/tmux"
+export FAKE_TMUX_LOG=$tmp/tmux.log
+: >"$FAKE_TMUX_LOG"
+
+# A second workspace, alone in the config, so the earlier state does not matter.
+ws=$tmp/ops
+runs=$ws/docs/status/runs
+mkdir -p "$ws"/docs/{plans,status} "$ws"/repos
+printf '%s\n' "$ws" >"$XDG_CONFIG_HOME/relay/workspaces"
+git init -q -b main "$ws/repos/demo"
+git -C "$ws/repos/demo" commit -q --allow-empty -m init
+git -C "$ws/repos/demo" checkout -q -b dep
+git -C "$ws/repos/demo" commit -q --allow-empty -m dep
+git -C "$ws/repos/demo" checkout -q main
+pf=$ws/docs/plans/demo.prompt-1.md
+prompt demo.prompt-1.md sonnet pending
+prompt demo.prompt-2.md sonnet pending
+"$rp" set "$ws/docs/plans/demo.prompt-2.md" after dep
+prompt demo.prompt-3.md sonnet blocked
+rm -f "$XDG_STATE_HOME"/relay/watcher.*
+
+st() { "$watch" status "$@" >"$tmp/st.out" 2>"$tmp/st.err"; return $?; }
+
+st
+eq "status: clean workspace exits 0" 0 $?
+has "status: no watcher" "$tmp/st.out" "watcher: not running"
+has "status: tmux session absent" "$tmp/st.out" "tmux: session 'relay' absent"
+has "status: log line" "$tmp/st.out" "log: $log"
+has "status: workspace as configured" "$tmp/st.out" "$ws"
+has "status: queue with waiting and blocked" "$tmp/st.out" "queue: 2 pending (demo.prompt-1, demo.prompt-2 waiting after=dep), 0 running, 1 blocked (demo.prompt-3), 0 failed"
+has "status: no lock" "$tmp/st.out" "lock: none"
+has "status: no last run" "$tmp/st.out" "last: none"
+st ops
+eq "status: filter by bare name" 0 $?
+has "status: filter keeps the workspace" "$tmp/st.out" "queue:"
+st nosuch
+eq "status: unknown workspace exits 1" 1 $?
+FAKE_TMUX_SESSIONS=relay st
+eq "status: session without watcher is stale" 1 $?
+has "status: says so" "$tmp/st.out" "STALE: tmux: session 'relay' present but no live watcher"
+
+# A watcher and its claude killed with -9.
+: >"$log"
+die_mid_run hang
+st
+eq "status: dead run exits 1" 1 $?
+has "status: stale lock" "$tmp/st.out" "STALE: claude $cpid dead on docs/plans/demo.prompt-1.md"
+has "status: dead watcher" "$tmp/st.out" "watcher: dead (stale pid file, pid $wpid)"
+snap() { find "$ws" "$XDG_STATE_HOME" -type f -exec cksum {} + | sort; ls -A "$runs/.lock"; }
+before=$(snap)
+"$watch" recover --dry-run >"$tmp/out" 2>"$tmp/stderr"
+eq "recover --dry-run exits 0" 0 $?
+has "dry-run: would set pending" "$tmp/out" "would set docs/plans/demo.prompt-1.md pending"
+has "dry-run: would remove the empty json" "$tmp/out" "would remove empty $runs/$run.json"
+has "dry-run: would remove the lock" "$tmp/out" "would remove lock $runs/.lock"
+eq "dry-run: nothing changed" "$before" "$(snap)"
+eq "dry-run: prompt still running" running "$("$rp" get "$pf" status)"
+"$watch" recover >"$tmp/out" 2>"$tmp/stderr"
+eq "recover exits 0" 0 $?
+has "recover: stderr line" "$tmp/stderr" "recovered stale lock (claude $cpid dead)"
+has "recover: err note" "$runs/$run.err" "recovered: watcher/claude died with the prompt 'running'; set to pending"
+eq "recover: prompt pending" pending "$("$rp" get "$pf" status)"
+absent "recover: lock gone" "$runs/.lock"
+absent "recover: empty json gone" "$runs/$run.json"
+eq "recover: logged" recovered "$(head -n 1 "$log" | cut -f5)"
+"$watch" recover >"$tmp/out" 2>&1
+eq "recover with nothing to do exits 0" 0 $?
+has "recover: says so" "$tmp/out" "nothing to recover"
+rm -f "$XDG_STATE_HOME"/relay/watcher.*
+
+# A live watcher with a dead claude is between claude's exit and release_lock.
+mkdir "$runs/.lock"
+echo $$ >"$runs/.lock/watcher.pid"
+echo "$cpid" >"$runs/.lock/claude.pid"
+echo docs/plans/demo.prompt-1.md >"$runs/.lock/prompt"
+echo "$run" >"$runs/.lock/run"
+date +%Y-%m-%dT%H:%M:%S%z >"$runs/.lock/started"
+"$rp" set "$pf" status running
+st
+eq "status: live watcher, dead claude is not stale" 0 $?
+has "status: held by the watcher" "$tmp/st.out" "lock: held by watcher $$ on docs/plans/demo.prompt-1.md"
+before=$(snap)
+"$watch" recover >"$tmp/out" 2>"$tmp/stderr"
+eq "recover: refuses a live lock" 1 $?
+has "recover: names the owner" "$tmp/stderr" "lock held by watcher $$"
+"$watch" --once >/dev/null 2>"$tmp/stderr"
+has "pass: skips it as in progress" "$tmp/stderr" "in progress, lock held by watcher $$"
+eq "recover/pass left everything alone" "$before" "$(snap)"
+rm -f "$runs/.lock"/*
+rmdir "$runs/.lock"
+
+# running prompt without a lock
+st
+eq "status: running prompt without lock exits 1" 1 $?
+has "status: says so" "$tmp/st.out" "STALE: docs/plans/demo.prompt-1.md is running but there is no lock"
+"$rp" set "$pf" status pending
+
+# live run
+: >"$FAKE_TMUX_LOG"
+env FAKE_MODE=sleep "$watch" --interval 1000 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude "$pf"
+eq "watcher.pid while running" "$wpid" "$(cat "$XDG_STATE_HOME/relay/watcher.pid")"
+eq "watcher.flags while running" "--interval
+1000" "$(cat "$XDG_STATE_HOME/relay/watcher.flags")"
+st
+eq "status: live run exits 0" 0 $?
+has "status: watcher alive with flags" "$tmp/st.out" "watcher: alive (pid $wpid, flags: --interval 1000)"
+has "status: claude alive since" "$tmp/st.out" "alive since"
+has "status: running prompt listed" "$tmp/st.out" "1 running (demo.prompt-1)"
+cpid=$(cat "$runs/.lock/claude.pid")
+"$watch" restart >"$tmp/out" 2>"$tmp/stderr"
+eq "restart: refused during a live run" 1 $?
+has "restart: names the prompt" "$tmp/stderr" "docs/plans/demo.prompt-1.md is running"
+if kill -0 "$wpid" 2>/dev/null && kill -0 "$cpid" 2>/dev/null; then ok "restart: refusal stopped nothing"; else ko "restart: refusal stopped nothing"; fi
+eq "restart: refusal started nothing" "" "$(grep new-session "$FAKE_TMUX_LOG")"
+FAKE_TMUX_RUN=0 "$watch" restart --force >"$tmp/out" 2>"$tmp/stderr"
+eq "restart --force exits 0" 0 $?
+wait "$wpid"
+eq "restart --force: old watcher exited 130" 130 $?
+eq "restart --force: prompt back to pending" pending "$("$rp" get "$pf" status)"
+absent "watcher.pid gone after exit" "$XDG_STATE_HOME/relay/watcher.pid"
+absent "watcher.flags gone after exit" "$XDG_STATE_HOME/relay/watcher.flags"
+has "restart --force: new session with the original flags" "$FAKE_TMUX_LOG" "--interval 1000"
+has "restart --force: new-session" "$FAKE_TMUX_LOG" "new-session -d -s relay"
+
+# restart with no watcher starts one (nothing pending, so it idles)
+"$rp" set "$pf" status "done"
+"$rp" set "$ws/docs/plans/demo.prompt-2.md" status "done"
+: >"$FAKE_TMUX_LOG"
+"$watch" restart >"$tmp/out" 2>"$tmp/stderr"
+eq "restart without a watcher exits 0" 0 $?
+has "restart: says no watcher" "$tmp/out" "no watcher running"
+has "restart: prints the new watcher line" "$tmp/out" "watcher: alive (pid "
+wpid=$(cat "$XDG_STATE_HOME/relay/watcher.pid")
+exists "new watcher wrote watcher.flags" -e "$XDG_STATE_HOME/relay/watcher.flags"
+eq "no flags: empty watcher.flags" "" "$(cat "$XDG_STATE_HOME/relay/watcher.flags")"
+kill -TERM "$wpid"
+gone "$wpid"
+absent "watcher.pid gone after TERM" "$XDG_STATE_HOME/relay/watcher.pid"
+absent "watcher.flags gone after TERM" "$XDG_STATE_HOME/relay/watcher.flags"
+
+# no pid file: the pane of the tmux session is the fallback; the session is killed
+sleep 100 &
+spid=$!
+: >"$FAKE_TMUX_LOG"
+FAKE_TMUX_SESSIONS=relay FAKE_TMUX_PANE_PID=$spid FAKE_TMUX_RUN=0 "$watch" restart >"$tmp/out" 2>"$tmp/stderr"
+eq "restart via pane pid exits 0" 0 $?
+wait "$spid" 2>/dev/null
+if kill -0 "$spid" 2>/dev/null; then ko "restart: pane process stopped"; else ok "restart: pane process stopped"; fi
+has "restart: leftover session killed" "$FAKE_TMUX_LOG" "kill-session -t =relay"
+has "restart: new session started" "$FAKE_TMUX_LOG" "new-session -d -s relay"
+
+# --once leaves nothing behind
+"$watch" --once >/dev/null 2>&1
+absent "--once leaves no watcher.pid" "$XDG_STATE_HOME/relay/watcher.pid"
+ws=$tmp/ws
+
 # --- summary -------------------------------------------------------------
 
 echo
