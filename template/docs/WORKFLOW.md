@@ -65,6 +65,7 @@ failed runs.
   after: <optional branch; wait until it is merged into main>
   ---
   ```
+  A `done` prompt is a branch waiting for your review and merge; nothing lands on `main` by itself, and the next `after:` prompt waits for that merge.
   `blocked` = a human decision is needed; the question is at the top of the
   status file. Set it back to `pending` to re-queue. A prompt that depends
   on another prompt's branch declares `after:` and stays `pending`; it is

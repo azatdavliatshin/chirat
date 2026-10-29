@@ -52,6 +52,13 @@ user.* inside a repo.
   `--permission-mode acceptEdits` (or `auto`) plus `--permission-prompts none`,
   with `git push` and `npm publish` denied in settings.
 
+## Landing
+
+<!--
+- plugin/ → claude plugin update relay@relay
+- bin/relay-watch → relay-watch restart
+-->
+
 ## Useful commands
 
 Host prerequisites: `git`, `jq` (commit guard), `shellcheck` (if the repos

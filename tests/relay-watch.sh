@@ -61,7 +61,8 @@ gone() { # gone <pid>: wait up to 5 s until it no longer exists
 # claim; FAKE_MODE=noclaim touches nothing; FAKE_MODE=sleep claims and then
 # sleeps 30 seconds; FAKE_MODE=hang claims and sleeps but prints nothing (the
 # .json stays empty); FAKE_MODE=stubborn is sleep with TERM ignored. Exits with
-# $FAKE_EXIT (default 0).
+# $FAKE_EXIT (default 0). FAKE_FINAL sets the status it ends with (default
+# done); FAKE_SF names a status file it writes before that.
 
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/claude" <<'EOF'
@@ -84,7 +85,8 @@ fi
 if [ -n "$file" ] && [ "$mode" != noclaim ]; then
   "$RP" set "$file" status running
   case $mode in sleep | hang | stubborn) sleep 30 ;; esac
-  case $mode in noflip | sleep | hang | stubborn) ;; *) "$RP" set "$file" status done ;; esac
+  [ -z "${FAKE_SF:-}" ] || echo "status" >"$FAKE_SF"
+  case $mode in noflip | sleep | hang | stubborn) ;; *) "$RP" set "$file" status "${FAKE_FINAL:-done}" ;; esac
 fi
 exit "${FAKE_EXIT:-0}"
 EOF
@@ -804,6 +806,108 @@ mv "$tmp/bin/claude.run" "$tmp/bin/claude"
 # --once leaves nothing behind
 "$watch" --once >/dev/null 2>&1
 absent "--once leaves no watcher.pid" "$XDG_STATE_HOME/relay/watcher.pid"
+ws=$tmp/ws
+
+# --- notification text, RELAY_NOTIFY_OPEN, status next: -------------------------
+
+cat >"$tmp/bin/open" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >>"$FAKE_OPEN"
+EOF
+chmod +x "$tmp/bin/open"
+export FAKE_OPEN=$tmp/open
+ws=$tmp/nt
+mkdir -p "$ws"/docs/{plans,status} "$ws"/repos
+printf '%s\n' "$ws" >"$XDG_CONFIG_HOME/relay/workspaces"
+git init -q -b main "$ws/repos/demo"
+git -C "$ws/repos/demo" commit -q --allow-empty -m init
+nprompt() { prompt "$@"; "$rp" set "$ws/docs/plans/$1" branch "${4:-feat/x}"; }
+sf=$ws/docs/status/2026-10-29-demo.prompt-1.md
+
+nprompt demo.prompt-1.md sonnet pending
+FAKE_SF=$sf "$watch" --once >/dev/null 2>&1
+has "notify done: names the status file and branch" "$FAKE_OSA" "demo.prompt-1 done → review docs/status/2026-10-29-demo.prompt-1.md, merge feat/x"
+has "notify done: subtitle is the workspace" "$FAKE_OSA" 'subtitle "nt"'
+absent "RELAY_NOTIFY_OPEN unset does not open" "$FAKE_OPEN"
+rm -f "$FAKE_OSA"
+
+nprompt demo.prompt-1.md sonnet pending
+FAKE_SF=$sf RELAY_NOTIFY_OPEN=1 "$watch" --once >/dev/null 2>&1
+eq "RELAY_NOTIFY_OPEN=1 opens the status file" "$sf" "$(cat "$FAKE_OPEN")"
+rm -f "$FAKE_OPEN" "$FAKE_OSA"
+
+nprompt demo.prompt-1.md sonnet pending
+FAKE_SF=$sf RELAY_NOTIFY_OPEN=0 "$watch" --once >/dev/null 2>&1
+absent "RELAY_NOTIFY_OPEN=0 does not open" "$FAKE_OPEN"
+rm -f "$FAKE_OSA"
+
+nprompt demo.prompt-1.md sonnet pending
+touch -t 202001010000 "$sf" # older than the run: not this run's status file
+"$watch" --once >/dev/null 2>&1
+has "notify done: no status file" "$FAKE_OSA" "review (no status file), merge feat/x"
+nprompt demo.prompt-1.md sonnet pending
+RELAY_NOTIFY_OPEN=1 "$watch" --once >/dev/null 2>&1
+absent "RELAY_NOTIFY_OPEN=1 without a status file does not open" "$FAKE_OPEN"
+rm -f "$FAKE_OSA" "$sf"
+
+nprompt demo.prompt-1.md sonnet pending
+FAKE_FINAL=blocked FAKE_SF=$sf "$watch" --once >/dev/null 2>&1
+has "notify blocked" "$FAKE_OSA" "demo.prompt-1 needs a decision → question at the top of docs/status/2026-10-29-demo.prompt-1.md"
+has "notify blocked: title" "$FAKE_OSA" 'title "relay: blocked"'
+rm -f "$FAKE_OSA"
+
+nprompt demo.prompt-1.md sonnet pending
+FAKE_MODE=noflip FAKE_SF=$sf RELAY_NOTIFY_OPEN=1 "$watch" --once >/dev/null 2>&1
+has "notify failed: status file and err" "$FAKE_OSA" "demo.prompt-1 failed → docs/status/2026-10-29-demo.prompt-1.md, runs/demo.prompt-1."
+has "notify failed: err suffix" "$FAKE_OSA" ".err"
+has "RELAY_NOTIFY_OPEN=1 opens on failed too" "$FAKE_OPEN" "$sf"
+rm -f "$FAKE_OSA" "$FAKE_OPEN" "$sf"
+
+# a longer stem does not lend its status file (prompt-1 vs prompt-16)
+nprompt demo.prompt-1.md sonnet pending
+printf x >"$ws/docs/status/2026-10-29-demo.prompt-16.md"
+"$watch" --once >/dev/null 2>&1
+has "notify: prompt-16's file is not prompt-1's" "$FAKE_OSA" "review (no status file)"
+rm -f "$FAKE_OSA" "$ws/docs/status/2026-10-29-demo.prompt-16.md"
+
+# status: the next: line, one case per branch of the rule
+rm -f "$ws"/docs/plans/*.md "$ws"/docs/status/*.md
+nx() { st; grep '^  next:' "$tmp/st.out"; }
+# shellcheck disable=SC2016 # backticks are literal
+eq "status header sentence" 'A `done` prompt is a branch waiting for your review and merge; nothing lands on `main` by itself, and the next `after:` prompt waits for that merge.' "$(head -n 1 "$tmp/st.out")"
+eq "status next: queue empty" "  next: queue empty" "$(nx)"
+nprompt demo.prompt-1.md sonnet pending
+nprompt demo.prompt-2.md sonnet pending
+eq "status next: pending" "  next: wait (2 pending)" "$(nx)"
+"$rp" set "$ws/docs/plans/demo.prompt-1.md" status running
+eq "status next: running" "  next: wait (demo.prompt-1 running since -)" "$(nx)"
+"$rp" set "$ws/docs/plans/demo.prompt-1.md" status failed
+printf x >"$ws/docs/status/2026-10-29-demo.prompt-1.md"
+"$rp" set "$ws/docs/plans/demo.prompt-2.md" status failed
+eq "status next: failed" "  next: look at demo.prompt-1 (docs/status/2026-10-29-demo.prompt-1.md)" "$(nx)"
+"$rp" set "$ws/docs/plans/demo.prompt-2.md" status blocked
+printf x >"$ws/docs/status/2026-10-29-demo.prompt-2.md"
+eq "status next: blocked beats failed" "  next: answer demo.prompt-2 (docs/status/2026-10-29-demo.prompt-2.md)" "$(nx)"
+
+# done with an unmerged branch: oldest status file first; releases lists the waiting prompts
+git -C "$ws/repos/demo" checkout -q -b feat/a
+git -C "$ws/repos/demo" commit -q --allow-empty -m a
+git -C "$ws/repos/demo" checkout -q main
+git -C "$ws/repos/demo" checkout -q -b feat/b
+git -C "$ws/repos/demo" commit -q --allow-empty -m b
+git -C "$ws/repos/demo" checkout -q main
+nprompt demo.prompt-1.md sonnet 'done' feat/a
+nprompt demo.prompt-2.md sonnet 'done' feat/b
+nprompt demo.prompt-3.md sonnet pending
+"$rp" set "$ws/docs/plans/demo.prompt-3.md" after feat/a
+nprompt demo.prompt-4.md sonnet pending
+"$rp" set "$ws/docs/plans/demo.prompt-4.md" after feat/a
+touch -t 202601010000 "$ws/docs/status/2026-10-29-demo.prompt-2.md"
+eq "status next: done unmerged, oldest first, releases" "  next: review demo.prompt-2 (feat/b, docs/status/2026-10-29-demo.prompt-2.md), then merge; releases nothing
+  next: review demo.prompt-1 (feat/a, docs/status/2026-10-29-demo.prompt-1.md), then merge; releases demo.prompt-3, demo.prompt-4" "$(nx)"
+git -C "$ws/repos/demo" merge -q --no-edit feat/a
+git -C "$ws/repos/demo" merge -q --no-edit feat/b
+eq "status next: merged → pending" "  next: wait (2 pending)" "$(nx)"
 ws=$tmp/ws
 
 # --- summary -------------------------------------------------------------

@@ -104,6 +104,36 @@ plugin is enabled): `relay-prompt get <file> <key>`,
    - `Branch` — branch name and `git -C <tree> log -1 --format=%h` (or "no commits")
    - `Files touched` — paths relative to the repo
    - `git -C <tree> status --short` — verbatim, in a fenced block
+   - `Next for the human` — last, after the `git status` block, for every
+     final status (see below)
+
+   ### Next for the human
+
+   A `done` prompt is a branch waiting for your review and merge; nothing
+   lands on `main` by itself, and the next `after:` prompt waits for that
+   merge.
+
+   - `done`: (1) review this file and `git -C repos/<repo> diff
+     main..<branch>`; (2) `git -C repos/<repo> merge --no-edit <branch>`;
+     (3) the landing steps: if the workspace `CLAUDE.md` has a `## Landing`
+     section, apply its rules to the "Files touched" list and print only the
+     steps that match, as commands; (4) `Releases:` the prompts that
+     `relay-prompt waiting .` lists with `after=<this branch>`, or
+     `nothing waiting`.
+   - `blocked`: "answer the question at the top of this file, then set the
+     prompt back to `pending`: `relay-prompt set <file> status pending`".
+   - `failed`: "read `docs/status/runs/<stem>.<stamp>.err`, fix or re-plan,
+     then set `pending`".
+
+   `## Landing` convention: a bullet list, each
+   `- <glob or path prefix> → <command>`; a step is included when any touched
+   path matches. Example:
+
+   ```
+   ## Landing
+   - plugin/ → claude plugin update relay@relay
+   - bin/relay-watch → relay-watch restart
+   ```
 
 5. **Close it.** `relay-prompt set <file> status <final>` where `<final>`
    is `done` when the body was carried out (including a clean stop at a

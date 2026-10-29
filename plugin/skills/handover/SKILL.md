@@ -35,6 +35,16 @@ Base it on what actually happened in this conversation. Sections, in order:
 - `Files touched` — paths, repo-relative, grouped by repo; workspace files
   under `docs/` listed separately
 - `git status --short` — verbatim per repo, in fenced blocks
+- `Next for the human` — last, after the `git status` blocks: for each branch
+  with commits not yet in `main`, the review and merge commands
+  (`git -C repos/<repo> diff main..<branch>`, `git -C repos/<repo> merge
+  --no-edit <branch>`), then the landing steps: if the workspace `CLAUDE.md`
+  has a `## Landing` section (bullets `- <glob or path prefix> → <command>`),
+  apply its rules to the "Files touched" list and print only the steps that
+  match, as commands; then `Releases:` the prompts that `relay-prompt waiting .`
+  lists with `after=<that branch>`, or `nothing waiting`. A `done` prompt is a
+  branch waiting for your review and merge; nothing lands on `main` by itself,
+  and the next `after:` prompt waits for that merge.
 
 Do not commit or push anything. Never write this file inside `repos/`.
 

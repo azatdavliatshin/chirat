@@ -37,8 +37,9 @@
 #                 ~/.local/bin); refuses to replace anything that is not a
 #                 symlink, hints at PATH if dir is not on it
 #   status [ws…]  read-only report: watcher, tmux session, log, and per
-#                 workspace the queue, the lock and the last run; exit 1 when
-#                 anything is STALE. A bare name (`aat`) matches `*/aat`
+#                 workspace the queue, the lock, the last run and a `next:`
+#                 line (what the human does next); exit 1 when anything is
+#                 STALE. A bare name (`aat`) matches `*/aat`
 #   recover [--dry-run] [ws…]
 #                 the stale-lock recovery below, on demand; --dry-run only
 #                 prints what would be done; refuses a workspace whose lock
@@ -111,10 +112,19 @@
 # that branch in repos/<repo>, or - if there is none; exit is claude's exit
 # code or `interrupted`.
 #
-# After each run a desktop notification names the prompt and its final
-# status (done / blocked / failed), so the human can read the status file and
-# ping the planning session instead of that session polling. macOS only
+# After each run a desktop notification (title `relay: <status>`, subtitle the
+# workspace name) says what to do next, so the human can read the status file
+# and ping the planning session instead of that session polling:
+#
+#   done      <stem> done → review <status file>, merge <branch>
+#   blocked   <stem> needs a decision → question at the top of <status file>
+#   failed    <stem> failed → <status file>, runs/<stem>.<stamp>.err
+#   other     <stem> <status> → <ws>/docs/status      (pending after an interrupt)
+#
+# <status file> is the newest docs/status/*<stem>*.md modified since the run
+# started, relative to the workspace, or (no status file). macOS only
 # (osascript); silently skipped elsewhere or with RELAY_NOTIFY=0.
+# RELAY_NOTIFY_OPEN=1 also opens that file (`open`) for done / blocked / failed.
 #
 # Needs bash, git, claude; jq is optional. macOS first (BSD date and stat),
 # but nothing here is macOS-only.
@@ -363,12 +373,44 @@ write_latest() { # write_latest <ws> <file> <stem> <exit> <seconds>
     >>"$ws/docs/status/LATEST"
 }
 
-notify() { # notify <ws> <stem> <status>: desktop notification, best effort
+file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+
+# status_file_for <ws> <stem> [min mtime]: the newest docs/status/*<stem>*.md
+# (modified at or after min mtime), relative to <ws>; nothing when none.
+# prompt-1 does not match prompt-16: a digit may not follow the stem.
+status_file_for() {
+  local ws=$1 stem=$2 min=${3:-0} f name t best="" best_t=0
+  for f in "$ws"/docs/status/*"$stem"*.md; do
+    [ -f "$f" ] || continue
+    name=${f##*/}
+    case ${name#*"$stem"} in [0-9]*) continue ;; esac
+    t=$(file_mtime "$f") || continue
+    [ "$t" -ge "$min" ] || continue
+    if [ -z "$best" ] || [ "$t" -ge "$best_t" ]; then best=$f best_t=$t; fi
+  done
+  [ -n "$best" ] && printf '%s\n' "${best#"$ws"/}"
+  return 0
+}
+
+notify() { # notify <ws> <stem> <status> <started epoch> <run>: desktop notification, best effort
   [ "${RELAY_NOTIFY:-1}" != 0 ] || return 0
-  command -v osascript >/dev/null 2>&1 || return 0
-  local title="relay: $3" text="$2 — ${1##*/}/docs/status"
-  case $3 in blocked) text="$2 needs a decision — question at the top of its status file" ;; esac
-  osascript -e "display notification \"$text\" with title \"$title\"" >/dev/null 2>&1 || true
+  local ws=$1 stem=$2 st=$3 sf branch text title="relay: $3"
+  sf=$(status_file_for "$ws" "$stem" "${4:-0}")
+  branch=$("$relay_prompt" get "$ws/docs/plans/$stem.md" branch 2>/dev/null) || branch=""
+  case $st in
+    done) text="$stem done → review ${sf:-(no status file)}, merge ${branch:--}" ;;
+    blocked) text="$stem needs a decision → question at the top of ${sf:-(no status file)}" ;;
+    failed) text="$stem failed → ${sf:-(no status file)}, runs/${5:-$stem.*}.err" ;;
+    *) text="$stem $st → ${ws##*/}/docs/status" ;;
+  esac
+  text=${text//\\/}
+  text=${text//\"/}
+  if command -v osascript >/dev/null 2>&1; then
+    osascript -e "display notification \"$text\" with title \"$title\" subtitle \"${ws##*/}\"" >/dev/null 2>&1 || true
+  fi
+  if [ "${RELAY_NOTIFY_OPEN:-0}" = 1 ] && [ -n "$sf" ]; then
+    case $st in done | blocked | failed) open "$ws/$sf" >/dev/null 2>&1 || true ;; esac
+  fi
 }
 
 run_one() { # run_one <ws> <prompt file>
@@ -429,7 +471,7 @@ run_one() { # run_one <ws> <prompt file>
   claude_pid=""
 
   fail_if_unfinished "$file" "$err" "claude exited $exit_code"
-  notify "$ws" "$stem" "$("$relay_prompt" get "$file" status 2>/dev/null || echo unknown)"
+  notify "$ws" "$stem" "$("$relay_prompt" get "$file" status 2>/dev/null || echo unknown)" "$started" "$stem.$stamp"
   current_file="" current_err=""
   secs=$(( $(date +%s) - started ))
   write_latest "$ws" "$file" "$stem" "$exit_code" "$secs"
@@ -653,9 +695,80 @@ watcher_line() {
   return 1
 }
 
+# unmerged <ws> <prompt file>: success when the prompt's branch exists in
+# repos/<repo> and is not yet in main (a deleted branch counts as merged)
+unmerged() {
+  local r b repo
+  b=$("$relay_prompt" get "$2" branch 2>/dev/null) || return 1
+  repo=$("$relay_prompt" get "$2" repo 2>/dev/null) || return 1
+  r=$1/repos/$repo
+  [ -n "$b" ] && [ -n "$repo" ] || return 1
+  git -C "$r" rev-parse --verify -q refs/heads/main >/dev/null 2>&1 || return 1
+  git -C "$r" rev-parse --verify -q "refs/heads/$b" >/dev/null 2>&1 || return 1
+  ! git -C "$r" merge-base --is-ancestor "refs/heads/$b" main 2>/dev/null
+}
+
+# next_line <ws> <waiting lines> <done> <blocked> <failed> <running> <n pending>
+# The last four lists are newline-separated prompt files; prints the
+# `next:` line(s) of status.
+next_line() {
+  local ws=$1 lw=$2 p stem sf br rel t mt out="" rl
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    unmerged "$ws" "$p" || continue
+    stem=${p##*/}
+    stem=${stem%.md}
+    sf=$(status_file_for "$ws" "$stem")
+    mt=0
+    [ -n "$sf" ] && mt=$(file_mtime "$ws/$sf")
+    out="$out$mt	$p
+"
+  done <<<"$3"
+  if [ -n "$out" ]; then
+    while IFS=$'\t' read -r mt p; do
+      [ -n "$p" ] || continue
+      stem=${p##*/}
+      stem=${stem%.md}
+      br=$("$relay_prompt" get "$p" branch)
+      sf=$(status_file_for "$ws" "$stem")
+      rl=$(printf '%s\n' "$lw" | awk -F'\t' -v b="after=$br" '$2 == b { n = split($1, a, "/"); s = a[n]; sub(/\.md$/, "", s); printf "%s%s", (c++ ? ", " : ""), s }')
+      echo "  next: review $stem ($br, ${sf:-(no status file)}), then merge; releases ${rl:-nothing}"
+    done < <(printf '%s' "$out" | sort -n)
+    return 0
+  fi
+  p=$(printf '%s\n' "$4" | sed -n 1p)
+  if [ -n "$p" ]; then
+    stem=${p##*/}; stem=${stem%.md}
+    echo "  next: answer $stem ($(status_file_for "$ws" "$stem" || true))"
+    return 0
+  fi
+  p=$(printf '%s\n' "$5" | sed -n 1p)
+  if [ -n "$p" ]; then
+    stem=${p##*/}; stem=${stem%.md}
+    echo "  next: look at $stem ($(status_file_for "$ws" "$stem" || true))"
+    return 0
+  fi
+  p=$(printf '%s\n' "$6" | sed -n 1p)
+  if [ -n "$p" ]; then
+    stem=${p##*/}; stem=${stem%.md}
+    rel=${p#"$ws"/}
+    lock_read "$ws"
+    t=-
+    [ "$lk_rel" = "$rel" ] && [ -n "$lk_started" ] && t=$lk_started
+    echo "  next: wait ($stem running since $t)"
+    return 0
+  fi
+  if [ "${7:-0}" -gt 0 ]; then
+    echo "  next: wait ($7 pending)"
+    return 0
+  fi
+  echo "  next: queue empty"
+}
+
 # status_ws <ws>: one block; returns 1 when something in it is stale
 status_ws() {
   local ws=$1 p st rel state bad=0 f after n name line running=() lw
+  local l_done="" l_blocked="" l_failed="" l_running=""
   local cnt_pending=0 cnt_running=0 cnt_blocked=0 cnt_failed=0
   local nm_pending="" nm_running="" nm_blocked="" nm_failed=""
   echo "$ws"
@@ -674,9 +787,14 @@ status_ws() {
         after=$(printf '%s\n' "$lw" | awk -F'\t' -v f="$p" '$1 == f { print $2; exit }')
         [ -n "$after" ] && name="$name waiting $after"
         cnt_pending=$((cnt_pending + 1)); nm_pending="${nm_pending:+$nm_pending, }$name" ;;
-      running) cnt_running=$((cnt_running + 1)); nm_running="${nm_running:+$nm_running, }$name"; running+=("$p") ;;
-      blocked) cnt_blocked=$((cnt_blocked + 1)); nm_blocked="${nm_blocked:+$nm_blocked, }$name" ;;
-      failed) cnt_failed=$((cnt_failed + 1)); nm_failed="${nm_failed:+$nm_failed, }$name" ;;
+      running) cnt_running=$((cnt_running + 1)); nm_running="${nm_running:+$nm_running, }$name"; running+=("$p"); l_running="$l_running$p
+" ;;
+      blocked) cnt_blocked=$((cnt_blocked + 1)); nm_blocked="${nm_blocked:+$nm_blocked, }$name"; l_blocked="$l_blocked$p
+" ;;
+      failed) cnt_failed=$((cnt_failed + 1)); nm_failed="${nm_failed:+$nm_failed, }$name"; l_failed="$l_failed$p
+" ;;
+      done) l_done="$l_done$p
+" ;;
     esac
   done
   line="  queue:"
@@ -717,12 +835,15 @@ status_ws() {
   else
     echo "  last: none"
   fi
+  next_line "$ws" "$lw" "$l_done" "$l_blocked" "$l_failed" "$l_running" "$cnt_pending"
   return "$bad"
 }
 
 cmd_status() {
   local list ws bad=0 last alive_pid=""
   list=$(select_ws "$@") || exit 1
+  # shellcheck disable=SC2016 # backticks are literal
+  echo 'A `done` prompt is a branch waiting for your review and merge; nothing lands on `main` by itself, and the next `after:` prompt waits for that merge.'
   watcher_line || bad=1
   alive_pid=$(watcher_alive)
   if ! command -v tmux >/dev/null 2>&1; then
