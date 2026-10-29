@@ -53,6 +53,10 @@ user.* inside a repo.
   `--permission-mode acceptEdits` (or `auto`) plus `--permission-prompts none`,
   with `git push` and `npm publish` denied in settings.
 
+## Planning-side settings
+- `prompt_review: on` — new prompts are written as `status: draft` and set
+  `pending` only after the human's "go" (see docs/WORKFLOW.md §4).
+
 ## Landing
 
 <!--

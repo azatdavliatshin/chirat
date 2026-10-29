@@ -59,7 +59,7 @@ failed runs.
   ```
   ---
   model: sonnet | opus | fable
-  status: pending | running | blocked | done | failed
+  status: draft | pending | running | blocked | done | failed
   repo: <folder under repos/>
   branch: <branch name>
   worktree: <optional suffix → repos/<repo>-<suffix>>
@@ -71,6 +71,11 @@ failed runs.
   status file. Set it back to `pending` to re-queue. A prompt that depends
   on another prompt's branch declares `after:` and stays `pending`; it is
   not parked as `blocked` for that reason.
+- **Prompt review before it can run** (`prompt_review: on` in CLAUDE.md,
+  the default): the planning chat writes a new prompt with `status: draft`
+  (inert — the runner takes only `pending`), posts a three-line summary,
+  and flips it to `pending` only when I say "go" after reading or editing
+  the file. `prompt_review: off` writes `pending` directly.
 - When the planning chat writes a draft prompt, it opens the file as a
   document in the chat's side panel (not pasted into the message), so the
   review happens without leaving the chat; the file is the source of truth.
@@ -83,6 +88,20 @@ failed runs.
   "check" here, then review → merge → the `## Landing` steps → the next
   `after:` prompt starts by itself. Same block every time, so there is
   nothing to ask.
+- **Model choice** (the `model:` line) is made in the planning discussion, not
+  by a fixed default: the Cowork session that writes the prompt picks model and
+  effort for the executor and gives a one-line reason as the first line of the
+  prompt body (`Model: fable, effort high — found the bug, has the repros`).
+  Defaults when there is no reason to deviate: opus or fable, high effort, for
+  code; sonnet / medium for docs-only work.
+  - Model diversity pays off at review: prefer a reviewer on a different
+    model from the author's. Planner and executor may share a model; when
+    triaging a review, the planner should be wary of dismissing findings
+    against code written by its own model.
+  - Whoever writes a fix never verifies it: the verification pass runs in a
+    session (or model) that did not write the fix. A review session may be
+    switched to the author role by an explicit prompt — then someone else
+    verifies.
 - `docs/status/` is the memory between sessions: at the end of a session
   write `docs/status/YYYY-MM-DD-<topic>.md` (done / not done / open
   questions / branch + last commit hash), or run `/relay:handover`.
@@ -134,5 +153,20 @@ all empty. Signal first.
   retry after 10 min, then stop.
 - **Opt-out.** `cowork_poll: off` in this file's header or `CLAUDE.md` means
   never tick, even when away.
+
+**Review in the side panel.** The planning chat shows things to read as
+documents in the chat's side panel, never pasted into a message:
+- a draft prompt, when written;
+- on "check", two files for the finished run: the status file, and the
+  diff — `git -C repos/<repo> diff <default_branch>..<branch>` for the
+  prompt's branch, written to `.relay/review/<stem>.diff` (gitignored),
+  rendered with `docs/qa/diff2html.py <in.diff> <out.html> [title]` and
+  opened as HTML (file list with +/− counts, collapsible files, line
+  numbers). Status first, diff second; a `blocked`/`failed` run gets the
+  diff only if the branch has commits;
+- "diff" (or "diff <stem>") shows the diff again on its own — the newest
+  `done` prompt with an unmerged branch when no stem is given.
+The aim is to stay in Cowork as long as possible and leave it only for what
+it cannot reach (git merge, push).
 
 The `/relay:poll` skill carries the same rule for the planning session.

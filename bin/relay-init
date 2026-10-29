@@ -7,7 +7,7 @@
 # Creates <dir>/<name> (default dir: ~/code), fills {{NAME}} / {{DESCRIPTION}},
 # renames CLAUDE.md.in to CLAUDE.md, writes <workspace>/.gitconfig, runs
 # `git init -b main` in the workspace with a .gitignore that leaves repos/
-# and .claude/ out (and .relay/lock/), and prints the includeIf block to add to ~/.gitconfig plus how to add
+# and .claude/ out (and .relay/lock/, .relay/review/), and prints the includeIf block to add to ~/.gitconfig plus how to add
 # a private remote. Never overwrites an existing directory and never edits
 # ~/.gitconfig.
 
@@ -90,8 +90,9 @@ fi
 # The workspace is its own private repository; the clones under repos/ are
 # separate repositories and must not become submodules of it. .claude/ holds
 # local permissions whose source of truth is the template, not the history.
-# .relay/ is relay's own state: committed (run log) except the lock.
-printf '%s\n' "repos/" ".claude/" ".DS_Store" ".relay/lock/" >"$ws/.gitignore"
+# .relay/ is relay's own state: committed (run log) except the lock and the
+# review scratch (diffs rendered for the planning chat).
+printf '%s\n' "repos/" ".claude/" ".DS_Store" ".relay/lock/" ".relay/review/" >"$ws/.gitignore"
 git init -q -b main "$ws"
 
 cat <<EOF

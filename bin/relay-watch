@@ -140,9 +140,10 @@
 # status.log, lock/); everything a human reads stays under docs/. The optional
 # <ws>/.relay/config (`key=value` lines, `#` comments, no quotes; paths relative
 # to the workspace root) sets plans_dir (default docs/plans), status_dir
-# (default docs/status) and default_branch (default main). Unknown keys are
-# ignored. A run log still at docs/status/runs is reported by status and doctor
-# (`warn:`) and is not migrated.
+# (default docs/status), default_branch (default main) and notify_open (see
+# the notification above; default empty). Unknown keys are ignored. A run log
+# still at docs/status/runs is reported by status and doctor (`warn:`) and is
+# not migrated.
 #
 # Needs bash, git, claude; jq is optional. macOS first (BSD date and stat),
 # but nothing here is macOS-only.
