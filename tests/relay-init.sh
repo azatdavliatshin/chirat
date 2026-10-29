@@ -138,6 +138,19 @@ for bad in "a/b" ".hidden" "two words"; do
   fi
 done
 
+# --- poll fingerprint ----------------------------------------------------
+
+fpline=$(grep '^W=' "$root/plugin/skills/poll/SKILL.md")
+fp() { bash -c "$(printf '%s' "$fpline" | sed "s|^W=[^;]*;|W=$ws;|")"; }
+mkdir -p "$ws/docs/status/runs"
+printf -- '---\nmodel: sonnet\nstatus: pending\nrepo: r\nbranch: b\n---\n' >"$ws/docs/plans/t.prompt-1.md"
+fp1=$(fp)
+eq "fingerprint is stable" "$fp1" "$(fp)"
+if [ -n "$fp1" ]; then ok "fingerprint is not empty"; else ko "fingerprint is not empty"; fi
+sed -i.bak 's/^status: pending/status: running/' "$ws/docs/plans/t.prompt-1.md"
+rm -f "$ws/docs/plans/t.prompt-1.md.bak"
+if [ "$fp1" != "$(fp)" ]; then ok "fingerprint changes with a status flip"; else ko "fingerprint changes with a status flip"; fi
+
 # --- summary -------------------------------------------------------------
 
 echo
