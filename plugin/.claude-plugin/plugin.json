@@ -1,6 +1,7 @@
 {
   "name": "chirat",
   "version": "0.2.0",
+  "license": "MIT",
   "description": "Hand prompts from a planning session to Claude Code and bring status back, through files in the workspace.",
   "author": {
     "name": "Azat Davliatshin"

@@ -58,6 +58,26 @@ checks the setup. The plugin brings `/chirat:next` (run one prompt file),
 /plugin install chirat@chirat
 ```
 
+## Safety
+
+- The watcher runs `claude -p` on **your** machine, with **your** `claude`
+  login and your git credentials. The default `--permission-mode auto` means
+  a classifier, not you, approves each action; with `--permission-prompts
+  none` whatever it would ask about is denied and the run ends `blocked`.
+- Refused in every mode, by a plugin hook: `git push` and `npm`/`pnpm`/`yarn`
+  `publish`, however the command is wrapped (`git -C`, chains, `$(…)`,
+  `bash -c`, `env`, …); and commits that include workspace planning files or
+  `.claude/` ([Commit guard](#commit-guard)). The hook reads command text; it
+  is not a sandbox. It does not cover plumbing such as `git send-pack`, `gh`
+  commands that push (`gh pr create`, `gh repo sync`) or user-defined git
+  aliases.
+- Not sandboxed: anything else a run decides to do, in the workspace and
+  beyond — installing packages, network access, deleting files. For
+  repositories you do not fully trust, or on a machine with sensitive data,
+  run with `--permission-mode acceptEdits` and an explicit allow list in
+  `.claude/settings.local.json` ([The watcher](#the-watcher), Permissions).
+- Never use `--dangerously-skip-permissions`.
+
 ## Quick start
 
 ```bash
@@ -134,15 +154,14 @@ claude -p "/chirat:next docs/plans/<topic>.prompt-N.md" --model <model> \
   --permission-mode auto --permission-prompts none --output-format json
 ```
 
-**Permissions.** The default is `auto`: a classifier reviews each action,
-where `acceptEdits` prefix rules cannot match compound commands (`a && b`,
-`… | tail`) and deny them. `--permission-prompts none` stays in every mode:
-whatever would ask is denied, so an unwatched run ends `blocked` or `failed`
-instead of hanging. To fall back, pass `--permission-mode acceptEdits` (or set
+**Permissions** (what this means for you: [Safety](#safety)). The default is
+`auto`, because `acceptEdits` prefix rules cannot match compound commands
+(`a && b`, `… | tail`) and deny them. `--permission-prompts none` stays in
+every mode, so an unwatched run ends `blocked` or `failed` instead of hanging.
+To fall back, pass `--permission-mode acceptEdits` (or set
 `CHIRAT_PERMISSION_MODE`; the flag wins) and allow every command a run needs
 in the workspace's `.claude/settings.local.json`; the template allows `git`,
 `npm test`, `shellcheck` and more, and denies `git push` and `npm publish`.
-Never use `--dangerously-skip-permissions`.
 
 **Outputs.** `.chirat/runs/<topic>.prompt-N.<YYYYMMDD-HHMMSS>.json` holds the
 result and metadata (not a transcript), the matching `.err` holds stderr; the
@@ -386,3 +405,7 @@ says what. Re-plan the prompt to avoid it, or (less safe) allow it in
 **`chirat-watch status` says `STALE`.** Run `chirat-watch recover --dry-run`
 first, then `chirat-watch recover`; the rules are in the header of
 `bin/chirat-watch`.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
