@@ -413,6 +413,129 @@ eq "no parser: git commit is allowed" 0 "$(jhook "$repo" "git commit -m x")"
 eq "no parser: npm run publish-docs is allowed" 0 "$(jhook "$ws" "npm run publish-docs")"
 guard_shell=(bash)
 
+# --- guard: shell words, quoted paths, fail closed ---------------------------
+
+reason() { # reason <name> <fixed string>: the last refusal's stderr holds it
+  if grep -qF -- "$2" "$tmp/stderr"; then ok "$1"; else ko "$1" "$(cat "$tmp/stderr")"; fi
+}
+unres_msg="chirat: cannot tell which repository this commits to; run git from the repository directory"
+
+sp="$tmp/code with spaces"
+git init -q -b main "$sp"
+echo "code" >"$sp/main.sh"
+git -C "$sp" add main.sh
+git -C "$sp" -c user.name=t -c user.email=t@t commit -q -m init
+echo "more" >>"$sp/main.sh"
+git -C "$sp" add main.sh
+eq "spaces: clean repo, double-quoted -C is allowed" 0 "$(jhook "$tmp" "git -C \"$sp\" commit -m x")"
+eq "spaces: clean repo, cd \"dir with spaces\" is allowed" 0 "$(jhook "$tmp" "cd \"code with spaces\" && git commit -m x")"
+mkdir -p "$sp/.claude"
+echo "{}" >"$sp/.claude/settings.local.json"
+git -C "$sp" add -f .claude/settings.local.json
+eq "spaces: from inside the dir" 2 "$(jhook "$sp" "git commit -m x")"
+eq "spaces: double-quoted -C is checked" 2 "$(jhook "$tmp" "git -C \"$sp\" commit -m x")"
+reason "spaces: the refusal names the leaked file" "settings.local.json"
+eq "spaces: single-quoted -C is checked" 2 "$(jhook "$tmp" "git -C '$sp' commit -m x")"
+eq "spaces: backslash-escaped -C is checked" 2 "$(jhook "$tmp" "git -C ${sp// /\\ } commit -m x")"
+eq "spaces: -C attached to its value is checked" 2 "$(jhook "$tmp" "git -C\"$sp\" commit -m x")"
+eq "spaces: -C relative, quoted" 2 "$(jhook "$tmp" "git -C 'code with spaces' commit -m x")"
+eq "spaces: cd \"dir with spaces\" && git commit is checked" 2 "$(jhook "$tmp" "cd \"code with spaces\" && git commit -m x")"
+eq "spaces: cd dir\\ with\\ spaces; git commit is checked" 2 "$(jhook "$tmp" "cd code\\ with\\ spaces; git commit -m x")"
+eq "spaces: -C with spaces, second in a chain" 2 "$(jhook "$tmp" "git status && git -C \"$sp\" commit -m x")"
+eq "spaces: partly quoted word" 2 "$(jhook "$tmp" "git -C \"$tmp\"/code\\ with\\ spaces commit -m x")"
+eq "spaces: \$'…' quoting" 2 "$(jhook "$tmp" "git -C \$'$sp' commit -m x")"
+eq "spaces: bash -c with a quoted -C inside" 2 "$(jhook "$tmp" "bash -c 'git -C \"$sp\" commit -m x'")"
+eq "spaces: eval with a quoted -C inside" 2 "$(jhook "$tmp" "eval \"git -C '$sp' commit -m x\"")"
+eq "spaces: env -C <dir> git commit" 2 "$(jhook "$tmp" "env -C \"$sp\" git commit -m x")"
+eq "spaces: pushd then commit" 2 "$(jhook "$tmp" "pushd 'code with spaces' && git commit -m x")"
+
+# Quotes are parsed: a separator inside a string is text.
+eq "quotes: git commit -m \"a; $gp\" is a commit, not a push" 2 "$(jhook "$sp" "git commit -m \"a; $gp\"")"
+reason "quotes: …and is refused for the leaked file, not as a push" "settings.local.json"
+eq "quotes: echo '$gp' is allowed" 0 "$(jhook "$ws" "echo '$gp; cd x && git -C y push'")"
+eq "quotes: push inside \$(…) in a string is still seen" 2 "$(jhook "$ws" "echo \"today: \$($gp)\"")"
+eq "quotes: push inside backticks in a string is still seen" 2 "$(jhook "$ws" "echo \"today: \`$gp\`\"")"
+eq "quotes: push inside \${x:-\$(…)} is still seen" 2 "$(jhook "$ws" "echo \${x:-\$($gp)}")"
+eq "quotes: commit message from a quoted heredoc" 2 "$(jhook "$sp" "git commit -m \"\$(cat <<'EOF'
+Subject line
+
+Body with 'quotes' and \"double quotes\" and a ) paren.
+EOF
+)\"")"
+reason "quotes: heredoc commit is checked for the leaked file" "settings.local.json"
+eq "quotes: heredoc body with an unquoted delimiter is scanned" 2 "$(jhook "$ws" "cat <<EOF
+line \$($gp)
+EOF")"
+eq "quotes: heredoc body with a quoted delimiter is text" 0 "$(jhook "$ws" "cat <<'EOF'
+it's \$($gp) and \"unbalanced
+EOF
+echo done")"
+eq "quotes: heredoc with <<- and tabs" 0 "$(jhook "$ws" "cat <<-EOF
+	don't
+	EOF
+echo ok")"
+eq "quotes: here-string is not a heredoc" 0 "$(jhook "$ws" "grep x <<<\"it's\"")"
+eq "quotes: comment with an apostrophe" 0 "$(jhook "$ws" "ls # don't")"
+
+# Fail closed: when the repository cannot be told, refuse with the reason.
+eq "unresolved: git -C \"\$X\" commit is refused" 2 "$(jhook "$tmp" "git -C \"\$X\" commit -m x")"
+reason "unresolved: the reason is given" "$unres_msg"
+eq "unresolved: git -C \$X commit is refused" 2 "$(jhook "$tmp" "git -C \$X commit -m x")"
+eq "unresolved: git -C \$(pwd) commit is refused" 2 "$(jhook "$tmp" "git -C \$(pwd) commit -m x")"
+eq "unresolved: git -C ~user commit is refused" 2 "$(jhook "$tmp" "git -C ~nobody/x commit -m x")"
+eq "unresolved: a glob in -C is refused" 2 "$(jhook "$tmp" "git -C $tmp/code* commit -m x")"
+eq "unresolved: cd \"\$D\" && git commit is refused" 2 "$(jhook "$tmp" "cd \"\$D\" && git commit -m x")"
+reason "unresolved: cd reason" "$unres_msg"
+eq "unresolved: cd - && git commit is refused" 2 "$(jhook "$tmp" "cd - && git commit -m x")"
+eq "unresolved: \$'…' with a variable is literal (no expansion in \$'…')" 2 "$(jhook "$tmp" "git -C \$'$tmp/\$X' commit -m x")"
+reason "unresolved: literal \$X dir does not exist" "$unres_msg"
+eq "unresolved: cd \"\$D\" && ls is allowed (no commit)" 0 "$(jhook "$tmp" "cd \"\$D\" && ls")"
+eq "unresolved: git \$SUB is refused" 2 "$(jhook "$tmp" "git \$SUB")"
+eq "unresolved: git log \$REF is allowed" 0 "$(jhook "$tmp" "git log \$REF")"
+eq "unresolved: bash -c \"\$CMD\" is allowed (nothing visible)" 0 "$(jhook "$tmp" "bash -c \"\$CMD\"")"
+eq "unresolved: bash -c 'git -C \"\$X\" commit' is refused" 2 "$(jhook "$tmp" "bash -c 'git -C \"\$X\" commit -m x'")"
+eq "literal nonexistent repo path is refused" 2 "$(jhook "$tmp" "git -C /nonexistent/repo commit -m x")"
+reason "literal nonexistent repo path: reason" "$unres_msg"
+eq "literal non-repo dir is refused" 2 "$(jhook "$tmp" "cd $tmp/nobin && git commit -m x")"
+eq "malformed: unbalanced double quote is refused" 2 "$(jhook "$tmp" "git commit -m \"unterminated")"
+reason "malformed: says what is wrong" "unbalanced double quote"
+eq "malformed: unbalanced single quote is refused" 2 "$(jhook "$tmp" "echo 'oops")"
+eq "malformed: unterminated \$( is refused" 2 "$(jhook "$tmp" "echo \$(git status")"
+eq "malformed: unbalanced backquote is refused" 2 "$(jhook "$tmp" "echo \`git status")"
+eq "malformed: unbalanced \${ is refused" 2 "$(jhook "$tmp" "echo \${x")"
+
+# Quoted metacharacters are text, not separators.
+mc="$tmp/a&b;c|d"
+git init -q -b main "$mc"
+mkdir -p "$mc/.claude"
+echo "{}" >"$mc/.claude/settings.local.json"
+git -C "$mc" add -f .claude/settings.local.json
+eq "metachar: double-quoted path with & ; | is checked" 2 "$(jhook "$tmp" "git -C \"$mc\" commit -m x")"
+reason "metachar: names the leaked file" "settings.local.json"
+eq "metachar: single-quoted path is checked" 2 "$(jhook "$tmp" "git -C '$mc' commit -m x")"
+eq "metachar: cd 'a&b;c|d' && git commit is checked" 2 "$(jhook "$tmp" "cd 'a&b;c|d' && git commit -m x")"
+eq "metachar: escaped path is checked" 2 "$(jhook "$tmp" "git -C $tmp/a\\&b\\;c\\|d commit -m x")"
+git -C "$mc" rm -q --cached .claude/settings.local.json
+echo "x" >"$mc/f"
+git -C "$mc" add f
+eq "metachar: clean repo with such a path is allowed" 0 "$(jhook "$tmp" "git -C \"$mc\" commit -m x")"
+eq "metachar: push inside a quoted path is not a push" 0 "$(jhook "$tmp" "ls \"$tmp/$gp\"")"
+
+# --git-dir / --work-tree, also as GIT_DIR / GIT_WORK_TREE.
+eq "git-dir: --git-dir=… --work-tree=… commit is checked" 2 "$(jhook "$tmp" "git --git-dir=\"$sp/.git\" --work-tree=\"$sp\" commit -m x")"
+eq "git-dir: --git-dir … (separate) commit is checked" 2 "$(jhook "$tmp" "git --git-dir \"$sp/.git\" commit -m x")"
+eq "git-dir: --work-tree=… alone commit is checked" 2 "$(jhook "$tmp" "git --work-tree=\"$sp\" commit -m x")"
+eq "git-dir: GIT_DIR=… git commit is checked" 2 "$(jhook "$tmp" "GIT_DIR=\"$sp/.git\" git commit -m x")"
+eq "git-dir: env GIT_WORK_TREE=… git commit is checked" 2 "$(jhook "$tmp" "env GIT_WORK_TREE=\"$sp\" git commit -m x")"
+eq "git-dir: relative to a preceding -C" 2 "$(jhook "$ws" "git -C $tmp --git-dir='code with spaces/.git' commit -m x")"
+eq "git-dir: --git-dir=\$G commit is refused" 2 "$(jhook "$tmp" "git --git-dir=\$G commit -m x")"
+reason "git-dir: unresolved reason" "$unres_msg"
+eq "git-dir: --work-tree \"\$W\" commit is refused" 2 "$(jhook "$tmp" "git --work-tree \"\$W\" commit -m x")"
+eq "git-dir: nonexistent --git-dir is refused" 2 "$(jhook "$tmp" "git --git-dir=/nonexistent/.git commit -m x")"
+eq "git-dir: clean repo through --git-dir is allowed" 0 "$(jhook "$tmp" "git --git-dir=\"$mc/.git\" --work-tree=\"$mc\" commit -m x")"
+git -C "$sp" rm -q --cached .claude/settings.local.json
+eq "spaces: clean again → allowed" 0 "$(jhook "$tmp" "git -C \"$sp\" commit -m x")"
+
 # --- summary -------------------------------------------------------------
 
 echo

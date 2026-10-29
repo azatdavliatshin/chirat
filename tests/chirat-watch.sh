@@ -34,6 +34,18 @@ absent() { # absent <name> <path>
   if [ -e "$2" ]; then ko "$1" "$2 exists"; else ok "$1"; fi
 }
 
+fs_snapshot() { # fs_snapshot <path>…: every path under each (or "absent"), and a checksum per file
+  local d
+  for d in "$@"; do
+    if [ -e "$d" ]; then
+      find "$d" -print | sort
+      find "$d" -type f -exec cksum {} + | sort
+    else
+      echo "absent $d"
+    fi
+  done
+}
+
 first() { # first <glob...>: print the first existing match, or nothing
   for f in "$@"; do [ -e "$f" ] && { printf '%s\n' "$f"; return; }; done
   return 1
@@ -141,17 +153,18 @@ has "missing config prints usage" "$tmp/stderr" "chirat-watch [--once]"
 
 # --- --dry-run ------------------------------------------------------------
 
+before=$(fs_snapshot "$ws" "$XDG_STATE_HOME")
 out=$("$watch" --once --dry-run 2>"$tmp/stderr")
 eq "dry-run exits 0" 0 $?
 has "dry-run prints the claude command" <(printf '%s\n' "$out") "claude -p /chirat:next\\ docs/plans/demo.prompt-1.md --model opus --permission-mode auto --permission-prompts none --output-format json"
 eq "dry-run leaves the prompt pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-1.md" status)"
 eq "dry-run runs nothing" "" "$(first "$ws"/.chirat/runs/*)"
-exists "dry-run creates runs/" -d "$ws/.chirat/runs"
+absent "dry-run creates no .chirat/" "$ws/.chirat"
 has "dry-run warns about a non-workspace path" "$tmp/stderr" "not a workspace (no docs/plans): $tmp/not-a-workspace"
-absent "dry-run does not write LATEST" "$ws/.chirat/LATEST"
-eq "dry-run logs one line" 1 "$(wc -l <"$log" | tr -d ' ')"
-eq "log: mode column shows auto" auto "$(cut -f7 "$log")"
-: >"$log"
+absent "dry-run does not create the state dir" "$XDG_STATE_HOME"
+eq "dry-run writes nothing (workspace and state dir unchanged)" "$before" "$(fs_snapshot "$ws" "$XDG_STATE_HOME")"
+eq "dry-run prints the log line it would write" 1 "$(printf '%s\n' "$out" | grep -c "	docs/plans/demo.prompt-1.md	opus	dry-run	")"
+eq "dry-run: mode column shows auto" auto "$(printf '%s\n' "$out" | grep "	dry-run	" | cut -f7)"
 
 # --- permission mode: default auto, flag > env > default -------------------
 
@@ -169,7 +182,7 @@ eq "mode: env overrides default" "--permission-mode plan" "$(mode_of plan)"
 eq "mode: flag beats env" "--permission-mode acceptEdits" "$(mode_of plan --permission-mode acceptEdits)"
 "$watch" --once --dry-run --permission-mode >/dev/null 2>&1
 eq "mode: flag without value exits 64" 64 $?
-: >"$log"
+absent "mode tests (dry-run) created no state dir" "$XDG_STATE_HOME"
 
 # --- --once: happy path ---------------------------------------------------
 
@@ -441,11 +454,16 @@ eq "stubborn: prompt pending" pending "$("$rp" get "$pf" status)"
 absent "stubborn: lock released" "$ws/.chirat/lock"
 rm -f "$pf"
 
-# --dry-run takes and releases the lock.
+# --dry-run takes no lock and writes nothing, even with a live watcher's pid files around.
 prompt demo.prompt-21.md sonnet pending
-"$watch" --once --dry-run >/dev/null 2>&1
-absent "dry-run: lock absent afterwards" "$ws/.chirat/lock"
-rm -f "$ws/docs/plans/demo.prompt-21.md"
+echo 424242 >"$XDG_STATE_HOME/chirat/watcher.pid"
+echo "--interval" >"$XDG_STATE_HOME/chirat/watcher.flags"
+before=$(fs_snapshot "$ws" "$XDG_STATE_HOME")
+out=$("$watch" --once --dry-run 2>/dev/null)
+absent "dry-run: no lock afterwards" "$ws/.chirat/lock"
+has "dry-run: would run the pending prompt" <(printf '%s\n' "$out") "/chirat:next\\ docs/plans/demo.prompt-21.md"
+eq "dry-run: pid files, log, runs, LATEST, status.log all unchanged" "$before" "$(fs_snapshot "$ws" "$XDG_STATE_HOME")"
+rm -f "$XDG_STATE_HOME/chirat/watcher.pid" "$XDG_STATE_HOME/chirat/watcher.flags" "$ws/docs/plans/demo.prompt-21.md"
 
 # --- after: waiting line, logged once --------------------------------------
 
@@ -588,6 +606,16 @@ has "dry-run: would remove the empty json" "$tmp/out" "would remove empty $runs/
 has "dry-run: would remove the lock" "$tmp/out" "would remove lock $ws/.chirat/lock"
 eq "dry-run: nothing changed" "$before" "$(snap)"
 eq "dry-run: prompt still running" running "$("$rp" get "$pf" status)"
+# The audit's repro: --once --dry-run on a stale lock used to recover it for real.
+before=$(fs_snapshot "$ws" "$XDG_STATE_HOME")
+"$watch" --once --dry-run >"$tmp/out" 2>"$tmp/stderr"
+eq "--once --dry-run on a stale lock exits 0" 0 $?
+has "--once --dry-run: would set pending" "$tmp/out" "would set docs/plans/demo.prompt-1.md pending"
+has "--once --dry-run: would remove the lock" "$tmp/out" "would remove lock $ws/.chirat/lock"
+has "--once --dry-run: then would run the recovered prompt" "$tmp/out" "claude -p /chirat:next\\ docs/plans/demo.prompt-1.md"
+eq "--once --dry-run: prompt still running" running "$("$rp" get "$pf" status)"
+exists "--once --dry-run: lock still there" -d "$ws/.chirat/lock"
+eq "--once --dry-run: nothing written (workspace, runs, err, log, pid files)" "$before" "$(fs_snapshot "$ws" "$XDG_STATE_HOME")"
 "$watch" recover >"$tmp/out" 2>"$tmp/stderr"
 eq "recover exits 0" 0 $?
 has "recover: stderr line" "$tmp/stderr" "recovered stale lock (claude $cpid dead)"
@@ -1126,10 +1154,12 @@ printf '%s\n' "$wsl" >"$lg/cfg/chirat/workspaces"
 lgw() { XDG_CONFIG_HOME=$lg/cfg XDG_STATE_HOME=$lg/state "$watch" "$@"; }
 mv_hint="legacy .relay/ — move it: git mv .relay .chirat && sed -i.bak 's#^\.relay/#.chirat/#' .gitignore && rm .gitignore.bak"
 lgw --once --dry-run >"$tmp/out" 2>&1
+absent "legacy .relay/: dry-run writes no state dir" "$lg/state/chirat"
+lgw --once >"$tmp/out" 2>&1
 eq "legacy .relay/: watcher skips the workspace" pending "$("$rp" get "$wsl/docs/plans/demo.prompt-1.md" status)"
 absent "legacy .relay/: no .chirat/ created" "$wsl/.chirat"
 has "legacy .relay/: logged" "$lg/state/chirat/watch.log" "$(printf 'legacy\t%s\t.relay/\t' "$wsl")"
-lgw --once --dry-run >"$tmp/out" 2>&1
+lgw --once >"$tmp/out" 2>&1
 eq "legacy .relay/: logged once" 1 "$(grep -c "	legacy	" "$lg/state/chirat/watch.log")"
 lgw status >"$tmp/st.out" 2>&1
 has "legacy .relay/: status warns" "$tmp/st.out" "  warn: $mv_hint"

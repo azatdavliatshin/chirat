@@ -175,7 +175,7 @@ Each run adds a line to `~/.local/state/chirat/watch.log` (or under
 | Flag / subcommand | Effect |
 |---|---|
 | `--once` | one pass over all workspaces, then exit 0 (also when nothing ran) |
-| `--dry-run` | print the `claude` command instead of running it; writes nothing |
+| `--dry-run` | print the `claude` command instead of running it; writes nothing, including stale-lock recovery (reported as `would set … pending` / `would remove lock …`, lock left in place) and the log line (printed only) |
 | `--interval N` | seconds between passes (default 60) |
 | `--permission-mode M` | `claude` permission mode, passed through (default `auto`) |
 | `--tmux` | start the watcher in a detached tmux session `chirat`; refuses if it exists |
@@ -263,13 +263,26 @@ are ignored and a line without `=` is a warning.
 A `PreToolUse` hook on every Bash call. It also refuses push and publish:
 the human is the only one who pushes.
 
-It reads every simple command in the call — split on `&&`, `||`, `;`, `|`,
-`&` and newlines, including the insides of `$( … )`, backticks and
-subshells — after stripping `VAR=value` and wrappers such as `env`,
-`command`, `sudo`, `nohup`, `time` and `bash -c`, and walks git's global
-options (`-C`, `-c`, `--no-pager`, …) to find the subcommand. Quotes are not
-parsed, so a separator inside a quoted string splits too; the guard errs on
-the side of checking more.
+It reads every simple command in the call with a small shell-word lexer:
+`"…"`, `'…'`, `\x`, `$'…'`, comments and here-documents are understood, so a
+quoted path with spaces or `&`/`;` is one word and `git commit -m "a; git
+push"` is a commit, not a push. Commands are split on `&&`, `||`, `;`, `|`,
+`&` and newlines, including the insides of `$( … )`, backticks, `${x:-$(…)}`,
+subshells, `bash -c '…'` / `eval` bodies and unquoted heredoc bodies — after
+stripping `VAR=value` and wrappers such as `env`, `command`, `sudo`, `nohup`
+and `time` — and git's global options (`-C`, `-c`, `--git-dir`,
+`--work-tree`, `--no-pager`, …) are walked to find the subcommand. Nothing is
+expanded or executed: a variable, substitution, glob or `~user` leaves a word
+*unresolved*.
+
+**Fail closed.** When the guard cannot tell which repository a commit targets
+— an unresolved `-C` / `--git-dir` / `--work-tree` value, a `cd` to an
+unresolved dir (or `cd -`), a literal path that is not a git repository — or
+cannot tell what a git command does (`git $SUB`), or cannot parse the command
+(unbalanced quotes, unterminated `$(`), it refuses with a one-line reason
+(`chirat: cannot tell which repository this commits to; run git from the
+repository directory`). A false refusal costs a retry; a false pass would
+break the promise.
 
 - **Push and publish, in any form:** `git push`, `git -C repos/x push`,
   `cd repos/x && git push`, `git status; git push`, `echo $(git push)`,
@@ -277,8 +290,9 @@ the side of checking more.
   `pnpm publish`, `yarn publish`, `yarn npm publish`. `git stash push`,
   `git log --grep push`, `echo git push` and `npm run publish-docs` pass.
 - **Every `git commit`** in the call is checked against the repo it would
-  commit to — the dir from `git -C`, an earlier `cd` in the chain, or the
-  session's cwd.
+  commit to — the dir from `git -C`, `--git-dir` / `--work-tree` (also
+  `GIT_DIR` / `GIT_WORK_TREE`), an earlier `cd` / `pushd` / `env -C` in the
+  chain, or the session's cwd.
 - **Without `jq` or `python3`** the command cannot be read: the commit check
   is skipped, but any text that looks like `git … push` or `npm … publish`
   is refused (false positives are possible, and the message says so).
