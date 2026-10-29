@@ -124,17 +124,25 @@
 # <status file> is the newest <status_dir>/*<stem>*.md modified since the run
 # started, relative to the workspace, or (no status file). macOS only;
 # silently skipped elsewhere or with RELAY_NOTIFY=0. Sender, in order:
-# terminal-notifier (brew install terminal-notifier): `-group relay:<ws>`
-# replaces the previous notification of the workspace, the icon and the click
-# are Claude Desktop's (`-sender`, RELAY_NOTIFY_SENDER overrides, empty = none);
-# else osascript (shown as "Script Editor", click does nothing); else nothing.
-# Click action: with terminal-notifier `-sender` wins over `-execute`, so when
-# there is a click command `-sender` is left out and the command ends with
-# `open -b <sender>` unless <ws>/.relay/config sets notify_open (a URL or path,
-# `open`ed on click, e.g. claude://claude.ai/project/<uuid>). A value
-# containing a quote is refused (warning). RELAY_NOTIFY_OPEN=1 adds the status
-# file (done / blocked / failed) as the first thing opened: on click under
-# terminal-notifier, at once under osascript.
+# terminal-notifier 3.x (brew install terminal-notifier; `-group relay:<ws>`
+# replaces the previous notification of the workspace); else osascript (shown
+# as "Script Editor", click does nothing); else nothing. terminal-notifier
+# needs its own notification permission, granted once by launching the bundle
+# (`open "$(brew --prefix)/Cellar/terminal-notifier/<ver>/terminal-notifier.app"`,
+# click Allow); until then every notification is dropped. `relay-watch doctor
+# --online` probes it. Its stderr is kept: appended to the run's .err under
+# `notify: terminal-notifier said:`, a non-zero exit as `notify: terminal-notifier
+# exit <n>`. Click action, exactly one of:
+#   - RELAY_NOTIFY_OPEN=1 and a status file (done / blocked / failed):
+#     `-execute "open '<status file>'; open '<notify_open>'"` (the second open
+#     only when notify_open is set);
+#   - else notify_open set in <ws>/.relay/config (a URL or path, e.g.
+#     claude://claude.ai/project/<uuid>): `-open <notify_open>`;
+#   - else `-activate com.anthropic.claudefordesktop` (RELAY_NOTIFY_ACTIVATE
+#     overrides the bundle id; empty = no click option).
+# A value containing a quote is refused (warning). Under osascript the status
+# file is opened at once instead. RELAY_NOTIFY_SENDER is removed: 3.x has no
+# `-sender`.
 #
 # Everything relay writes for itself lives in <ws>/.relay/ (runs/, LATEST,
 # status.log, lock/); everything a human reads stays under docs/. The optional
@@ -467,12 +475,17 @@ notify() { # notify <ws> <stem> <status> <started epoch> <run>: desktop notifica
   esac
   text=${text//\\/}
   text=${text//\"/}
-  local ws_name=${ws##*/} cmd="" url q="'" sender=${RELAY_NOTIFY_SENDER-com.anthropic.claudefordesktop}
-  local open_file="" tn=0
+  local ws_name=${ws##*/} cmd="" url q="'" open_file="" tn=0 errf="" rc=0 tnerr
+  local activate=${RELAY_NOTIFY_ACTIVATE-com.anthropic.claudefordesktop}
   command -v terminal-notifier >/dev/null 2>&1 && tn=1
+  [ -z "${5:-}" ] || errf="$ws/.relay/runs/$5.err"
   if [ "${RELAY_NOTIFY_OPEN:-0}" = 1 ] && [ -n "$sf" ]; then
     case $st in done | blocked | failed) open_file="$ws/$sf" ;; esac
   fi
+  url=$(relay_config "$ws" notify_open "")
+  case $url in
+    *"$q"*) echo "relay: warning: notify_open contains a quote, ignored" >&2; url="" ;;
+  esac
   if [ "$tn" = 1 ]; then
     if [ -n "$open_file" ]; then
       case $open_file in
@@ -480,16 +493,19 @@ notify() { # notify <ws> <stem> <status> <started epoch> <run>: desktop notifica
         *) cmd="open '$open_file'" ;;
       esac
     fi
-    url=$(relay_config "$ws" notify_open "")
-    case $url in
-      *"$q"*) echo "relay: warning: notify_open contains a quote, ignored" >&2; url="" ;;
-    esac
-    if [ -n "$url" ]; then cmd="${cmd:+$cmd; }open '$url'"
-    elif [ -n "$cmd" ] && [ -n "$sender" ]; then cmd="$cmd; open -b $sender"; fi
     local args=(-title "$title" -subtitle "$ws_name" -message "$text" -group "relay:$ws_name")
-    if [ -n "$cmd" ]; then args+=(-execute "$cmd")
-    elif [ -n "$sender" ]; then args+=(-sender "$sender"); fi
-    terminal-notifier "${args[@]}" >/dev/null 2>&1 || true
+    if [ -n "$cmd" ]; then
+      [ -z "$url" ] || cmd="$cmd; open '$url'"
+      args+=(-execute "$cmd")
+    elif [ -n "$url" ]; then args+=(-open "$url")
+    elif [ -n "$activate" ]; then args+=(-activate "$activate"); fi
+    tnerr=$(terminal-notifier "${args[@]}" 2>&1 >/dev/null) || rc=$?
+    if [ -n "$errf" ] && { [ -n "$tnerr" ] || [ "$rc" != 0 ]; }; then
+      {
+        [ -z "$tnerr" ] || printf 'notify: terminal-notifier said:\n%s\n' "$tnerr"
+        [ "$rc" = 0 ] || printf 'notify: terminal-notifier exit %s\n' "$rc"
+      } >>"$errf" 2>/dev/null || true
+    fi
   else
     if command -v osascript >/dev/null 2>&1; then
       osascript -e "display notification \"$text\" with title \"$title\" subtitle \"$ws_name\"" >/dev/null 2>&1 || true
@@ -1208,7 +1224,7 @@ cmd_doctor() {
         if [ -n "$no" ]; then
           case $no in
             claude://* | https://* | file://*) ;;
-            *) [ -e "$no" ] || warn "notify_open: unrecognised value $no ($ws)" ;;
+            *) [ -e "$no" ] || warn "notify_open: unrecognized value $no ($ws)" ;;
           esac
           [ -n "$doc_open" ] || doc_open=$no
         fi
@@ -1244,7 +1260,32 @@ cmd_doctor() {
   # 7: state dir, osascript, jq
   if [ -w "$state_dir" ]; then ok "state dir: $state_dir writable"; else fail "state dir: $state_dir not writable"; fi
   if command -v terminal-notifier >/dev/null 2>&1; then
-    ok "terminal-notifier: notifications carry Claude's icon; click opens ${doc_open:-Claude}"
+    local tnv tnp tnr tnerr2
+    tnv=$(terminal-notifier -version 2>/dev/null | head -n 1) || tnv=""
+    [ -n "$tnv" ] || tnv="?"
+    case $tnv in
+      3.*) ok "terminal-notifier 3.x: click opens ${doc_open:-Claude}" ;;
+      *) warn "terminal-notifier $tnv: 3.x needed for -open; brew upgrade terminal-notifier" ;;
+    esac
+    if [ "$online" = 1 ]; then
+      tnerr2=$(terminal-notifier -title relay -message "doctor probe" -group relay:doctor 2>&1 >/dev/null) || true
+      case $tnerr2 in
+        *"not allowed"*)
+          tnp=$(command -v terminal-notifier)
+          tnr=$tnp
+          while [ -L "$tnr" ]; do
+            dir=$(readlink "$tnr")
+            case $dir in /*) tnr=$dir ;; *) tnr=$(dirname "$tnr")/$dir ;; esac
+          done
+          case $tnr in
+            *.app/*) tnr=${tnr%%.app/*}.app ;;
+            *) tnr="$(brew --prefix 2>/dev/null || echo /opt/homebrew)/Cellar/terminal-notifier/<ver>/terminal-notifier.app" ;;
+          esac
+          fail "terminal-notifier: notifications not allowed — run: open \"$tnr\" once and click Allow"
+          ;;
+        *) ok "terminal-notifier: permission granted" ;;
+      esac
+    fi
   elif command -v osascript >/dev/null 2>&1; then
     warn "notifications via osascript: shown as \"Script Editor\", click does nothing — brew install terminal-notifier"
   elif [ "$(uname)" = Darwin ]; then warn "no notifier found"

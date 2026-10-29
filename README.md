@@ -50,7 +50,8 @@ checks the setup. The plugin brings `/relay:next` (run one prompt file),
 `opus`, and the commit guard.
 
 ```
-/plugin marketplace add ~/code/relay-src
+/plugin marketplace add ~/code/relay-src      # local clone
+# or, from GitHub:
 /plugin marketplace add azatdavliatshin/relay
 /plugin install relay@relay
 ```
@@ -70,6 +71,8 @@ branch: feat/hello
 ---
 Add a hello target to the Makefile. One checkpoint: commit when the tests pass.
 EOF
+# `relay-watch install` (see Install) put relay-watch on PATH;
+# otherwise use ~/code/relay-src/bin/relay-watch
 relay-watch --once --dry-run    # print the claude command it would run
 relay-watch --tmux              # start the watcher; `tmux attach -t relay` to look
 ```
@@ -178,13 +181,18 @@ process group, sets the prompt back to `pending`, releases the lock and logs
 **Notifications.** When a run ends, the watcher posts a desktop notification
 titled `relay: done`, `relay: blocked` or `relay: failed` that says what to
 do next, so no chat has to poll. macOS only; `RELAY_NOTIFY=0` turns it off.
-`terminal-notifier` (`brew install terminal-notifier`) is preferred: Claude's
-icon (`RELAY_NOTIFY_SENDER` overrides the bundle id; empty means none), one
-notification per workspace, and a click opens Claude Desktop or what
-`notify_open` names. The `osascript` fallback shows as "Script Editor" and
-ignores clicks; with neither, nothing is sent. `RELAY_NOTIFY_OPEN=1` also
-opens the status file: on click under `terminal-notifier`, at once under
-`osascript`.
+`terminal-notifier` 3.x (`brew install terminal-notifier`) is preferred: one
+notification per workspace, and it needs its own notification permission,
+granted once by launching the bundle and clicking Allow (until then every
+notification is dropped; `relay-watch doctor --online` checks):
+`open "$(brew --prefix)/Cellar/terminal-notifier/<version>/terminal-notifier.app"`.
+A click does one of three things: with `RELAY_NOTIFY_OPEN=1` it opens the
+status file (and `notify_open`, if set); else it opens what `notify_open`
+names; else it activates Claude Desktop (`RELAY_NOTIFY_ACTIVATE` overrides the
+bundle id; empty means no click action). Anything `terminal-notifier` prints
+or a non-zero exit goes to the run's `.err`. The `osascript` fallback shows as
+"Script Editor" and ignores clicks (`RELAY_NOTIFY_OPEN=1` opens the status
+file at once); with neither, nothing is sent.
 
 **`.relay/LATEST`.** Each finished run appends a tab-separated line — time,
 stem, final status, branch, short commit of that branch in `repos/<repo>`,
@@ -217,7 +225,7 @@ are ignored and a line without `=` is a warning.
 | `plans_dir` | `docs/plans` | where prompt files live |
 | `status_dir` | `docs/status` | where status files are written and looked up |
 | `default_branch` | `main` | what `after:` and the review/merge hints compare against |
-| `notify_open` | empty | URL or path opened when the notification is clicked (needs `terminal-notifier`): `claude://claude.ai/project/<uuid>` opens a Project, `claude://claude.ai/chat/<uuid>` a conversation (see [support.claude.com/en/articles/14729294](https://support.claude.com/en/articles/14729294)); a value containing `'` is refused |
+| `notify_open` | empty | URL or path opened when the notification is clicked (needs `terminal-notifier` 3.x): `claude://claude.ai/project/<uuid>` opens a Project, `claude://claude.ai/chat/<uuid>` a conversation (see [support.claude.com/en/articles/14729294](https://support.claude.com/en/articles/14729294)); a value containing `'` is refused |
 
 | Path | In the workspace repo | Content |
 |---|---|---|
