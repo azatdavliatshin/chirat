@@ -14,6 +14,9 @@
 # <tab> <pid> <tab> <ppid> <tab> <parent command> (basename; a shell script is named
 # by its script). Other keys are not logged.
 #
+# Portable to GNU and BSD userland: GNU flags first, BSD as fallback (GNU fails
+# on BSD flags; BSD flags do not fail on GNU).
+#
 # Front matter is the block between a first line `---` and the next `---`.
 # Values are single-line `key: value`; a trailing ` # comment` is ignored.
 #
@@ -167,14 +170,14 @@ cmd_set() {
     { print }
   ' "$file" >"$tmp"
   # Keep the original file's permissions; mv alone would carry mktemp's 0600.
-  chmod "$(stat -f %Lp "$file" 2>/dev/null || stat -c %a "$file")" "$tmp"
+  chmod "$(stat -c %a "$file" 2>/dev/null || stat -f %Lp "$file")" "$tmp"
   mv "$tmp" "$file"
   if [ "$key" = status ] && [ "$old" != "$value" ]; then log_status_change "$file" "$old" "$value"; fi
   return 0
 }
 
 mtime() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"
 }
 
 # parse_stem <file>: split <topic>.prompt-<N><suffix>.md into the globals

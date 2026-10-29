@@ -98,6 +98,18 @@ else
   eq "next exits 1 when nothing is pending" "" "$out"
 fi
 
+# --- relay-prompt set keeps the file mode (GNU/BSD stat) ---------------------
+
+mf=$ws/docs/plans/mode.prompt-1.md
+prompt mode.prompt-1.md pending 202601070000
+chmod 0640 "$mf"
+"$rp" set "$mf" status running
+mode=$(stat -c %a "$mf" 2>/dev/null || stat -f %Lp "$mf")
+eq "set keeps file mode 0640" 640 "$mode"
+eq "set leaves a single front matter" 2 "$(grep -c '^---$' "$mf")"
+eq "set writes no stat output" 0 "$(grep -c -i -e 'File:' -e 'Device' "$mf")"
+eq "set status after mode test" running "$("$rp" get "$mf" status)"
+
 # --- guard-commit.sh -----------------------------------------------------
 
 repo=$ws/repos/demo

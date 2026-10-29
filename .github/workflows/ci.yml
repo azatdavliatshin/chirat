@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck (macOS)
+        if: runner.os == 'macOS'
+        run: brew install shellcheck
+
+      - name: Shellcheck
+        run: |
+          shellcheck bin/relay-watch bin/relay-init plugin/bin/relay-prompt \
+            plugin/hooks/guard-commit.sh tests/*.sh plugin/tests/run.sh
+
+      - name: Test relay-watch
+        run: bash tests/relay-watch.sh
+
+      - name: Test relay-init
+        run: bash tests/relay-init.sh
+
+      - name: Test plugin
+        run: bash plugin/tests/run.sh
+
+      - name: Test relay-watch (Bash 3.2)
+        if: runner.os == 'macOS'
+        run: /bin/bash tests/relay-watch.sh
+
+      - name: Test relay-init (Bash 3.2)
+        if: runner.os == 'macOS'
+        run: /bin/bash tests/relay-init.sh
+
+      - name: Test plugin (Bash 3.2)
+        if: runner.os == 'macOS'
+        run: /bin/bash plugin/tests/run.sh
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      # If `validate` turns out to need a login, drop this step.
+      - name: Validate plugin
+        run: claude plugin validate plugin

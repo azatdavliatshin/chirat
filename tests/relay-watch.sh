@@ -936,13 +936,13 @@ git -C "$ws3/repos/demo" commit -q --allow-empty -m t
 git -C "$ws3/repos/demo" checkout -q trunk
 mkdir -p "$tmp/cfg2/relay"
 printf '%s\n' "$ws2" "$ws3" >"$tmp/cfg2/relay/workspaces"
-cfgprompt "$ws3/docs/plans/demo.prompt-1.md" done feat/t
+cfgprompt "$ws3/docs/plans/demo.prompt-1.md" "done" feat/t
 cfgprompt "$ws3/docs/plans/demo.prompt-2.md" pending feat/u feat/t
 printf '%s\n' 'default_branch=trunk' >"$ws3/.relay/config"
 
 : >"$tmp/osa"
 XDG_CONFIG_HOME=$tmp/cfg2 FAKE_SF=$ws2/work/notes/2026-10-29-demo.prompt-1.md "$watch" --once >"$tmp/out" 2>"$tmp/stderr"
-eq "config: plans_dir: prompt from work/queue ran" done "$("$rp" get "$ws2/work/queue/demo.prompt-1.md" status)"
+eq "config: plans_dir: prompt from work/queue ran" "done" "$("$rp" get "$ws2/work/queue/demo.prompt-1.md" status)"
 eq "config: plans_dir: claude gets the configured path" "/relay:next work/queue/demo.prompt-1.md" "$(sed -n '/^-p$/{n;p;}' "$FAKE_ARGV")"
 has "config: status_dir: notification names work/notes file" "$tmp/osa" "work/notes/2026-10-29-demo.prompt-1.md"
 has "config: malformed line is a warning" "$tmp/stderr" "not key=value"

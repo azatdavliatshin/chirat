@@ -71,6 +71,9 @@ failed runs.
   status file. Set it back to `pending` to re-queue. A prompt that depends
   on another prompt's branch declares `after:` and stays `pending`; it is
   not parked as `blocked` for that reason.
+- When the planning chat writes a draft prompt, it opens the file as a
+  document in the chat's side panel (not pasted into the message), so the
+  review happens without leaving the chat; the file is the source of truth.
 - `docs/status/` is the memory between sessions: at the end of a session
   write `docs/status/YYYY-MM-DD-<topic>.md` (done / not done / open
   questions / branch + last commit hash), or run `/relay:handover`.

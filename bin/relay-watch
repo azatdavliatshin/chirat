@@ -419,6 +419,8 @@ write_latest() { # write_latest <ws> <file> <stem> <exit> <seconds>
     >>"$ws/.relay/LATEST"
 }
 
+# Portable to GNU and BSD userland: GNU flags first, BSD as fallback (GNU fails
+# on BSD flags; BSD flags do not fail on GNU).
 file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
 # status_file_for <ws> <stem> [min mtime]: the newest <status_dir>/*<stem>*.md

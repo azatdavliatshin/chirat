@@ -1,5 +1,7 @@
 # relay
 
+[![CI](https://github.com/owner/repo/actions/workflows/ci.yml/badge.svg)](https://github.com/owner/repo/actions/workflows/ci.yml)
+
 relay connects a planning session with Claude Code through plain files in a
 workspace folder, so nothing has to be copied by hand. The planning session
 (a Claude Project, Cowork, or you) writes a prompt to
@@ -58,7 +60,8 @@ one or more workspaces for `status: pending` prompts and runs each with
 without anyone typing `/relay:next`. It runs on your own machine with the
 `claude` login already there; there is no API key and no cloud component.
 
-Host prerequisites: `claude` (logged in, with this plugin installed), `git`,
+Host prerequisites: relay runs on macOS and Linux; notifications are
+macOS-only (`osascript`) and degrade to nothing elsewhere. You need `claude` (logged in, with this plugin installed), `git`,
 Bash 3.2 or newer, `tmux` if you want `--tmux`. `jq` is optional; the commit
 guard uses it when present and falls back to `python3`. For development
 also `shellcheck`.
