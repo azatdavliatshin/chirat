@@ -98,7 +98,13 @@ cat >"$tmp/bin/osascript" <<'EOF'
 printf '%s\n' "$@" >>"$FAKE_OSA"
 EOF
 chmod +x "$tmp/bin/osascript"
-export PATH=$tmp/bin:$PATH RP=$rp FAKE_ARGV=$tmp/argv FAKE_OSA=$tmp/osa
+# A real terminal-notifier on this machine must not be picked up by the runs.
+clean_path=""
+IFS=: read -ra _pd <<<"$PATH"
+for _d in "${_pd[@]}"; do
+  [ -x "$_d/terminal-notifier" ] || clean_path="${clean_path:+$clean_path:}$_d"
+done
+export PATH=$tmp/bin:$clean_path RP=$rp FAKE_ARGV=$tmp/argv FAKE_OSA=$tmp/osa
 
 # --- workspace + config ---------------------------------------------------
 
@@ -770,6 +776,14 @@ has "doctor: workspace" "$tmp/doc.out" "ok   workspace $ws"
 has "doctor: relay-prompt" "$tmp/doc.out" "ok   relay-prompt: $tmp/inst/relay-prompt"
 has "doctor: state dir" "$tmp/doc.out" "ok   state dir: "
 has "doctor: watcher line" "$tmp/doc.out" "ok   watcher: not running"
+has "doctor: osascript warn" "$tmp/doc.out" 'warn notifications via osascript'
+mkdir -p "$tmp/dtn"; printf '#!/bin/sh\n' >"$tmp/dtn/terminal-notifier"; chmod +x "$tmp/dtn/terminal-notifier"
+PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
+has "doctor: terminal-notifier ok" "$tmp/doc2.out" "ok   terminal-notifier: notifications carry Claude's icon; click opens Claude"
+printf 'notify_open=nonsense\n' >"$ws/.relay/config"
+PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
+has "doctor: notify_open unrecognised" "$tmp/doc2.out" "warn notify_open: unrecognised value nonsense"
+rm -f "$ws/.relay/config"
 if grep -q '^FAIL' "$tmp/doc.out"; then ko "doctor: no FAIL lines" "$(cat "$tmp/doc.out")"; else ok "doctor: no FAIL lines"; fi
 FAKE_PLUGINS="other@x 1.0" doc
 eq "doctor: plugin missing exits 1" 1 $?
@@ -862,6 +876,67 @@ has "notify failed: status file and err" "$FAKE_OSA" "demo.prompt-1 failed → d
 has "notify failed: err suffix" "$FAKE_OSA" ".err"
 has "RELAY_NOTIFY_OPEN=1 opens on failed too" "$FAKE_OPEN" "$sf"
 rm -f "$FAKE_OSA" "$FAKE_OPEN" "$sf"
+
+# --- terminal-notifier -----------------------------------------------------
+
+mkdir -p "$tmp/tn"
+cat >"$tmp/tn/terminal-notifier" <<'EOF2'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >>"$FAKE_TN"
+EOF2
+chmod +x "$tmp/tn/terminal-notifier"
+export FAKE_TN=$tmp/tn.out
+rm -f "$FAKE_OSA" "$FAKE_OPEN" "$FAKE_TN"
+oldpath=$PATH
+PATH=$tmp/tn:$PATH
+
+nprompt demo.prompt-1.md sonnet pending
+FAKE_SF=$sf "$watch" --once >/dev/null 2>&1
+has "terminal-notifier: called" "$FAKE_TN" "relay: done"
+has "terminal-notifier: -group" "$FAKE_TN" "relay:nt"
+has "terminal-notifier: title" "$FAKE_TN" "-title"
+has "terminal-notifier: -sender without click command" "$FAKE_TN" "com.anthropic.claudefordesktop"
+if grep -qx -- "-execute" "$FAKE_TN"; then ko "no -execute without click command"; else ok "no -execute without click command"; fi
+absent "terminal-notifier: osascript not called" "$FAKE_OSA"
+rm -f "$FAKE_TN"
+
+printf 'notify_open=claude://claude.ai/project/x\n' >"$ws/.relay/config"
+nprompt demo.prompt-1.md sonnet pending
+FAKE_SF=$sf "$watch" --once >/dev/null 2>&1
+has "notify_open: -execute opens the URL" "$FAKE_TN" "open 'claude://claude.ai/project/x'"
+if grep -qx -- "-sender" "$FAKE_TN"; then ko "notify_open: no -sender"; else ok "notify_open: no -sender"; fi
+rm -f "$FAKE_TN"
+
+nprompt demo.prompt-1.md sonnet pending
+FAKE_SF=$sf RELAY_NOTIFY_OPEN=1 "$watch" --once >/dev/null 2>&1
+has "RELAY_NOTIFY_OPEN: file first, then URL" "$FAKE_TN" "open '$sf'; open 'claude://claude.ai/project/x'"
+absent "RELAY_NOTIFY_OPEN: not opened at once under terminal-notifier" "$FAKE_OPEN"
+rm -f "$FAKE_TN" "$sf"
+
+printf "notify_open=/tmp/it's\n" >"$ws/.relay/config"
+nprompt demo.prompt-1.md sonnet pending
+FAKE_SF=$sf "$watch" --once >/dev/null 2>"$tmp/nterr"
+if grep -qx -- "-execute" "$FAKE_TN"; then ko "quote in notify_open: no -execute"; else ok "quote in notify_open: no -execute"; fi
+has "quote in notify_open: warn" "$tmp/nterr" "warning: notify_open"
+rm -f "$FAKE_TN" "$sf" "$ws/.relay/config"
+
+nprompt demo.prompt-1.md sonnet pending
+RELAY_NOTIFY=0 FAKE_SF=$sf "$watch" --once >/dev/null 2>&1
+absent "RELAY_NOTIFY=0: terminal-notifier not called" "$FAKE_TN"
+absent "RELAY_NOTIFY=0: osascript not called" "$FAKE_OSA"
+rm -f "$sf"
+
+nprompt demo.prompt-1.md sonnet pending
+RELAY_NOTIFY_SENDER='' FAKE_SF=$sf "$watch" --once >/dev/null 2>&1
+if grep -qx -- "-sender" "$FAKE_TN"; then ko "empty RELAY_NOTIFY_SENDER: no -sender"; else ok "empty RELAY_NOTIFY_SENDER: no -sender"; fi
+rm -f "$FAKE_TN" "$sf"
+
+PATH=$oldpath
+nprompt demo.prompt-1.md sonnet pending
+FAKE_SF=$sf "$watch" --once >/dev/null 2>&1
+has "no terminal-notifier: osascript as before" "$FAKE_OSA" "relay: done"
+absent "no terminal-notifier: nothing recorded" "$FAKE_TN"
+rm -f "$FAKE_OSA" "$sf"
 
 # a longer stem does not lend its status file (prompt-1 vs prompt-16)
 nprompt demo.prompt-1.md sonnet pending

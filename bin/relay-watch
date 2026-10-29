@@ -122,9 +122,19 @@
 #   other     <stem> <status> → <ws>/<status_dir>      (pending after an interrupt)
 #
 # <status file> is the newest <status_dir>/*<stem>*.md modified since the run
-# started, relative to the workspace, or (no status file). macOS only
-# (osascript); silently skipped elsewhere or with RELAY_NOTIFY=0.
-# RELAY_NOTIFY_OPEN=1 also opens that file (`open`) for done / blocked / failed.
+# started, relative to the workspace, or (no status file). macOS only;
+# silently skipped elsewhere or with RELAY_NOTIFY=0. Sender, in order:
+# terminal-notifier (brew install terminal-notifier): `-group relay:<ws>`
+# replaces the previous notification of the workspace, the icon and the click
+# are Claude Desktop's (`-sender`, RELAY_NOTIFY_SENDER overrides, empty = none);
+# else osascript (shown as "Script Editor", click does nothing); else nothing.
+# Click action: with terminal-notifier `-sender` wins over `-execute`, so when
+# there is a click command `-sender` is left out and the command ends with
+# `open -b <sender>` unless <ws>/.relay/config sets notify_open (a URL or path,
+# `open`ed on click, e.g. claude://claude.ai/project/<uuid>). A value
+# containing a quote is refused (warning). RELAY_NOTIFY_OPEN=1 adds the status
+# file (done / blocked / failed) as the first thing opened: on click under
+# terminal-notifier, at once under osascript.
 #
 # Everything relay writes for itself lives in <ws>/.relay/ (runs/, LATEST,
 # status.log, lock/); everything a human reads stays under docs/. The optional
@@ -456,11 +466,34 @@ notify() { # notify <ws> <stem> <status> <started epoch> <run>: desktop notifica
   esac
   text=${text//\\/}
   text=${text//\"/}
-  if command -v osascript >/dev/null 2>&1; then
-    osascript -e "display notification \"$text\" with title \"$title\" subtitle \"${ws##*/}\"" >/dev/null 2>&1 || true
-  fi
+  local ws_name=${ws##*/} cmd="" url q="'" sender=${RELAY_NOTIFY_SENDER-com.anthropic.claudefordesktop}
+  local open_file="" tn=0
+  command -v terminal-notifier >/dev/null 2>&1 && tn=1
   if [ "${RELAY_NOTIFY_OPEN:-0}" = 1 ] && [ -n "$sf" ]; then
-    case $st in done | blocked | failed) open "$ws/$sf" >/dev/null 2>&1 || true ;; esac
+    case $st in done | blocked | failed) open_file="$ws/$sf" ;; esac
+  fi
+  if [ "$tn" = 1 ]; then
+    if [ -n "$open_file" ]; then
+      case $open_file in
+        *"$q"*) echo "relay: warning: notify: $open_file contains a quote, click will not open it" >&2 ;;
+        *) cmd="open '$open_file'" ;;
+      esac
+    fi
+    url=$(relay_config "$ws" notify_open "")
+    case $url in
+      *"$q"*) echo "relay: warning: notify_open contains a quote, ignored" >&2; url="" ;;
+    esac
+    if [ -n "$url" ]; then cmd="${cmd:+$cmd; }open '$url'"
+    elif [ -n "$cmd" ] && [ -n "$sender" ]; then cmd="$cmd; open -b $sender"; fi
+    local args=(-title "$title" -subtitle "$ws_name" -message "$text" -group "relay:$ws_name")
+    if [ -n "$cmd" ]; then args+=(-execute "$cmd")
+    elif [ -n "$sender" ]; then args+=(-sender "$sender"); fi
+    terminal-notifier "${args[@]}" >/dev/null 2>&1 || true
+  else
+    if command -v osascript >/dev/null 2>&1; then
+      osascript -e "display notification \"$text\" with title \"$title\" subtitle \"$ws_name\"" >/dev/null 2>&1 || true
+    fi
+    [ -z "$open_file" ] || open "$open_file" >/dev/null 2>&1 || true
   fi
 }
 
@@ -1122,7 +1155,7 @@ cmd_tail() {
 }
 
 cmd_doctor() {
-  local online=0 bad=0 p ws n=0 cl="" dir real want pr_path v wl lm
+  local online=0 bad=0 p ws n=0 cl="" dir real want pr_path v wl lm no doc_open=""
   case ${1:-} in --online) online=1; shift ;; esac
   [ $# -eq 0 ] || usage
   ok() { echo "ok   $*"; }
@@ -1170,6 +1203,14 @@ cmd_doctor() {
         ok "workspace $ws"
         lm=$(legacy_msg "$ws")
         [ -z "$lm" ] || warn "workspace $ws: $lm"
+        no=$(relay_config "$ws" notify_open "")
+        if [ -n "$no" ]; then
+          case $no in
+            claude://* | https://* | file://*) ;;
+            *) [ -e "$no" ] || warn "notify_open: unrecognised value $no ($ws)" ;;
+          esac
+          [ -n "$doc_open" ] || doc_open=$no
+        fi
       fi
     done < <(workspaces)
     [ "$n" -gt 0 ] || warn "no workspaces: $config has no entries"
@@ -1201,9 +1242,12 @@ cmd_doctor() {
 
   # 7: state dir, osascript, jq
   if [ -w "$state_dir" ]; then ok "state dir: $state_dir writable"; else fail "state dir: $state_dir not writable"; fi
-  if command -v osascript >/dev/null 2>&1; then ok "osascript: notifications available"
-  elif [ "$(uname)" = Darwin ]; then warn "osascript: not found (no desktop notifications)"
-  else echo "info osascript: not present (macOS only)"; fi
+  if command -v terminal-notifier >/dev/null 2>&1; then
+    ok "terminal-notifier: notifications carry Claude's icon; click opens ${doc_open:-Claude}"
+  elif command -v osascript >/dev/null 2>&1; then
+    warn "notifications via osascript: shown as \"Script Editor\", click does nothing — brew install terminal-notifier"
+  elif [ "$(uname)" = Darwin ]; then warn "no notifier found"
+  else echo "info notifier: not present (macOS only)"; fi
   if command -v jq >/dev/null 2>&1; then ok "jq: $(command -v jq)"
   else warn "jq: not installed (tail falls back to python3)"; fi
 

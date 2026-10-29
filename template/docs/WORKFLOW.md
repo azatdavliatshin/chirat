@@ -74,6 +74,15 @@ failed runs.
 - When the planning chat writes a draft prompt, it opens the file as a
   document in the chat's side panel (not pasted into the message), so the
   review happens without leaving the chat; the file is the source of truth.
+- Right after flipping a prompt to `pending` (the "go"), the planning chat
+  posts a short **What's next** block, in the language of the conversation:
+  (1) what happens now — the watcher picks it up within its interval, where
+  the prompt runs and roughly how long (sonnet ≈ 10 min, opus ≈ 20–25);
+  (2) what can be run meanwhile — `relay-watch status`, `relay-watch tail -f`,
+  `relay-watch logs`; (3) what happens at the end — the notification, say
+  "check" here, then review → merge → the `## Landing` steps → the next
+  `after:` prompt starts by itself. Same block every time, so there is
+  nothing to ask.
 - `docs/status/` is the memory between sessions: at the end of a session
   write `docs/status/YYYY-MM-DD-<topic>.md` (done / not done / open
   questions / branch + last commit hash), or run `/relay:handover`.
@@ -107,6 +116,8 @@ all empty. Signal first.
 - **Three modes.**
   1. Human at the machine: `relay-watch` posts a macOS notification when a
      run ends; the human reads the status file and pings the planning chat.
+     With `notify_open` set in `.relay/config`, a click on the notification
+     brings the human to the Project (or the session).
   2. Human away, Mac awake: adaptive poll. First check at the expected run
      length (sonnet ≈ 10 min, opus ≈ 20–25 min, from `.relay/runs/`),
      then every 10 min. Queue empty: one 60-min tick, then stop.

@@ -111,13 +111,23 @@ or still `pending` (the skill never started — plugin missing, login expired),
 the watcher sets it to `failed` and says so in the `.err` file, so nothing
 loops or hangs; set it back to `pending` to retry.
 
-When a run ends, the watcher posts a desktop notification (macOS,
-`osascript`): the title is `relay: done`, `relay: blocked` or
+When a run ends, the watcher posts a desktop notification (macOS): the title is `relay: done`, `relay: blocked` or
 `relay: failed`, the text names the prompt. The point is that the person
 planning the work gets told, instead of a planning session polling the
 workspace on a timer; a `blocked` notification says a decision is waiting
-at the top of the status file. Set `RELAY_NOTIFY=0` to turn it off; on
-systems without `osascript` nothing is sent.
+at the top of the status file. Set `RELAY_NOTIFY=0` to turn it off.
+
+`terminal-notifier` (`brew install terminal-notifier`) is preferred: the
+notification carries Claude's icon (`RELAY_NOTIFY_SENDER` overrides the bundle
+id; empty means none), a new run replaces the previous notification of the
+same workspace, and a click opens Claude Desktop, or whatever `notify_open`
+names (see "Workspace config"). Without it the watcher falls back to
+`osascript` (shown as "Script Editor", a click does nothing), and without
+either nothing is sent. `RELAY_NOTIFY_OPEN=1` opens the status file on click
+under `terminal-notifier` and at once under `osascript`. Claude Desktop answers
+`claude://claude.ai/project/<uuid>` (a Project) and
+`claude://claude.ai/chat/<uuid>` (a conversation); see
+[support.claude.com/en/articles/14729294](https://support.claude.com/en/articles/14729294).
 
 For the planning side there is one more file: after each finished run the
 watcher appends a line to `.relay/LATEST` in the workspace
@@ -253,6 +263,7 @@ moves the directories relay reads from and names the integration branch:
 | `plans_dir` | `docs/plans` | where prompt files live |
 | `status_dir` | `docs/status` | where status files are written and looked up |
 | `default_branch` | `main` | what `after:` and the review/merge hints compare against |
+| `notify_open` | empty | URL or path `open`ed when the notification is clicked (needs `terminal-notifier`), e.g. `claude://claude.ai/project/<uuid>`; a value containing `'` is refused |
 
 ```
 plans_dir=work/queue

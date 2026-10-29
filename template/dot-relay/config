@@ -4,3 +4,4 @@
 # plans_dir=docs/plans
 # status_dir=docs/status
 # default_branch=main
+# notify_open=claude://claude.ai/project/<uuid>
