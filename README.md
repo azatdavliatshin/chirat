@@ -148,7 +148,12 @@ Flags:
 
 - `relay-watch status [ws…]` — read-only: watcher, tmux session, log, and per workspace the queue, the lock and the last run; exit 1 when something is `STALE`.
 - `relay-watch recover [--dry-run] [ws…]` — the stale-lock recovery on demand; `--dry-run` only prints what it would do; refuses a workspace whose lock is live.
+- `relay-watch logs [-n N] [-f] [ws…]` — the last N (default 20) lines of `watch.log`, for the given workspaces if any; `-f` follows.
+- `relay-watch tail [-f] [ws]` — the run in progress: what the assistant says and which tools it calls, one line each (`-f` follows).
+- `relay-watch doctor [--online]` — one `ok` / `warn` / `FAIL` line per setup check; `--online` also makes a real `claude -p` call, which is where an expired login shows up. Exit 1 on any `FAIL`.
 - `relay-watch restart [--force]` — stop the watcher and start `--tmux` again with the same flags; refused while a `claude` is running unless `--force` (the prompt goes back to `pending`).
+
+`tail` reads the transcripts Claude Code keeps under `~/.claude/projects/` and shows no tool output. `status` prints `warn:` (not `STALE`) for a `running` prompt without a lock — an interactive `/relay:next` does that.
 
 A running watcher writes `watcher.pid` and `watcher.flags` (its flags, one per line) next to `watch.log` and removes them when it exits; `status` and `restart` read them. A bare workspace name (`aat`) selects the configured path ending in `/aat`.
 

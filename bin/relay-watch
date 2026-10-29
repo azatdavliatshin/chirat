@@ -3,6 +3,7 @@
 #
 #   relay-watch [--once] [--dry-run] [--interval N] [--permission-mode M] [--tmux] [--version]
 #   relay-watch install [dir] | status [ws…] | recover [--dry-run] [ws…] | restart [--force]
+#   relay-watch logs [-n N] [-f] [ws…] | tail [-f] [ws] | doctor [--online]
 #
 # Config: ~/.config/relay/workspaces ($XDG_CONFIG_HOME honoured) — one absolute
 # workspace path per line, `#` comments, leading `~` expanded.
@@ -46,6 +47,19 @@
 #                 stop the watcher and start `relay-watch --tmux` again with
 #                 the same flags; refused while a claude is running unless
 #                 --force (the prompt then goes back to `pending`)
+#
+#   logs [-n N] [-f] [ws…]
+#                 last N (default 20) lines of watch.log as stored, only those
+#                 of the given workspaces when any; -f follows
+#   tail [-f] [ws]
+#                 the run in progress for ws (the only workspace with a live
+#                 lock when omitted): assistant text and tool calls, one line
+#                 each, from the newest ~/.claude/projects/<ws, / as ->/*.jsonl
+#                 modified since the lock's start; no tool output; times are UTC
+#   doctor [--online]
+#                 one ok / warn / FAIL line per check (claude, plugin, config,
+#                 tmux, PATH, state dir, watcher); exit 1 on any FAIL; --online
+#                 also asks claude for a reply (login expired shows up here)
 #
 # A running watcher records itself in the state dir (next to watch.log):
 # watcher.pid and watcher.flags (its flags, one per line). Both are removed
@@ -163,7 +177,7 @@ fi
 
 sub="" sub_args=()
 case ${1:-} in
-  status | recover | restart) sub=$1; shift; sub_args=("$@"); set -- ;;
+  status | recover | restart | logs | tail | doctor) sub=$1; shift; sub_args=("$@"); set -- ;;
 esac
 
 once=0 dry_run=0 interval=60 use_tmux=0
@@ -188,8 +202,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -x "$relay_prompt" ] || die "relay-prompt not found next to this script: $relay_prompt"
-[ -f "$config" ] || { echo "relay-watch: no config file: $config" >&2; usage 1; }
+# doctor reports these two itself
+if [ "$sub" != doctor ]; then
+  [ -x "$relay_prompt" ] || die "relay-prompt not found next to this script: $relay_prompt"
+  [ -f "$config" ] || { echo "relay-watch: no config file: $config" >&2; usage 1; }
+fi
 
 if [ "$use_tmux" = 1 ]; then
   command -v tmux >/dev/null 2>&1 || die "tmux not installed"
@@ -685,7 +702,7 @@ status_ws() {
   for p in ${running[@]+"${running[@]}"}; do
     rel=${p#"$ws"/}
     case $state in
-      none) echo "  STALE: ${rel} is running but there is no lock"; bad=1 ;;
+      none) echo "  warn: ${rel} is running with no lock (interactive run, or flip it by hand)" ;;
       live | setup)
         if [ -n "$lk_rel" ] && [ "$lk_rel" != "$rel" ]; then
           echo "  STALE: $rel is running but the lock is for $lk_rel"; bad=1
@@ -798,6 +815,219 @@ cmd_restart() {
     sleep 0.5
   done
   watcher_line
+}
+
+# ws_match <ws> <name…>: success when no names are given or one matches ws
+# (a bare name `aat` matches `*/aat`)
+ws_match() {
+  local w=$1 a
+  shift
+  [ $# -gt 0 ] || return 0
+  for a in "$@"; do
+    a=${a/#\~/$HOME}
+    a=${a%/}
+    case $w in "$a" | */"$a") return 0 ;; esac
+  done
+  return 1
+}
+
+cmd_logs() {
+  local n=20 follow=0 names=() w
+  while [ $# -gt 0 ]; do
+    case $1 in
+      -n)
+        [ $# -ge 2 ] || usage
+        case $2 in '' | *[!0-9]*) die "-n needs a whole number" ;; esac
+        n=$2; shift ;;
+      -f) follow=1 ;;
+      -*) usage ;;
+      *) names+=("$1") ;;
+    esac
+    shift
+  done
+  if [ ! -f "$log" ]; then echo "no log yet"; return 0; fi
+  # the ws column is the second tab-separated field; `waiting` and `misnamed`
+  # lines carry it third, so match either
+  filter() {
+    if [ ${#names[@]} -eq 0 ]; then cat; return; fi
+    while IFS= read -r line; do
+      w=$(printf '%s\n' "$line" | cut -f2)
+      case $w in waiting | misnamed) w=$(printf '%s\n' "$line" | cut -f3) ;; esac
+      ws_match "$w" "${names[@]}" && printf '%s\n' "$line"
+    done
+  }
+  if [ "$follow" = 1 ]; then
+    tail -n "$n" -f "$log" | filter
+  else
+    # filter first, then cut to the last N matching lines
+    filter <"$log" | tail -n "$n"
+  fi
+}
+
+# transcript_filter: stdin = transcript lines, stdout = the turns to show
+transcript_filter() {
+  if command -v jq >/dev/null 2>&1 && [ "${RELAY_TAIL_PY:-0}" != 1 ]; then
+    jq -R -r --unbuffered '
+      fromjson? | select(type == "object" and .type == "assistant")
+      | (.timestamp // "" | .[11:19]) as $t
+      | (.message.content // [])[]? | objects
+      | if .type == "text" then
+          "\($t)  assistant  \((.text // "") | gsub("\\s+"; " ") | .[0:200])"
+        elif .type == "tool_use" then
+          (.input // {}) as $i
+          | ($i.command // $i.file_path // $i.pattern
+             // ([$i[] | select(type == "string")] | first) // "") as $a
+          | "\($t)  tool       \(.name // "?")  \($a | tostring | gsub("\\s+"; " ") | .[0:120])"
+        else empty end'
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -u -c '
+import json, re, sys
+for line in sys.stdin:
+    try:
+        r = json.loads(line)
+        if not isinstance(r, dict) or r.get("type") != "assistant":
+            continue
+        t = (r.get("timestamp") or "")[11:19]
+        for c in (r.get("message") or {}).get("content") or []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "text":
+                print("%s  assistant  %s" % (t, re.sub(r"\s+", " ", c.get("text") or "")[:200]), flush=True)
+            elif c.get("type") == "tool_use":
+                i = c.get("input") or {}
+                a = i.get("command") or i.get("file_path") or i.get("pattern")
+                if not a:
+                    a = next((v for v in i.values() if isinstance(v, str)), "")
+                print("%s  tool       %s  %s" % (t, c.get("name") or "?", re.sub(r"\s+", " ", str(a))[:120]), flush=True)
+    except Exception:
+        continue
+'
+  else
+    echo "relay-watch: needs jq or python3" >&2
+    return 1
+  fi
+}
+
+cmd_tail() {
+  local follow=0 name="" ws lockws=() w started t dir f best=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      -f) follow=1 ;;
+      -*) usage ;;
+      *) [ -z "$name" ] || usage; name=$1 ;;
+    esac
+    shift
+  done
+  command -v jq >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || die "needs jq or python3"
+  while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    case $(lock_state "$w") in live | setup) lockws+=("$w") ;; esac
+  done < <(if [ -n "$name" ]; then select_ws "$name" || exit 1; else workspaces; fi)
+  if [ ${#lockws[@]} -eq 0 ]; then die "no run in progress${name:+ in $name}"; fi
+  if [ ${#lockws[@]} -gt 1 ]; then die "several runs in progress (${lockws[*]}); name one"; fi
+  ws=${lockws[0]}
+  lock_read "$ws"
+  started=$(iso_to_epoch "${lk_started:-}")
+  dir=$HOME/.claude/projects/${ws//\//-}
+  for f in "$dir"/*.jsonl; do
+    [ -f "$f" ] || continue
+    t=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null) || continue
+    [ -z "$started" ] || [ "$t" -ge "$started" ] || continue
+    if [ -z "$best" ] || [ "$f" -nt "$best" ]; then best=$f; fi
+  done
+  if [ -z "$best" ]; then echo "no transcript yet"; return 0; fi
+  if [ "$follow" = 1 ]; then
+    tail -n +1 -f "$best" | transcript_filter
+  else
+    transcript_filter <"$best"
+  fi
+}
+
+cmd_doctor() {
+  local online=0 bad=0 p ws n=0 cl="" dir real want pr_path v wl
+  case ${1:-} in --online) online=1; shift ;; esac
+  [ $# -eq 0 ] || usage
+  ok() { echo "ok   $*"; }
+  warn() { echo "warn $*"; }
+  fail() { echo "FAIL $*"; bad=1; }
+
+  # 1, 2: claude
+  if cl=$(command -v claude 2>/dev/null) && [ -n "$cl" ]; then
+    v=$(claude --version 2>&1 | head -n 1)
+    if [ -n "$v" ]; then ok "claude: $cl ($v)"; else fail "claude --version: prints nothing"; fi
+  else
+    fail "claude: not on PATH"
+  fi
+  if [ "$online" = 1 ] && [ -n "$cl" ]; then
+    local out=$state_dir/doctor.$$.out err=$state_dir/doctor.$$.err cpid rc=0
+    claude -p "reply with ok" --output-format json >"$out" 2>"$err" </dev/null &
+    cpid=$!
+    if wait_gone "$cpid" 60; then
+      wait "$cpid"; rc=$?
+    else
+      kill -KILL "$cpid" 2>/dev/null; wait "$cpid" 2>/dev/null; rc=timeout
+    fi
+    if [ "$rc" = 0 ]; then ok "claude -p: answered"
+    elif [ "$rc" = timeout ]; then fail "claude -p: no answer within 60 s"
+    else fail "claude -p: exit $rc: $(head -n 1 "$err")"; fi
+    rm -f "$out" "$err"
+  fi
+
+  # 3: plugin
+  if [ -n "$cl" ]; then
+    if claude plugin list 2>&1 | grep -q relay; then ok "plugin: relay installed"
+    else fail "plugin: relay not in \`claude plugin list\`: claude plugin marketplace add $root && claude plugin install relay"; fi
+  fi
+
+  # 4: config
+  if [ ! -f "$config" ]; then
+    fail "config: $config missing"
+  else
+    while IFS= read -r ws; do
+      [ -n "$ws" ] || continue
+      n=$((n + 1))
+      if [ ! -d "$ws" ]; then fail "workspace $ws: no such directory"
+      elif [ ! -d "$ws/docs/plans" ]; then fail "workspace $ws: no docs/plans"
+      else ok "workspace $ws"; fi
+    done < <(workspaces)
+    [ "$n" -gt 0 ] || warn "no workspaces: $config has no entries"
+  fi
+
+  # 5: tmux
+  if command -v tmux >/dev/null 2>&1; then ok "tmux: $(command -v tmux)"
+  else warn "tmux: not installed (--once works without it)"; fi
+
+  # 6: our own commands
+  for p in relay-prompt relay-watch; do
+    want=$here/relay-watch
+    [ "$p" = relay-prompt ] && want=$relay_prompt
+    if ! pr_path=$(command -v "$p" 2>/dev/null) || [ -z "$pr_path" ]; then
+      fail "$p: not on PATH: run \`$here/relay-watch install\` and add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\""
+      continue
+    fi
+    real=$pr_path
+    while [ -L "$real" ]; do
+      dir=$(readlink "$real")
+      case $dir in /*) real=$dir ;; *) real=$(dirname "$real")/$dir ;; esac
+    done
+    if [ "$(cd "$(dirname "$real")" && pwd)/$(basename "$real")" = "$(cd "$(dirname "$want")" && pwd)/$(basename "$want")" ]; then
+      ok "$p: $pr_path"
+    else
+      warn "$p: resolves to $pr_path, this checkout has $want"
+    fi
+  done
+
+  # 7: state dir, osascript, jq
+  if [ -w "$state_dir" ]; then ok "state dir: $state_dir writable"; else fail "state dir: $state_dir not writable"; fi
+  if command -v osascript >/dev/null 2>&1; then ok "osascript: notifications available"
+  elif [ "$(uname)" = Darwin ]; then warn "osascript: not found (no desktop notifications)"
+  else echo "info osascript: not present (macOS only)"; fi
+  if command -v jq >/dev/null 2>&1; then ok "jq: $(command -v jq)"
+  else warn "jq: not installed (tail falls back to python3)"; fi
+
+  # 8: watcher
+  if wl=$(watcher_line); then ok "$wl"; else fail "${wl#STALE: }"; fi
+  return "$bad"
 }
 
 if [ -n "$sub" ]; then

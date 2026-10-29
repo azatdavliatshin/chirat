@@ -616,8 +616,9 @@ rmdir "$runs/.lock"
 
 # running prompt without a lock
 st
-eq "status: running prompt without lock exits 1" 1 $?
-has "status: says so" "$tmp/st.out" "STALE: docs/plans/demo.prompt-1.md is running but there is no lock"
+eq "status: running prompt without lock exits 0" 0 $?
+has "status: warns" "$tmp/st.out" "  warn: docs/plans/demo.prompt-1.md is running with no lock (interactive run, or flip it by hand)"
+if grep -q STALE "$tmp/st.out"; then ko "status: no STALE for it"; else ok "status: no STALE for it"; fi
 "$rp" set "$pf" status pending
 
 # live run
@@ -675,6 +676,130 @@ wait "$spid" 2>/dev/null
 if kill -0 "$spid" 2>/dev/null; then ko "restart: pane process stopped"; else ok "restart: pane process stopped"; fi
 has "restart: leftover session killed" "$FAKE_TMUX_LOG" "kill-session -t =relay"
 has "restart: new session started" "$FAKE_TMUX_LOG" "new-session -d -s relay"
+
+# --- logs ------------------------------------------------------------------
+
+rm -f "$log"
+out=$("$watch" logs); eq "logs: no log yet" "no log yet" "$out"
+"$watch" logs >/dev/null
+eq "logs: no log yet exits 0" 0 $?
+for i in $(seq 1 25); do
+  printf '2026-10-29T10:%02d:00+0000\t%s/aat\tdocs/plans/x.prompt-%d.md\tsonnet\t0\t5\tauto\n' "$i" "$tmp" "$i" >>"$log"
+done
+printf '2026-10-29T11:00:00+0000\twaiting\t%s/other\tdocs/plans/y.prompt-1.md\tafter=dep\n' "$tmp" >>"$log"
+eq "logs: default is 20 lines" 20 "$("$watch" logs | wc -l | tr -d ' ')"
+eq "logs: -n 2" 2 "$("$watch" logs -n 2 | wc -l | tr -d ' ')"
+eq "logs: lines as stored" "$(tail -n 1 "$log")" "$("$watch" logs -n 1)"
+eq "logs: bare name filters" 25 "$("$watch" logs -n 100 aat | wc -l | tr -d ' ')"
+eq "logs: filter matches waiting lines" 1 "$("$watch" logs -n 100 other | wc -l | tr -d ' ')"
+eq "logs: filter then last N" "$(grep aat "$log" | tail -n 3)" "$("$watch" logs -n 3 aat)"
+
+# --- tail ------------------------------------------------------------------
+
+# Line shapes copied from a real transcript (one content block per record).
+tdir=$HOME/.claude/projects/${ws//\//-}
+mkdir -p "$tdir"
+tf=$tdir/11111111-2222-3333-4444-555555555555.jsonl
+cat >"$tf" <<'JSONL'
+{"type":"queue-operation","operation":"enqueue","sessionId":"s","timestamp":"2026-10-29T00:32:30.000Z"}
+{"parentUuid":"a","isSidechain":false,"message":{"model":"m","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Dependency met.\n  Claim   and proceed."}],"stop_reason":"end_turn"},"type":"assistant","uuid":"u1","timestamp":"2026-10-29T00:32:40.566Z"}
+{"parentUuid":"b","isSidechain":false,"message":{"model":"m","id":"msg_2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"cat docs/plans/x.md;\ngit status"},"caller":{"type":"direct"}}],"stop_reason":"tool_use"},"type":"assistant","uuid":"u2","timestamp":"2026-10-29T00:32:41.100Z"}
+{"parentUuid":"c","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"secret output"}]},"uuid":"u3","timestamp":"2026-10-29T00:32:42.773Z"}
+{"parentUuid":"d","isSidechain":false,"message":{"model":"m","id":"msg_3","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"abc"}]},"type":"assistant","uuid":"u4","timestamp":"2026-10-29T00:32:43.000Z"}
+{"parentUuid":"e","isSidechain":false,"message":{"model":"m","id":"msg_4","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_02","name":"Read","input":{"file_path":"/tmp/ws/docs/plans/x.md"}}]},"type":"assistant","uuid":"u5","timestamp":"2026-10-29T00:32:44.200Z"}
+{"type":"user","message":{"role":"user","content":"a user turn"},"uuid":"u6","timestamp":"2026-10-29T00:32:45.000Z"}
+{"this is not json
+{"parentUuid":"f","isSidechain":false,"message":{"model":"m","id":"msg_5","type":"message","role":"assistant","content":[{"type":"text","text":"Done."}]},"type":"assistant","uuid":"u7","timestamp":"2026-10-29T00:32:46.000Z"}
+JSONL
+expect_tail="00:32:40  assistant  Dependency met. Claim and proceed.
+00:32:41  tool       Bash  cat docs/plans/x.md; git status
+00:32:44  tool       Read  /tmp/ws/docs/plans/x.md
+00:32:46  assistant  Done."
+
+"$watch" tail >"$tmp/out" 2>"$tmp/stderr"
+eq "tail: no run in progress exits 1" 1 $?
+has "tail: says so" "$tmp/stderr" "no run in progress"
+
+"$rp" set "$pf" status pending
+env FAKE_MODE=sleep "$watch" --interval 1000 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude "$pf"
+touch "$tf"
+eq "tail: transcript turns" "$expect_tail" "$("$watch" tail)"
+eq "tail: by bare name" "$expect_tail" "$("$watch" tail ops)"
+if command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  eq "tail: python3 path gives the same lines" "$expect_tail" "$(RELAY_TAIL_PY=1 "$watch" tail)"
+else
+  echo "skip tail: python3 path (needs both jq and python3)"
+fi
+touch -t 200001010000 "$tf"
+eq "tail: transcript older than the run" "no transcript yet" "$("$watch" tail)"
+"$watch" tail >/dev/null
+eq "tail: no transcript yet exits 0" 0 $?
+rm -f "$tf"
+eq "tail: no transcript at all" "no transcript yet" "$("$watch" tail)"
+kill -TERM "$wpid"; wait "$wpid" 2>/dev/null
+"$rp" set "$pf" status pending
+
+# --- doctor ----------------------------------------------------------------
+
+# A fake claude that knows `--version` and `plugin list`; the run-time one above
+# is put back afterwards.
+mv "$tmp/bin/claude" "$tmp/bin/claude.run"
+cat >"$tmp/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+  --version) echo "9.9.9 (Claude Code)" ;;
+  plugin) echo "${FAKE_PLUGINS-relay@relay 0.1.0}" ;;
+  -p) [ -z "${FAKE_LOGIN:-}" ] || { echo "Not logged in" >&2; exit 1; }; echo '{"result":"ok"}' ;;
+esac
+EOF
+chmod +x "$tmp/bin/claude"
+mkdir -p "$tmp/inst"
+"$watch" install "$tmp/inst" >/dev/null
+dpath=$tmp/inst:$tmp/bin:/usr/bin:/bin
+doc() { PATH=$dpath "$watch" doctor "$@" >"$tmp/doc.out" 2>&1; return $?; }
+printf '%s\n' "$ws" >"$XDG_CONFIG_HOME/relay/workspaces"
+doc
+eq "doctor: all good exits 0" 0 $?
+has "doctor: claude" "$tmp/doc.out" "ok   claude: "
+has "doctor: plugin" "$tmp/doc.out" "ok   plugin: relay installed"
+has "doctor: workspace" "$tmp/doc.out" "ok   workspace $ws"
+has "doctor: relay-prompt" "$tmp/doc.out" "ok   relay-prompt: $tmp/inst/relay-prompt"
+has "doctor: state dir" "$tmp/doc.out" "ok   state dir: "
+has "doctor: watcher line" "$tmp/doc.out" "ok   watcher: not running"
+if grep -q '^FAIL' "$tmp/doc.out"; then ko "doctor: no FAIL lines" "$(cat "$tmp/doc.out")"; else ok "doctor: no FAIL lines"; fi
+FAKE_PLUGINS="other@x 1.0" doc
+eq "doctor: plugin missing exits 1" 1 $?
+has "doctor: plugin FAIL" "$tmp/doc.out" "FAIL plugin: relay not in"
+printf '%s\n%s\n' "$ws" "$tmp/nowhere" >"$XDG_CONFIG_HOME/relay/workspaces"
+doc
+eq "doctor: bad workspace exits 1" 1 $?
+has "doctor: bad workspace FAIL" "$tmp/doc.out" "FAIL workspace $tmp/nowhere: no such directory"
+: >"$XDG_CONFIG_HOME/relay/workspaces"
+doc
+eq "doctor: no workspaces is a warn" 0 $?
+has "doctor: warn no workspaces" "$tmp/doc.out" "warn no workspaces"
+printf '%s\n' "$ws" >"$XDG_CONFIG_HOME/relay/workspaces"
+PATH=$tmp/bin:/usr/bin:/bin "$watch" doctor >"$tmp/doc.out" 2>&1
+eq "doctor: relay-prompt off PATH exits 1" 1 $?
+has "doctor: install hint" "$tmp/doc.out" "FAIL relay-prompt: not on PATH: run \`$watch install\`"
+has "doctor: PATH export" "$tmp/doc.out" "export PATH="
+mkdir -p "$tmp/elsewhere"
+printf '#!/bin/sh\n' >"$tmp/elsewhere/relay-prompt"; chmod +x "$tmp/elsewhere/relay-prompt"
+PATH=$tmp/elsewhere:$dpath "$watch" doctor >"$tmp/doc.out" 2>&1
+eq "doctor: other relay-prompt only warns" 0 $?
+has "doctor: warn names both paths" "$tmp/doc.out" "warn relay-prompt: resolves to $tmp/elsewhere/relay-prompt, this checkout has $rp"
+XDG_CONFIG_HOME=$tmp/nowhere doc
+eq "doctor: no config exits 1" 1 $?
+has "doctor: config FAIL" "$tmp/doc.out" "FAIL config: "
+doc --online
+eq "doctor --online ok" 0 $?
+has "doctor --online line" "$tmp/doc.out" "ok   claude -p: answered"
+FAKE_LOGIN=1 doc --online
+eq "doctor --online login expired exits 1" 1 $?
+has "doctor --online first stderr line" "$tmp/doc.out" "FAIL claude -p: exit 1: Not logged in"
+mv "$tmp/bin/claude.run" "$tmp/bin/claude"
 
 # --once leaves nothing behind
 "$watch" --once >/dev/null 2>&1
