@@ -8,9 +8,9 @@ Private. Never leaves this folder; never goes into a repo.
 <workspace>/                   ← AI workspace, its own private git repo; root of the Claude Project
 ├── CLAUDE.md                  main context for Claude Code sessions
 ├── .gitconfig                 git identity, included from ~/.gitconfig
-├── .gitignore                 repos/, .claude/, .DS_Store, .relay/lock/ — clones are separate repos
+├── .gitignore                 repos/, .claude/, .DS_Store, .chirat/lock/ — clones are separate repos
 ├── .claude/settings.local.json   local permissions (ignored; template is the source)
-├── .relay/                    relay's own state — run log, LATEST, lock; see README
+├── .chirat/                    chirat's own state — run log, LATEST, lock; see README
 ├── docs/
 │   ├── WORKFLOW.md            this file
 │   ├── PARKED.md              deferred ideas / questions
@@ -40,7 +40,7 @@ failed runs.
 - **Two tiers.** In `repos/*` Claude commits only at the checkpoints a
   prompt defines, on the prompt's branch, and never pushes or touches
   `main`; the human reviews, merges and pushes. In the workspace, `docs:`
-  commits are routine (`/relay:next` makes one per run); pushes are the
+  commits are routine (`/chirat:next` makes one per run); pushes are the
   human's.
 - Before every commit `git status` must not show `.claude/`,
   `settings.local.json`, `*.local.md`, `.DS_Store`, or anything from this
@@ -55,7 +55,7 @@ failed runs.
   `<topic>.prompt-N.md` executed in fresh Claude Code sessions. To insert a
   prompt between N and N+1, name it `<topic>.prompt-Nb.md` (or `N-fix`); it
   runs after N.
-- Prompt front matter (read by `/relay:next` and the runner):
+- Prompt front matter (read by `/chirat:next` and the runner):
   ```
   ---
   model: sonnet | opus | fable
@@ -83,8 +83,8 @@ failed runs.
   posts a short **What's next** block, in the language of the conversation:
   (1) what happens now — the watcher picks it up within its interval, where
   the prompt runs and roughly how long (sonnet ≈ 10 min, opus ≈ 20–25);
-  (2) what can be run meanwhile — `relay-watch status`, `relay-watch tail -f`,
-  `relay-watch logs`; (3) what happens at the end — the notification, say
+  (2) what can be run meanwhile — `chirat-watch status`, `chirat-watch tail -f`,
+  `chirat-watch logs`; (3) what happens at the end — the notification, say
   "check" here, then review → merge → the `## Landing` steps → the next
   `after:` prompt starts by itself. Same block every time, so there is
   nothing to ask.
@@ -104,11 +104,11 @@ failed runs.
     verifies.
 - `docs/status/` is the memory between sessions: at the end of a session
   write `docs/status/YYYY-MM-DD-<topic>.md` (done / not done / open
-  questions / branch + last commit hash), or run `/relay:handover`.
-  `.relay/runs/` holds the runner's raw output per run; those files
+  questions / branch + last commit hash), or run `/chirat:handover`.
+  `.chirat/runs/` holds the runner's raw output per run; those files
   are versioned here as the run log.
-- After merging a branch that touches `plugin/` in the relay repo, run
-  `claude plugin update relay@relay` (or uninstall and reinstall): the
+- After merging a branch that touches `plugin/` in the chirat repo, run
+  `claude plugin update chirat@chirat` (or uninstall and reinstall): the
   installed plugin is a cache snapshot, not a live link to the clone.
 - Anything public is drafted in `docs/emails/` and re-read by the human
   before posting.
@@ -127,18 +127,18 @@ The planning chat does not poll on a fixed timer: every poll is a turn with
 its full context, and a 3-minute timer over a night is ~160 turns, almost
 all empty. Signal first.
 
-- **Log.** For each finished run `relay-watch` appends one line to
-  `.relay/LATEST` (tab-separated: time, prompt stem, status, branch,
+- **Log.** For each finished run `chirat-watch` appends one line to
+  `.chirat/LATEST` (tab-separated: time, prompt stem, status, branch,
   commit, exit code, seconds). On "check", or right after enqueueing a prompt,
   the planning chat reads the last line (or the lines newer than the last one
   it reported). `running` shows in the prompt's front matter, not in LATEST.
 - **Three modes.**
-  1. Human at the machine: `relay-watch` posts a macOS notification when a
+  1. Human at the machine: `chirat-watch` posts a macOS notification when a
      run ends; the human reads the status file and pings the planning chat.
-     With `notify_open` set in `.relay/config`, a click on the notification
+     With `notify_open` set in `.chirat/config`, a click on the notification
      brings the human to the Project (or the session).
   2. Human away, Mac awake: adaptive poll. First check at the expected run
-     length (sonnet ≈ 10 min, opus ≈ 20–25 min, from `.relay/runs/`),
+     length (sonnet ≈ 10 min, opus ≈ 20–25 min, from `.chirat/runs/`),
      then every 10 min. Queue empty: one 60-min tick, then stop.
   3. Night: no poll; the human writes first in the morning and the planning
      chat catches up in one turn.
@@ -147,7 +147,7 @@ all empty. Signal first.
   read the last LATEST line and the newest status file, report in one short
   message, re-plan.
   ```
-  W=/path/to/workspace; { grep -H '^status:' "$W"/docs/plans/*.prompt-*.md; ls "$W"/docs/status/*.md; tail -n 1 "$W"/.relay/LATEST; find "$W"/.relay/runs -name '*.json' -size +0 | wc -l; } 2>/dev/null | cksum
+  W=/path/to/workspace; { grep -H '^status:' "$W"/docs/plans/*.prompt-*.md; ls "$W"/docs/status/*.md; tail -n 1 "$W"/.chirat/LATEST; find "$W"/.chirat/runs -name '*.json' -size +0 | wc -l; } 2>/dev/null | cksum
   ```
 - **Unreachable.** If a tick cannot reach the Mac (asleep, app closed): one
   retry after 10 min, then stop.
@@ -159,7 +159,7 @@ documents in the chat's side panel, never pasted into a message:
 - a draft prompt, when written;
 - on "check", two files for the finished run: the status file, and the
   diff — `git -C repos/<repo> diff <default_branch>..<branch>` for the
-  prompt's branch, written to `.relay/review/<stem>.diff` (gitignored),
+  prompt's branch, written to `.chirat/review/<stem>.diff` (gitignored),
   rendered with `docs/qa/diff2html.py <in.diff> <out.html> [title]` and
   opened as HTML (file list with +/− counts, collapsible files, line
   numbers). Status first, diff second; a `blocked`/`failed` run gets the
@@ -169,4 +169,4 @@ documents in the chat's side panel, never pasted into a message:
 The aim is to stay in Cowork as long as possible and leave it only for what
 it cannot reach (git merge, push).
 
-The `/relay:poll` skill carries the same rule for the planning session.
+The `/chirat:poll` skill carries the same rule for the planning session.

@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Read-only code reviewer. Reviews a branch against the prompt file it was built from and writes a findings table with a merge-ready / needs-changes verdict to docs/status/. Use after a /relay:next run, before the human merges.
+description: Read-only code reviewer. Reviews a branch against the prompt file it was built from and writes a findings table with a merge-ready / needs-changes verdict to docs/status/. Use after a /chirat:next run, before the human merges.
 model: opus
 tools: Read, Grep, Glob, Bash, Write
 disallowedTools: Edit, NotebookEdit

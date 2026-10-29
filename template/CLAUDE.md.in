@@ -19,7 +19,7 @@ user.* inside a repo.
 | `CLAUDE.md` | This file — main context |
 | `.claude/settings.local.json` | Local permissions for this workspace |
 | `.gitconfig` | Git identity for every repo under this workspace (via `includeIf` in `~/.gitconfig`) |
-| `.relay/` | relay's own state: run log, `LATEST`, lock; optional `config` (`plans_dir`, `status_dir`, `default_branch`) |
+| `.chirat/` | chirat's own state: run log, `LATEST`, lock; optional `config` (`plans_dir`, `status_dir`, `default_branch`) |
 | `docs/WORKFLOW.md` | Private process guide (never shared) |
 | `docs/PARKED.md` | Deferred ideas / open questions |
 | `docs/input/` | **Read-only.** Incoming material |
@@ -44,7 +44,7 @@ user.* inside a repo.
 - Two-tier commit rule. In `repos/*`: commit only when the prompt says so
   (at the checkpoints it defines, on the prompt's branch), never push, never
   touch `main`; run `git status` before any commit and flag unexpected
-  files. In the workspace itself: `docs:` commits are fine (`/relay:next`
+  files. In the workspace itself: `docs:` commits are fine (`/chirat:next`
   makes one per run), pushes are the human's.
 - Anything that must reach a remote — branches, commits, pushes — goes
   through repos/<name>, never from a copy elsewhere.
@@ -60,8 +60,8 @@ user.* inside a repo.
 ## Landing
 
 <!--
-- plugin/ → claude plugin update relay@relay
-- bin/relay-watch → relay-watch restart
+- plugin/ → claude plugin update chirat@chirat
+- bin/chirat-watch → chirat-watch restart
 -->
 
 ## Useful commands

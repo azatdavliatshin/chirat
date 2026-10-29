@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# relay-watch — poll workspaces for pending prompts and run them headless.
+# chirat-watch — poll workspaces for pending prompts and run them headless.
 #
-#   relay-watch [--once] [--dry-run] [--interval N] [--permission-mode M] [--tmux] [--version]
-#   relay-watch install [dir] | status [ws…] | recover [--dry-run] [ws…] | restart [--force]
-#   relay-watch logs [-n N] [-f] [ws…] | tail [-f] [ws] | doctor [--online]
+#   chirat-watch [--once] [--dry-run] [--interval N] [--permission-mode M] [--tmux] [--version]
+#   chirat-watch install [dir] | status [ws…] | recover [--dry-run] [ws…] | restart [--force]
+#   chirat-watch logs [-n N] [-f] [ws…] | tail [-f] [ws] | doctor [--online]
 #
-# Config: ~/.config/relay/workspaces ($XDG_CONFIG_HOME honoured) — one absolute
+# Config: ~/.config/chirat/workspaces ($XDG_CONFIG_HOME honoured) — one absolute
 # workspace path per line, `#` comments, leading `~` expanded.
 #
 # Every --interval seconds (default 60) each workspace is asked for its next
-# pending prompt (`relay-prompt next`). For a hit, relay-watch takes the lock
-# <ws>/.relay/lock, runs from <ws>
+# pending prompt (`chirat-prompt next`). For a hit, chirat-watch takes the lock
+# <ws>/.chirat/lock, runs from <ws>
 #
-#   claude -p "/relay:next <file>" --model <model> --permission-mode <mode>
+#   claude -p "/chirat:next <file>" --model <model> --permission-mode <mode>
 #          --permission-prompts none --output-format json
 #
-# with stdout in <ws>/.relay/runs/<stem>.<YYYYMMDD-HHMMSS>.json and stderr
+# with stdout in <ws>/.chirat/runs/<stem>.<YYYYMMDD-HHMMSS>.json and stderr
 # appended to the matching .err, and marks the prompt `failed` if the run left
 # it `running`. If <ws> is a git repository, the run log is then committed as
-# `docs: run log <stem>` (.relay/runs/, .relay/LATEST and .relay/status.log;
-# never the lock; never pushed). One line per run goes to ~/.local/state/relay/watch.log
+# `docs: run log <stem>` (.chirat/runs/, .chirat/LATEST and .chirat/status.log;
+# never the lock; never pushed). One line per run goes to ~/.local/state/chirat/watch.log
 # ($XDG_STATE_HOME honoured) and to stdout:
 #
 #   <iso time> <tab> <ws> <tab> <file> <tab> <model> <tab> <exit> <tab> <seconds>
@@ -29,11 +29,11 @@
 #   --dry-run     print the claude command instead of running it
 #   --interval N  seconds between passes (default 60)
 #   --permission-mode M  claude permission mode, passed through verbatim;
-#                 default `auto`, or $RELAY_PERMISSION_MODE (flag wins)
-#   --tmux        start relay-watch (with the remaining flags) in a detached
-#                 tmux session named `relay`; refuses if it already exists
+#                 default `auto`, or $CHIRAT_PERMISSION_MODE (flag wins)
+#   --tmux        start chirat-watch (with the remaining flags) in a detached
+#                 tmux session named `chirat`; refuses if it already exists
 #   --version     print the version and exit
-#   install [dir] symlink relay-watch and relay-prompt into dir (default
+#   install [dir] symlink chirat-watch and chirat-prompt into dir (default
 #                 ~/.local/bin); refuses to replace anything that is not a
 #                 symlink, hints at PATH if dir is not on it
 #   status [ws…]  read-only report: watcher, tmux session, log, and per
@@ -45,7 +45,7 @@
 #                 prints what would be done; refuses a workspace whose lock
 #                 is live
 #   restart [--force]
-#                 stop the watcher and start `relay-watch --tmux` again with
+#                 stop the watcher and start `chirat-watch --tmux` again with
 #                 the same flags; refused while a claude is running unless
 #                 --force (the prompt then goes back to `pending`)
 #
@@ -73,15 +73,15 @@
 # at most once per 10 minutes (state in <log dir>/waiting.seen).
 #
 # A pending or running file in <plans_dir>/ whose name does not match
-# <topic>.prompt-<N><suffix>.md is never picked up (`relay-prompt lint`). Each
+# <topic>.prompt-<N><suffix>.md is never picked up (`chirat-prompt lint`). Each
 # pass logs it, once per file ever (state in <log dir>/misnamed.seen):
 #   <iso time> <tab> misnamed <tab> <ws> <tab> <file> <tab> <reason>
 #
-# The lock directory records its owners: watcher.pid (relay-watch), prompt
+# The lock directory records its owners: watcher.pid (chirat-watch), prompt
 # (path relative to the workspace), run (<stem>.<stamp>, the basename of the
 # .json/.err), started (iso time) and, once claude is up, claude.pid. claude
 # runs in its own process group (group id = claude.pid). Before every
-# `relay-prompt next`, a lock is stale when its watcher is dead and its claude
+# `chirat-prompt next`, a lock is stale when its watcher is dead and its claude
 # is dead or was never started: the prompt is put back to `pending` if it still
 # says `running`, a note goes to the run's .err, an empty .json is removed, the
 # lock is removed and a line with `recovered` in the exit column is logged. A
@@ -93,14 +93,14 @@
 # heuristics.
 #
 # SIGINT/SIGTERM/SIGHUP (tmux kill-session) during a run: TERM to claude's
-# whole process group, KILL after $RELAY_STOP_GRACE seconds (default 15) and
+# whole process group, KILL after $CHIRAT_STOP_GRACE seconds (default 15) and
 # another 5 s to be reaped. Once claude is gone the prompt goes back to
 # `pending` (note in the .err file), the lock is released and the run is logged
 # with `interrupted` in the exit column. If claude survives even KILL, the
 # prompt and the lock are left as they are and the exit column says
 # `interrupted-alive`; the next start then waits for that claude.
 #
-# Each finished run also appends one line to <ws>/.relay/LATEST, the file
+# Each finished run also appends one line to <ws>/.chirat/LATEST, the file
 # the planning side reads instead of polling (not written by --dry-run, nor
 # for waiting / misnamed lines):
 #
@@ -112,7 +112,7 @@
 # that branch in repos/<repo>, or - if there is none; exit is claude's exit
 # code or `interrupted`.
 #
-# After each run a desktop notification (title `relay: <status>`, subtitle the
+# After each run a desktop notification (title `chirat: <status>`, subtitle the
 # workspace name) says what to do next, so the human can read the status file
 # and ping the planning session instead of that session polling:
 #
@@ -123,30 +123,30 @@
 #
 # <status file> is the newest <status_dir>/*<stem>*.md modified since the run
 # started, relative to the workspace, or (no status file). macOS only;
-# silently skipped elsewhere or with RELAY_NOTIFY=0. Sender, in order:
-# terminal-notifier 3.x (brew install terminal-notifier; `-group relay:<ws>`
+# silently skipped elsewhere or with CHIRAT_NOTIFY=0. Sender, in order:
+# terminal-notifier 3.x (brew install terminal-notifier; `-group chirat:<ws>`
 # replaces the previous notification of the workspace); else osascript (shown
 # as "Script Editor", click does nothing); else nothing. terminal-notifier
 # needs its own notification permission, granted once by launching the bundle
 # (`open "$(brew --prefix)/Cellar/terminal-notifier/<ver>/terminal-notifier.app"`,
-# click Allow); until then every notification is dropped. `relay-watch doctor
+# click Allow); until then every notification is dropped. `chirat-watch doctor
 # --online` probes it. Its stderr is kept: appended to the run's .err under
 # `notify: terminal-notifier said:`, a non-zero exit as `notify: terminal-notifier
 # exit <n>`. Click action, exactly one of:
-#   - RELAY_NOTIFY_OPEN=1 and a status file (done / blocked / failed):
+#   - CHIRAT_NOTIFY_OPEN=1 and a status file (done / blocked / failed):
 #     `-execute "open '<status file>'; open '<notify_open>'"` (the second open
 #     only when notify_open is set);
-#   - else notify_open set in <ws>/.relay/config (a URL or path, e.g.
+#   - else notify_open set in <ws>/.chirat/config (a URL or path, e.g.
 #     claude://claude.ai/project/<uuid>): `-open <notify_open>`;
-#   - else `-activate com.anthropic.claudefordesktop` (RELAY_NOTIFY_ACTIVATE
+#   - else `-activate com.anthropic.claudefordesktop` (CHIRAT_NOTIFY_ACTIVATE
 #     overrides the bundle id; empty = no click option).
 # A value containing a quote is refused (warning). Under osascript the status
-# file is opened at once instead. RELAY_NOTIFY_SENDER is removed: 3.x has no
+# file is opened at once instead. CHIRAT_NOTIFY_SENDER is removed: 3.x has no
 # `-sender`.
 #
-# Everything relay writes for itself lives in <ws>/.relay/ (runs/, LATEST,
+# Everything chirat writes for itself lives in <ws>/.chirat/ (runs/, LATEST,
 # status.log, lock/); everything a human reads stays under docs/. The optional
-# <ws>/.relay/config (`key=value` lines, `#` comments, no quotes; paths relative
+# <ws>/.chirat/config (`key=value` lines, `#` comments, no quotes; paths relative
 # to the workspace root) sets plans_dir (default docs/plans), status_dir
 # (default docs/status), default_branch (default main) and notify_open (see
 # the notification above; default empty). Unknown keys are ignored. A run log
@@ -165,10 +165,10 @@ while [ -L "$self" ]; do # installed as a symlink: find the real script
 done
 here=$(cd "$(dirname "$self")" && pwd)
 root=$(dirname "$here")
-relay_prompt=$root/plugin/bin/relay-prompt
-config=${XDG_CONFIG_HOME:-$HOME/.config}/relay/workspaces
-log=${XDG_STATE_HOME:-$HOME/.local/state}/relay/watch.log
-session=relay
+chirat_prompt=$root/plugin/bin/chirat-prompt
+config=${XDG_CONFIG_HOME:-$HOME/.config}/chirat/workspaces
+log=${XDG_STATE_HOME:-$HOME/.local/state}/chirat/watch.log
+session=chirat
 
 usage() { # usage [exit code]
   sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//' >&2
@@ -177,7 +177,7 @@ usage() { # usage [exit code]
 }
 
 die() {
-  echo "relay-watch: $*" >&2
+  echo "chirat-watch: $*" >&2
   exit 1
 }
 
@@ -190,7 +190,7 @@ install() { # install [dir]: symlink the two commands into dir
   local dir=${1:-$HOME/.local/bin} src name target
   dir=${dir/#\~/$HOME}
   mkdir -p "$dir" || die "cannot create $dir"
-  for src in "$here/relay-watch" "$relay_prompt"; do
+  for src in "$here/chirat-watch" "$chirat_prompt"; do
     name=${src##*/}
     target=$dir/$name
     if [ -e "$target" ] && [ ! -L "$target" ]; then
@@ -201,13 +201,13 @@ install() { # install [dir]: symlink the two commands into dir
   done
   case ":$PATH:" in
     *":${dir%/}:"*) ;;
-    *) echo "relay-watch: $dir is not on PATH; add: export PATH=\"$dir:\$PATH\"" ;;
+    *) echo "chirat-watch: $dir is not on PATH; add: export PATH=\"$dir:\$PATH\"" ;;
   esac
 }
 
 if [ "${1:-}" = install ]; then
   [ $# -le 2 ] || usage
-  [ -x "$relay_prompt" ] || die "relay-prompt not found next to this script: $relay_prompt"
+  [ -x "$chirat_prompt" ] || die "chirat-prompt not found next to this script: $chirat_prompt"
   install "${2:-}"
   exit 0
 fi
@@ -218,7 +218,7 @@ case ${1:-} in
 esac
 
 once=0 dry_run=0 interval=60 use_tmux=0
-mode=${RELAY_PERMISSION_MODE:-auto}
+mode=${CHIRAT_PERMISSION_MODE:-auto}
 pass_through=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -233,7 +233,7 @@ while [ $# -gt 0 ]; do
       [ -n "$2" ] || die "--permission-mode needs a value"
       mode=$2; pass_through+=("$1" "$2"); shift 2 ;;
     --tmux) use_tmux=1; shift ;;
-    --version) echo "relay-watch $(version)"; exit 0 ;;
+    --version) echo "chirat-watch $(version)"; exit 0 ;;
     -h | --help) usage ;;
     *) usage ;;
   esac
@@ -241,8 +241,8 @@ done
 
 # doctor reports these two itself
 if [ "$sub" != doctor ]; then
-  [ -x "$relay_prompt" ] || die "relay-prompt not found next to this script: $relay_prompt"
-  [ -f "$config" ] || { echo "relay-watch: no config file: $config" >&2; usage 1; }
+  [ -x "$chirat_prompt" ] || die "chirat-prompt not found next to this script: $chirat_prompt"
+  [ -f "$config" ] || { echo "chirat-watch: no config file: $config" >&2; usage 1; }
 fi
 
 if [ "$use_tmux" = 1 ]; then
@@ -250,9 +250,9 @@ if [ "$use_tmux" = 1 ]; then
   if tmux has-session -t "=$session" 2>/dev/null; then
     die "tmux session '$session' already exists; attach with: tmux attach -t $session"
   fi
-  cmd=$(printf '%q ' "$here/relay-watch" ${pass_through[@]+"${pass_through[@]}"})
+  cmd=$(printf '%q ' "$here/chirat-watch" ${pass_through[@]+"${pass_through[@]}"})
   tmux new-session -d -s "$session" -n watch "$cmd"
-  echo "relay-watch running in tmux session '$session'; attach with: tmux attach -t $session"
+  echo "chirat-watch running in tmux session '$session'; attach with: tmux attach -t $session"
   exit 0
 fi
 
@@ -275,10 +275,10 @@ workspaces() {
   done <"$config"
 }
 
-# relay_config <ws> <key> <default>: value of <key> in <ws>/.relay/config, else
-# <default>. Identical copy lives in plugin/bin/relay-prompt (that one stays standalone).
-relay_config() {
-  local f=$1/.relay/config line k v val=$3 n=0
+# chirat_config <ws> <key> <default>: value of <key> in <ws>/.chirat/config, else
+# <default>. Identical copy lives in plugin/bin/chirat-prompt (that one stays standalone).
+chirat_config() {
+  local f=$1/.chirat/config line k v val=$3 n=0
   if [ -f "$f" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       n=$((n + 1))
@@ -286,7 +286,7 @@ relay_config() {
       case $line in '' | '#'*) continue ;; esac
       case $line in
         *=*) ;;
-        *) echo "relay: warning: $f:$n: not key=value, ignored" >&2; continue ;;
+        *) echo "chirat: warning: $f:$n: not key=value, ignored" >&2; continue ;;
       esac
       k=${line%%=*}
       v=${line#*=}
@@ -302,9 +302,9 @@ relay_config() {
 # legacy_msg <ws>: the move-it hint when a run log is still under docs/status
 legacy_msg() {
   local cmd=""
-  [ -e "$1/docs/status/runs" ] && cmd="git mv docs/status/runs .relay/runs"
+  [ -e "$1/docs/status/runs" ] && cmd="git mv docs/status/runs .chirat/runs"
   if [ -e "$1/docs/status/LATEST" ]; then
-    cmd="${cmd:+$cmd && }git mv docs/status/LATEST .relay/LATEST"
+    cmd="${cmd:+$cmd && }git mv docs/status/LATEST .chirat/LATEST"
   fi
   [ -z "$cmd" ] || printf 'legacy run log at docs/status/runs — move it: %s\n' "$cmd"
 }
@@ -316,8 +316,8 @@ log_line() { # log_line <ws> <file> <model> <exit> <seconds>
   printf '%s\n' "$line"
 }
 
-stop_grace=${RELAY_STOP_GRACE:-15}
-case $stop_grace in '' | *[!0-9]*) die "RELAY_STOP_GRACE needs a whole number of seconds" ;; esac
+stop_grace=${CHIRAT_STOP_GRACE:-15}
+case $stop_grace in '' | *[!0-9]*) die "CHIRAT_STOP_GRACE needs a whole number of seconds" ;; esac
 
 # alive <pid>: running (a zombie that is not reaped yet does not count)
 alive() {
@@ -350,15 +350,15 @@ release_lock() {
 }
 
 # A prompt left `running` would never be picked up again, and one left
-# `pending` (claude exited before /relay:next claimed it — plugin missing,
+# `pending` (claude exited before /chirat:next claimed it — plugin missing,
 # login expired, …) would be retried every pass forever. Either way the run
 # did not finish on its own: mark it failed, with a note in its .err file.
 fail_if_unfinished() { # fail_if_unfinished <file> <err file> <note>
   local status
-  status=$("$relay_prompt" get "$1" status 2>/dev/null) || status=""
+  status=$("$chirat_prompt" get "$1" status 2>/dev/null) || status=""
   case $status in running | pending) ;; *) return 1 ;; esac
-  "$relay_prompt" set "$1" status failed
-  echo "relay-watch $(now_iso): $3 with the prompt still '$status'; set to failed" >>"$2"
+  "$chirat_prompt" set "$1" status failed
+  echo "chirat-watch $(now_iso): $3 with the prompt still '$status'; set to failed" >>"$2"
 }
 
 # Stopping the watcher is not the prompt's fault: an unfinished prompt goes
@@ -378,8 +378,8 @@ interrupted() {
       wait_gone "$claude_pid" 5
     fi
     if alive "$claude_pid"; then
-      status=$("$relay_prompt" get "$current_file" status 2>/dev/null) || status=""
-      echo "relay-watch $(now_iso): interrupted, but claude $claude_pid could not be stopped; prompt left '$status', lock kept" >>"$current_err"
+      status=$("$chirat_prompt" get "$current_file" status 2>/dev/null) || status=""
+      echo "chirat-watch $(now_iso): interrupted, but claude $claude_pid could not be stopped; prompt left '$status', lock kept" >>"$current_err"
       secs=$(( $(date +%s) - current_started ))
       log_line "$current_ws" "${current_file#"$current_ws"/}" "$current_model" interrupted-alive "$secs" >/dev/null
       exit 130
@@ -388,11 +388,11 @@ interrupted() {
     claude_pid=""
   fi
   if [ -n "$current_file" ]; then
-    status=$("$relay_prompt" get "$current_file" status 2>/dev/null) || status=""
+    status=$("$chirat_prompt" get "$current_file" status 2>/dev/null) || status=""
     case $status in
       running | pending)
-        "$relay_prompt" set "$current_file" status pending
-        echo "relay-watch $(now_iso): relay-watch was interrupted with the prompt still '$status'; set to pending${sig:+ ($sig)}" >>"$current_err"
+        "$chirat_prompt" set "$current_file" status pending
+        echo "chirat-watch $(now_iso): chirat-watch was interrupted with the prompt still '$status'; set to pending${sig:+ ($sig)}" >>"$current_err"
         ;;
     esac
     secs=$(( $(date +%s) - current_started ))
@@ -409,13 +409,13 @@ trap 'sig=SIGTERM; interrupted' TERM
 trap 'sig=SIGHUP; interrupted' HUP
 
 # The run log is complete only once claude has exited, so the skill leaves
-# the run log out of its own commit; .relay/runs, .relay/LATEST and
-# .relay/status.log are committed here, never .relay/lock. Failure
+# the run log out of its own commit; .chirat/runs, .chirat/LATEST and
+# .chirat/status.log are committed here, never .chirat/lock. Failure
 # (not a git workspace, nothing to commit) is ignored.
 commit_run_log() { # commit_run_log <ws> <stem>
   git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
   local paths=() p
-  for p in .relay/runs .relay/LATEST .relay/status.log; do
+  for p in .chirat/runs .chirat/LATEST .chirat/status.log; do
     [ -e "$1/$p" ] && paths+=("$p")
   done
   [ ${#paths[@]} -gt 0 ] || return 0
@@ -427,15 +427,15 @@ commit_run_log() { # commit_run_log <ws> <stem>
 # truncated.
 write_latest() { # write_latest <ws> <file> <stem> <exit> <seconds>
   local ws=$1 file=$2 status branch repo commit=- hash
-  mkdir -p "$ws/.relay"
-  status=$("$relay_prompt" get "$file" status 2>/dev/null) || status=""
-  branch=$("$relay_prompt" get "$file" branch 2>/dev/null) || branch=""
-  repo=$("$relay_prompt" get "$file" repo 2>/dev/null) || repo=""
+  mkdir -p "$ws/.chirat"
+  status=$("$chirat_prompt" get "$file" status 2>/dev/null) || status=""
+  branch=$("$chirat_prompt" get "$file" branch 2>/dev/null) || branch=""
+  repo=$("$chirat_prompt" get "$file" repo 2>/dev/null) || repo=""
   if [ -n "$branch" ] && [ -n "$repo" ]; then
     hash=$(git -C "$ws/repos/$repo" rev-parse --short --verify -q "refs/heads/$branch" 2>/dev/null) && [ -n "$hash" ] && commit=$hash
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(now_iso)" "$3" "${status:--}" "${branch:--}" "$commit" "$4" "$5" \
-    >>"$ws/.relay/LATEST"
+    >>"$ws/.chirat/LATEST"
 }
 
 # Portable to GNU and BSD userland: GNU flags first, BSD as fallback (GNU fails
@@ -447,7 +447,7 @@ file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 # prompt-1 does not match prompt-16: a digit may not follow the stem.
 status_file_for() {
   local ws=$1 stem=$2 min=${3:-0} f name t best="" best_t=0 sd
-  sd=$(relay_config "$ws" status_dir docs/status)
+  sd=$(chirat_config "$ws" status_dir docs/status)
   for f in "$ws/$sd"/*"$stem"*.md; do
     [ -f "$f" ] || continue
     name=${f##*/}
@@ -461,39 +461,39 @@ status_file_for() {
 }
 
 notify() { # notify <ws> <stem> <status> <started epoch> <run>: desktop notification, best effort
-  [ "${RELAY_NOTIFY:-1}" != 0 ] || return 0
-  local ws=$1 stem=$2 st=$3 sf branch text title="relay: $3" pd sd
-  pd=$(relay_config "$ws" plans_dir docs/plans)
-  sd=$(relay_config "$ws" status_dir docs/status)
+  [ "${CHIRAT_NOTIFY:-1}" != 0 ] || return 0
+  local ws=$1 stem=$2 st=$3 sf branch text title="chirat: $3" pd sd
+  pd=$(chirat_config "$ws" plans_dir docs/plans)
+  sd=$(chirat_config "$ws" status_dir docs/status)
   sf=$(status_file_for "$ws" "$stem" "${4:-0}")
-  branch=$("$relay_prompt" get "$ws/$pd/$stem.md" branch 2>/dev/null) || branch=""
+  branch=$("$chirat_prompt" get "$ws/$pd/$stem.md" branch 2>/dev/null) || branch=""
   case $st in
     done) text="$stem done → review ${sf:-(no status file)}, merge ${branch:--}" ;;
     blocked) text="$stem needs a decision → question at the top of ${sf:-(no status file)}" ;;
-    failed) text="$stem failed → ${sf:-(no status file)}, .relay/runs/${5:-$stem.*}.err" ;;
+    failed) text="$stem failed → ${sf:-(no status file)}, .chirat/runs/${5:-$stem.*}.err" ;;
     *) text="$stem $st → ${ws##*/}/$sd" ;;
   esac
   text=${text//\\/}
   text=${text//\"/}
   local ws_name=${ws##*/} cmd="" url q="'" open_file="" tn=0 errf="" rc=0 tnerr
-  local activate=${RELAY_NOTIFY_ACTIVATE-com.anthropic.claudefordesktop}
+  local activate=${CHIRAT_NOTIFY_ACTIVATE-com.anthropic.claudefordesktop}
   command -v terminal-notifier >/dev/null 2>&1 && tn=1
-  [ -z "${5:-}" ] || errf="$ws/.relay/runs/$5.err"
-  if [ "${RELAY_NOTIFY_OPEN:-0}" = 1 ] && [ -n "$sf" ]; then
+  [ -z "${5:-}" ] || errf="$ws/.chirat/runs/$5.err"
+  if [ "${CHIRAT_NOTIFY_OPEN:-0}" = 1 ] && [ -n "$sf" ]; then
     case $st in done | blocked | failed) open_file="$ws/$sf" ;; esac
   fi
-  url=$(relay_config "$ws" notify_open "")
+  url=$(chirat_config "$ws" notify_open "")
   case $url in
-    *"$q"*) echo "relay: warning: notify_open contains a quote, ignored" >&2; url="" ;;
+    *"$q"*) echo "chirat: warning: notify_open contains a quote, ignored" >&2; url="" ;;
   esac
   if [ "$tn" = 1 ]; then
     if [ -n "$open_file" ]; then
       case $open_file in
-        *"$q"*) echo "relay: warning: notify: $open_file contains a quote, click will not open it" >&2 ;;
+        *"$q"*) echo "chirat: warning: notify: $open_file contains a quote, click will not open it" >&2 ;;
         *) cmd="open '$open_file'" ;;
       esac
     fi
-    local args=(-title "$title" -subtitle "$ws_name" -message "$text" -group "relay:$ws_name")
+    local args=(-title "$title" -subtitle "$ws_name" -message "$text" -group "chirat:$ws_name")
     if [ -n "$cmd" ]; then
       [ -z "$url" ] || cmd="$cmd; open '$url'"
       args+=(-execute "$cmd")
@@ -519,16 +519,16 @@ run_one() { # run_one <ws> <prompt file>
   rel=${file#"$ws"/}
   stem=${rel##*/}
   stem=${stem%.md}
-  model=$("$relay_prompt" get "$file" model 2>/dev/null) || model=""
+  model=$("$chirat_prompt" get "$file" model 2>/dev/null) || model=""
   [ -n "$model" ] || model=sonnet
-  runs=$ws/.relay/runs
+  runs=$ws/.chirat/runs
   mkdir -p "$runs" || return
 
-  if ! mkdir "$ws/.relay/lock" 2>/dev/null; then
-    echo "relay-watch: $ws is locked ($ws/.relay/lock), skipping" >&2
+  if ! mkdir "$ws/.chirat/lock" 2>/dev/null; then
+    echo "chirat-watch: $ws is locked ($ws/.chirat/lock), skipping" >&2
     return
   fi
-  lock_dir=$ws/.relay/lock
+  lock_dir=$ws/.chirat/lock
 
   stamp=$(now_stamp)
   # A second run within the same second must not reuse (and truncate) the
@@ -547,7 +547,7 @@ run_one() { # run_one <ws> <prompt file>
 
   if [ "$dry_run" = 1 ]; then
     printf 'cd %q && claude -p %q --model %q --permission-mode %q --permission-prompts none --output-format json >%q 2>>%q\n' \
-      "$ws" "/relay:next $rel" "$model" "$mode" "$out" "$err"
+      "$ws" "/chirat:next $rel" "$model" "$mode" "$out" "$err"
     release_lock
     log_line "$ws" "$rel" "$model" dry-run 0
     return
@@ -560,7 +560,7 @@ run_one() { # run_one <ws> <prompt file>
   set -m
   (
     cd "$ws" || exit 127
-    exec claude -p "/relay:next $rel" --model "$model" \
+    exec claude -p "/chirat:next $rel" --model "$model" \
       --permission-mode "$mode" --permission-prompts none \
       --output-format json
   ) </dev/null >"$out" 2>>"$err" &
@@ -572,7 +572,7 @@ run_one() { # run_one <ws> <prompt file>
   claude_pid=""
 
   fail_if_unfinished "$file" "$err" "claude exited $exit_code"
-  notify "$ws" "$stem" "$("$relay_prompt" get "$file" status 2>/dev/null || echo unknown)" "$started" "$stem.$stamp"
+  notify "$ws" "$stem" "$("$chirat_prompt" get "$file" status 2>/dev/null || echo unknown)" "$started" "$stem.$stamp"
   current_file="" current_err=""
   secs=$(( $(date +%s) - started ))
   write_latest "$ws" "$file" "$stem" "$exit_code" "$secs"
@@ -587,7 +587,7 @@ iso_to_epoch() { # iso_to_epoch <iso time>: epoch seconds, or nothing
 
 # lock_read <ws>: load the lock's owner files into lk_* (empty when absent)
 lock_read() {
-  local lock=$1/.relay/lock
+  local lock=$1/.chirat/lock
   lk_cpid="" lk_wpid="" lk_rel="" lk_run="" lk_started=""
   [ -f "$lock/claude.pid" ] && lk_cpid=$(<"$lock/claude.pid")
   [ -f "$lock/watcher.pid" ] && lk_wpid=$(<"$lock/watcher.pid")
@@ -604,7 +604,7 @@ lock_read() {
 #   setup                     no claude.pid yet, the watcher is alive
 #   stale <reason>            claude dead / watcher dead / legacy lock, no owners
 lock_state() {
-  [ -d "$1/.relay/lock" ] || { echo none; return 0; }
+  [ -d "$1/.chirat/lock" ] || { echo none; return 0; }
   lock_read "$1"
   if [ -n "$lk_cpid" ] && alive "$lk_cpid"; then echo live
   elif [ -n "$lk_wpid" ] && alive "$lk_wpid"; then
@@ -619,9 +619,9 @@ lock_state() {
 in_progress() {
   lock_read "$1"
   if [ -n "$lk_cpid" ] && alive "$lk_cpid"; then
-    echo "relay-watch: $1: in progress, lock held by claude $lk_cpid (${lk_rel:--})" >&2
+    echo "chirat-watch: $1: in progress, lock held by claude $lk_cpid (${lk_rel:--})" >&2
   else
-    echo "relay-watch: $1: in progress, lock held by watcher $lk_wpid (${lk_rel:--})" >&2
+    echo "chirat-watch: $1: in progress, lock held by watcher $lk_wpid (${lk_rel:--})" >&2
   fi
 }
 
@@ -639,16 +639,16 @@ recover_stale() {
   esac
   lock_read "$ws"
   cpid=$lk_cpid rel=$lk_rel run=$lk_run started=$lk_started
-  runs=$ws/.relay/runs
-  lock=$ws/.relay/lock
-  pd=$(relay_config "$ws" plans_dir docs/plans)
+  runs=$ws/.chirat/runs
+  lock=$ws/.chirat/lock
+  pd=$(chirat_config "$ws" plans_dir docs/plans)
 
   # Stale. Which prompt(s) were running?
   if [ -n "$rel" ]; then
     prompts=("$ws/$rel")
   else
     for p in "$ws/$pd"/*.prompt-*.md; do
-      [ -f "$p" ] && [ "$("$relay_prompt" get "$p" status 2>/dev/null)" = running ] && prompts+=("$p")
+      [ -f "$p" ] && [ "$("$chirat_prompt" get "$p" status 2>/dev/null)" = running ] && prompts+=("$p")
     done
   fi
   now=$(date +%s)
@@ -658,13 +658,13 @@ recover_stale() {
   for p in ${prompts[@]+"${prompts[@]}"}; do
     stem=${p##*/}
     stem=${stem%.md}
-    status=$("$relay_prompt" get "$p" status 2>/dev/null) || status=unknown
+    status=$("$chirat_prompt" get "$p" status 2>/dev/null) || status=unknown
     word="recovered: watcher/claude died with the prompt '$status'"
     if [ "$status" = running ]; then
       if [ "$recover_dry" = 1 ]; then
         echo "would set ${p#"$ws"/} pending"
       else
-        "$relay_prompt" set "$p" status pending
+        "$chirat_prompt" set "$p" status pending
       fi
       word="$word; set to pending"
     fi
@@ -678,12 +678,12 @@ recover_stale() {
     if [ "$recover_dry" = 1 ]; then
       [ -e "${err%.err}.json" ] && [ ! -s "${err%.err}.json" ] && echo "would remove empty ${err%.err}.json"
     else
-      echo "relay-watch $(now_iso): $word" >>"$err"
+      echo "chirat-watch $(now_iso): $word" >>"$err"
       [ -s "${err%.err}.json" ] || rm -f "${err%.err}.json"
     fi
     if [ "$first" = - ]; then
       first=${p#"$ws"/}
-      model=$("$relay_prompt" get "$p" model 2>/dev/null) || model=-
+      model=$("$chirat_prompt" get "$p" model 2>/dev/null) || model=-
     fi
   done
   if [ "$recover_dry" = 1 ]; then
@@ -691,7 +691,7 @@ recover_stale() {
     return 0
   fi
   remove_lock "$lock"
-  echo "relay-watch: $ws: recovered stale lock (claude ${cpid:--} dead)" >&2
+  echo "chirat-watch: $ws: recovered stale lock (claude ${cpid:--} dead)" >&2
   log_line "$ws" "$first" "${model:--}" recovered "$secs"
   return 0
 }
@@ -710,7 +710,7 @@ note_waiting() { # note_waiting <ws>
     line=$(printf '%s\twaiting\t%s\t%s\t%s' "$(now_iso)" "$ws" "$rel" "$after")
     printf '%s\n' "$line" >>"$log"
     printf '%s\n' "$line"
-  done < <("$relay_prompt" waiting "$ws" 2>/dev/null)
+  done < <("$chirat_prompt" waiting "$ws" 2>/dev/null)
 }
 
 # Log each misnamed prompt file once; a file renamed to a valid name is simply
@@ -725,22 +725,22 @@ note_misnamed() { # note_misnamed <ws>
     line=$(printf '%s\tmisnamed\t%s\t%s\t%s' "$(now_iso)" "$ws" "$rel" "$reason")
     printf '%s\n' "$line" >>"$log"
     printf '%s\n' "$line"
-  done < <("$relay_prompt" lint "$ws" 2>/dev/null)
+  done < <("$chirat_prompt" lint "$ws" 2>/dev/null)
 }
 
 pass() {
   local ws file pd
   while IFS= read -r ws; do
-    pd=$(relay_config "$ws" plans_dir docs/plans)
+    pd=$(chirat_config "$ws" plans_dir docs/plans)
     if [ ! -d "$ws/$pd" ]; then
-      echo "relay-watch: not a workspace (no $pd): $ws" >&2
+      echo "chirat-watch: not a workspace (no $pd): $ws" >&2
       continue
     fi
     if ! recover_stale "$ws"; then
       note_misnamed "$ws"
       continue
     fi
-    if file=$("$relay_prompt" next "$ws" 2>/dev/null); then
+    if file=$("$chirat_prompt" next "$ws" 2>/dev/null); then
       run_one "$ws" "$file"
     else
       note_waiting "$ws"
@@ -818,9 +818,9 @@ watcher_line() {
 # repos/<repo> and is not yet in the default branch (a deleted branch counts as merged)
 unmerged() {
   local r b repo db
-  db=$(relay_config "$1" default_branch main)
-  b=$("$relay_prompt" get "$2" branch 2>/dev/null) || return 1
-  repo=$("$relay_prompt" get "$2" repo 2>/dev/null) || return 1
+  db=$(chirat_config "$1" default_branch main)
+  b=$("$chirat_prompt" get "$2" branch 2>/dev/null) || return 1
+  repo=$("$chirat_prompt" get "$2" repo 2>/dev/null) || return 1
   r=$1/repos/$repo
   [ -n "$b" ] && [ -n "$repo" ] || return 1
   git -C "$r" rev-parse --verify -q "refs/heads/$db" >/dev/null 2>&1 || return 1
@@ -849,7 +849,7 @@ next_line() {
       [ -n "$p" ] || continue
       stem=${p##*/}
       stem=${stem%.md}
-      br=$("$relay_prompt" get "$p" branch)
+      br=$("$chirat_prompt" get "$p" branch)
       sf=$(status_file_for "$ws" "$stem")
       rl=$(printf '%s\n' "$lw" | awk -F'\t' -v b="after=$br" '$2 == b { n = split($1, a, "/"); s = a[n]; sub(/\.md$/, "", s); printf "%s%s", (c++ ? ", " : ""), s }')
       echo "  next: review $stem ($br, ${sf:-(no status file)}), then merge; releases ${rl:-nothing}"
@@ -892,17 +892,17 @@ status_ws() {
   local cnt_pending=0 cnt_running=0 cnt_blocked=0 cnt_failed=0
   local nm_pending="" nm_running="" nm_blocked="" nm_failed=""
   echo "$ws"
-  pd=$(relay_config "$ws" plans_dir docs/plans)
+  pd=$(chirat_config "$ws" plans_dir docs/plans)
   if [ ! -d "$ws/$pd" ]; then
     echo "  not a workspace (no $pd)"
     return 0
   fi
   lm=$(legacy_msg "$ws")
   [ -z "$lm" ] || echo "  warn: $lm"
-  lw=$("$relay_prompt" waiting "$ws" 2>/dev/null)
+  lw=$("$chirat_prompt" waiting "$ws" 2>/dev/null)
   for p in "$ws/$pd"/*.prompt-*.md; do
     [ -f "$p" ] || continue
-    st=$("$relay_prompt" get "$p" status 2>/dev/null) || continue
+    st=$("$chirat_prompt" get "$p" status 2>/dev/null) || continue
     name=${p##*/}
     name=${name%.md}
     case $st in
@@ -926,7 +926,7 @@ status_ws() {
     line="$line$([ "$st" = pending ] || printf ,) $n $st${name:+ ($name)}"
   done
   echo "$line"
-  echo "  notify: RELAY_NOTIFY=${RELAY_NOTIFY:-1} RELAY_NOTIFY_OPEN=${RELAY_NOTIFY_OPEN:-0} notify_open=$(relay_config "$ws" notify_open "") (this shell's environment)"
+  echo "  notify: CHIRAT_NOTIFY=${CHIRAT_NOTIFY:-1} CHIRAT_NOTIFY_OPEN=${CHIRAT_NOTIFY_OPEN:-0} notify_open=$(chirat_config "$ws" notify_open "") (this shell's environment)"
 
   state=$(lock_state "$ws")
   lock_read "$ws"
@@ -1006,7 +1006,7 @@ cmd_recover() {
       none) continue ;;
       live | setup)
         in_progress "$ws"
-        echo "relay-watch: $ws: lock is live, not recovering" >&2
+        echo "chirat-watch: $ws: lock is live, not recovering" >&2
         refused=1; continue ;;
     esac
     did=1
@@ -1046,7 +1046,7 @@ cmd_restart() {
     echo "stopping watcher $pid"
     kill -TERM "$pid" 2>/dev/null
     if ! wait_gone "$pid" $((stop_grace + 10)); then
-      echo "relay-watch: watcher $pid did not stop within $((stop_grace + 10)) s, sending KILL" >&2
+      echo "chirat-watch: watcher $pid did not stop within $((stop_grace + 10)) s, sending KILL" >&2
       kill -KILL "$pid" 2>/dev/null
       wait_gone "$pid" 5
     fi
@@ -1054,7 +1054,7 @@ cmd_restart() {
     echo "no watcher running; starting one"
   fi
   tmux_has_session && tmux kill-session -t "=$session"
-  "$here/relay-watch" --tmux ${flags[@]+"${flags[@]}"} || exit $?
+  "$here/chirat-watch" --tmux ${flags[@]+"${flags[@]}"} || exit $?
   for _ in 1 2 3 4 5 6; do
     watcher_alive >/dev/null && break
     sleep 0.5
@@ -1111,7 +1111,7 @@ cmd_logs() {
 
 # transcript_filter: stdin = transcript lines, stdout = the turns to show
 transcript_filter() {
-  if command -v jq >/dev/null 2>&1 && [ "${RELAY_TAIL_PY:-0}" != 1 ]; then
+  if command -v jq >/dev/null 2>&1 && [ "${CHIRAT_TAIL_PY:-0}" != 1 ]; then
     jq -R -r --unbuffered '
       fromjson? | select(type == "object" and .type == "assistant")
       | (.timestamp // "" | .[11:19]) as $t
@@ -1148,7 +1148,7 @@ for line in sys.stdin:
         continue
 '
   else
-    echo "relay-watch: needs jq or python3" >&2
+    echo "chirat-watch: needs jq or python3" >&2
     return 1
   fi
 }
@@ -1220,8 +1220,8 @@ cmd_doctor() {
 
   # 3: plugin
   if [ -n "$cl" ]; then
-    if claude plugin list 2>&1 | grep -q relay; then ok "plugin: relay installed"
-    else fail "plugin: relay not in \`claude plugin list\`: claude plugin marketplace add $root && claude plugin install relay"; fi
+    if claude plugin list 2>&1 | grep -q chirat; then ok "plugin: chirat installed"
+    else fail "plugin: chirat not in \`claude plugin list\`: claude plugin marketplace add $root && claude plugin install chirat"; fi
   fi
 
   # 4: config
@@ -1232,12 +1232,12 @@ cmd_doctor() {
       [ -n "$ws" ] || continue
       n=$((n + 1))
       if [ ! -d "$ws" ]; then fail "workspace $ws: no such directory"
-      elif [ ! -d "$ws/$(relay_config "$ws" plans_dir docs/plans)" ]; then fail "workspace $ws: no $(relay_config "$ws" plans_dir docs/plans)"
+      elif [ ! -d "$ws/$(chirat_config "$ws" plans_dir docs/plans)" ]; then fail "workspace $ws: no $(chirat_config "$ws" plans_dir docs/plans)"
       else
         ok "workspace $ws"
         lm=$(legacy_msg "$ws")
         [ -z "$lm" ] || warn "workspace $ws: $lm"
-        no=$(relay_config "$ws" notify_open "")
+        no=$(chirat_config "$ws" notify_open "")
         if [ -n "$no" ]; then
           case $no in
             claude://* | https://* | file://*) ;;
@@ -1255,11 +1255,11 @@ cmd_doctor() {
   else warn "tmux: not installed (--once works without it)"; fi
 
   # 6: our own commands
-  for p in relay-prompt relay-watch; do
-    want=$here/relay-watch
-    [ "$p" = relay-prompt ] && want=$relay_prompt
+  for p in chirat-prompt chirat-watch; do
+    want=$here/chirat-watch
+    [ "$p" = chirat-prompt ] && want=$chirat_prompt
     if ! pr_path=$(command -v "$p" 2>/dev/null) || [ -z "$pr_path" ]; then
-      fail "$p: not on PATH: run \`$here/relay-watch install\` and add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\""
+      fail "$p: not on PATH: run \`$here/chirat-watch install\` and add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\""
       continue
     fi
     real=$pr_path
@@ -1285,7 +1285,7 @@ cmd_doctor() {
       *) warn "terminal-notifier $tnv: 3.x needed for -open; brew upgrade terminal-notifier" ;;
     esac
     if [ "$online" = 1 ]; then
-      tnerr2=$(terminal-notifier -title relay -message "doctor probe" -group relay:doctor 2>&1 >/dev/null) || true
+      tnerr2=$(terminal-notifier -title chirat -message "doctor probe" -group chirat:doctor 2>&1 >/dev/null) || true
       case $tnerr2 in
         *"not allowed"*)
           tnr=$(tn_app_path)

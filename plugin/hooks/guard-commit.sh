@@ -6,9 +6,9 @@
 #
 # Refused staged paths:
 #   - any `.claude/` or `.planning/` directory
-#   - in a code repo, anything under `.relay/` (relay's own state belongs to
-#     the workspace); in a workspace repo only `.relay/lock/` is refused, the
-#     rest of `.relay/` (runs, LATEST, status.log, config) is the run log
+#   - in a code repo, anything under `.chirat/` (chirat's own state belongs to
+#     the workspace); in a workspace repo only `.chirat/lock/` is refused, the
+#     rest of `.chirat/` (runs, LATEST, status.log, config) is the run log
 #   - `*.local.md`, `settings.local.json`, `.DS_Store`
 #   - workspace planning files: `docs/**/*.prompt-*.md`, `docs/WORKFLOW.md`,
 #     `docs/PARKED.md`, `docs/scope/BASELINE_*.md` (a repo may carry its own
@@ -79,8 +79,8 @@ while IFS= read -r path; do
     *.local.md | settings.local.json | .DS_Store) bad+=("$path"); continue ;;
   esac
   case "/$path" in
-    */.relay/lock/*) bad+=("$path"); continue ;;
-    */.relay/*) [ "$workspace_repo" = 1 ] || { bad+=("$path"); continue; } ;;
+    */.chirat/lock/*) bad+=("$path"); continue ;;
+    */.chirat/*) [ "$workspace_repo" = 1 ] || { bad+=("$path"); continue; } ;;
   esac
   [ "$workspace_repo" = 1 ] && continue
   case $path in

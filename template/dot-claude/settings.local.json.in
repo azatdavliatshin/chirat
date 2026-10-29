@@ -10,7 +10,7 @@
       "Bash(npm run *)",
       "Bash(bash bin/*)",
       "Bash(bash repos/*)",
-      "Bash(relay-prompt *)",
+      "Bash(chirat-prompt *)",
       "Bash(shellcheck *)",
       "Bash(claude plugin validate *)",
       "Bash(tmux ls*)"

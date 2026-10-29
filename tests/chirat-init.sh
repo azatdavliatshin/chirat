@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Tests for bin/relay-init in a throwaway parent directory.
-# Usage: tests/relay-init.sh
+# Tests for bin/chirat-init in a throwaway parent directory.
+# Usage: tests/chirat-init.sh
 
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(dirname "$here")
-init=$root/bin/relay-init
+init=$root/bin/chirat-init
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -80,7 +80,7 @@ eq ".gitconfig has no other keys" 3 "$(git config -f "$ws/.gitconfig" --list | w
 eq "git rev-parse works in the workspace" "true" "$(git -C "$ws" rev-parse --is-inside-work-tree 2>/dev/null)"
 eq "workspace branch is main" main "$(git -C "$ws" symbolic-ref --short HEAD 2>/dev/null)"
 eq "workspace has no commits" "" "$(git -C "$ws" log --oneline 2>/dev/null)"
-eq ".gitignore content" "$(printf 'repos/\n.claude/\n.DS_Store\n.relay/lock/\n.relay/review/')" "$(cat "$ws/.gitignore")"
+eq ".gitignore content" "$(printf 'repos/\n.claude/\n.DS_Store\n.chirat/lock/\n.chirat/review/')" "$(cat "$ws/.gitignore")"
 mkdir -p "$ws/repos/x"
 echo "y" >"$ws/repos/x/file"
 touch "$ws/.DS_Store"
@@ -94,12 +94,12 @@ if git -C "$ws" status --porcelain | grep -q 'DS_Store'; then
 else
   ok ".DS_Store is ignored by the workspace repo"
 fi
-exists ".relay/config exists in a new workspace" -f "$ws/.relay/config"
-has ".relay/config documents plans_dir" "$ws/.relay/config" "# plans_dir=docs/plans"
-has ".gitignore has .relay/lock/" "$ws/.gitignore" ".relay/lock/"
-has ".gitignore has .relay/review/" "$ws/.gitignore" ".relay/review/"
+exists ".chirat/config exists in a new workspace" -f "$ws/.chirat/config"
+has ".chirat/config documents plans_dir" "$ws/.chirat/config" "# plans_dir=docs/plans"
+has ".gitignore has .chirat/lock/" "$ws/.gitignore" ".chirat/lock/"
+has ".gitignore has .chirat/review/" "$ws/.gitignore" ".chirat/review/"
 exists "template ships docs/qa/diff2html.py" -f "$ws/docs/qa/diff2html.py"
-absent "dot-relay is renamed" "$ws/dot-relay"
+absent "dot-chirat is renamed" "$ws/dot-chirat"
 if git -C "$ws" status --porcelain --ignored | grep -q '^!! .claude/'; then
   ok ".claude/ is ignored by the workspace repo"
 else
@@ -148,7 +148,7 @@ done
 
 fpline=$(grep '^W=' "$root/plugin/skills/poll/SKILL.md")
 fp() { bash -c "$(printf '%s' "$fpline" | sed "s|^W=[^;]*;|W=$ws;|")"; }
-mkdir -p "$ws/.relay/runs"
+mkdir -p "$ws/.chirat/runs"
 printf -- '---\nmodel: sonnet\nstatus: pending\nrepo: r\nbranch: b\n---\n' >"$ws/docs/plans/t.prompt-1.md"
 fp1=$(fp)
 eq "fingerprint is stable" "$fp1" "$(fp)"

@@ -1,8 +1,8 @@
-# relay
+# chirat
 
 [![CI](https://github.com/azatdavliatshin/relay/actions/workflows/ci.yml/badge.svg)](https://github.com/azatdavliatshin/relay/actions/workflows/ci.yml)
 
-relay lets you stay in the planning chat (Cowork or a Claude Project) as long
+chirat lets you stay in the planning chat (Cowork or a Claude Project) as long
 as possible and leave it only for what the chat cannot reach: merge and push.
 Prompts are files, so the chat can write them; status notes and diffs come
 back as files, so the chat can show them. The watcher that runs prompts with
@@ -15,8 +15,8 @@ you review in the chat and merge on your machine.
 
 ## Who it is for, and the layout it expects
 
-relay expects a *workspace folder*: `docs/plans/`, `docs/status/`, `.relay/`,
-and the code in `repos/<repo>/` (its own git clone). `relay-init` creates
+chirat expects a *workspace folder*: `docs/plans/`, `docs/status/`, `.chirat/`,
+and the code in `repos/<repo>/` (its own git clone). `chirat-init` creates
 one. The workspace sits beside the repository rather than inside it so the
 repository stays free of plans, prompts, run logs and anything that names an
 AI, which matters when the repository is not yours or will be public. A
@@ -24,7 +24,7 @@ single-repo mode (plans inside the code repository) is planned but not built.
 An existing project with its own layout needs only the plugin.
 
 A new workspace gets a `CLAUDE.md` (`CLAUDE.md.in` in the template, so it is
-not loaded while you work on relay itself), a private `docs/WORKFLOW.md` for
+not loaded while you work on chirat itself), a private `docs/WORKFLOW.md` for
 the planning side, an empty `repos/`, and `.claude/settings.local.json` for
 headless runs. It is a private git repository with routine `docs:` commits;
 in `repos/*`, Claude Code commits only at a prompt's checkpoints, on its
@@ -34,34 +34,34 @@ branch, never on `main`. Pushes, in both, are yours.
 
 Prerequisites (macOS and Linux): Bash 3.2 or newer, `git`, and `claude`
 logged in. Optional: `tmux` (for `--tmux`), `jq` (the commit guard and
-`relay-watch tail` fall back to `python3`), `terminal-notifier` (see "Hearing
+`chirat-watch tail` fall back to `python3`), `terminal-notifier` (see "Hearing
 back"), and `shellcheck` for development.
 
 ```bash
-git clone https://github.com/azatdavliatshin/relay ~/code/relay-src
-~/code/relay-src/bin/relay-watch install   # relay-watch, relay-prompt → ~/.local/bin
+git clone https://github.com/azatdavliatshin/relay ~/code/chirat-src
+~/code/chirat-src/bin/chirat-watch install   # chirat-watch, chirat-prompt → ~/.local/bin
 ```
 
 Inside a Claude Code session, add the marketplace — a local clone path or
-`azatdavliatshin/relay` — and install the plugin; `relay-watch doctor` then
-checks the setup. The plugin brings `/relay:next` (run one prompt file),
-`/relay:handover` (a status note for an interactive session), `/relay:poll`
+`azatdavliatshin/relay` — and install the plugin; `chirat-watch doctor` then
+checks the setup. The plugin brings `/chirat:next` (run one prompt file),
+`/chirat:handover` (a status note for an interactive session), `/chirat:poll`
 (the planning-side check-in rule), a read-only `reviewer` agent pinned to
 `opus`, and the commit guard.
 
 ```
-/plugin marketplace add ~/code/relay-src      # local clone
+/plugin marketplace add ~/code/chirat-src      # local clone
 # or, from GitHub:
 /plugin marketplace add azatdavliatshin/relay
-/plugin install relay@relay
+/plugin install chirat@chirat
 ```
 
 ## Quick start
 
 ```bash
-~/code/relay-src/bin/relay-init demo --name "Your Name" --email you@example.com
+~/code/chirat-src/bin/chirat-init demo --name "Your Name" --email you@example.com
 git clone <your repo> ~/code/demo/repos/app
-mkdir -p ~/.config/relay && echo ~/code/demo >> ~/.config/relay/workspaces
+mkdir -p ~/.config/chirat && echo ~/code/demo >> ~/.config/chirat/workspaces
 cat > ~/code/demo/docs/plans/app.prompt-1.md <<'EOF'   # normally the chat writes this
 ---
 model: sonnet
@@ -71,13 +71,13 @@ branch: feat/hello
 ---
 Add a hello target to the Makefile. One checkpoint: commit when the tests pass.
 EOF
-# `relay-watch install` (see Install) put relay-watch on PATH;
-# otherwise use ~/code/relay-src/bin/relay-watch
-relay-watch --once --dry-run    # print the claude command it would run
-relay-watch --tmux              # start the watcher; `tmux attach -t relay` to look
+# `chirat-watch install` (see Install) put chirat-watch on PATH;
+# otherwise use ~/code/chirat-src/bin/chirat-watch
+chirat-watch --once --dry-run    # print the claude command it would run
+chirat-watch --tmux              # start the watcher; `tmux attach -t chirat` to look
 ```
 
-`relay-init <name> [dir] --name <git name> --email <git email> [--ssh-key <path>] [--description <text>]`
+`chirat-init <name> [dir] --name <git name> --email <git email> [--ssh-key <path>] [--description <text>]`
 copies the template to `<dir>/<name>` (default `~/code/<name>`), writes a
 workspace `.gitconfig` and runs `git init -b main`; add the `includeIf` block
 it prints to `~/.gitconfig` once, so headless commits under `repos/` have an
@@ -103,7 +103,7 @@ which is how a prompt is inserted between two existing ones.
 | `repo` | folder under `repos/` | required |
 | `branch` | branch name | required |
 | `worktree` | suffix | optional; work in `repos/<repo>-<suffix>` |
-| `after` | branch name | optional; wait until that branch is merged into `default_branch` of `repos/<repo>`. A deleted branch counts as merged if a `done` prompt used it as `branch:` or a merge commit names it; one that never existed is a planning error: the prompt keeps waiting and `relay-prompt` warns. A dependent prompt is enqueued `pending` with `after:`, never parked as `blocked`; `/relay:next <file>` with an unmet `after:` ends `blocked`, so an explicit path cannot bypass it |
+| `after` | branch name | optional; wait until that branch is merged into `default_branch` of `repos/<repo>`. A deleted branch counts as merged if a `done` prompt used it as `branch:` or a merge commit names it; one that never existed is a planning error: the prompt keeps waiting and `chirat-prompt` warns. A dependent prompt is enqueued `pending` with `after:`, never parked as `blocked`; `/chirat:next <file>` with an unmet `after:` ends `blocked`, so an explicit path cannot bypass it |
 
 Statuses go `pending` → `running` → `done` | `blocked` | `failed`. A `done`
 prompt is a branch waiting for your review and merge; nothing lands on `main`
@@ -112,9 +112,9 @@ human decision is needed (the question tops the status file); set `pending` to
 re-queue. `failed`: the run could not do the work. `draft` is inert, for
 prompts under review (`template/docs/WORKFLOW.md` §4).
 
-| `relay-prompt` | Effect |
+| `chirat-prompt` | Effect |
 |---|---|
-| `get <file> <key>` / `set <file> <key> <value>` | read / write one front-matter key; a `status` change is appended to `.relay/status.log` (time, file, old, new, pid, parent pid, parent command), so an unexpected flip can be traced |
+| `get <file> <key>` / `set <file> <key> <value>` | read / write one front-matter key; a `status` change is appended to `.chirat/status.log` (time, file, old, new, pid, parent pid, parent command), so an unexpected flip can be traced |
 | `next <ws>` | print the next pending prompt; exit 1 if none |
 | `waiting <ws>` | list pending prompts held back by `after:`, and why |
 | `check <ws> <file>` | exit 0 if the file's `after:` is satisfied |
@@ -122,13 +122,13 @@ prompts under review (`template/docs/WORKFLOW.md` §4).
 
 ## The watcher
 
-`relay-watch` polls the workspaces in `~/.config/relay/workspaces` (or under
+`chirat-watch` polls the workspaces in `~/.config/chirat/workspaces` (or under
 `$XDG_CONFIG_HOME`; one absolute path per line, `#` comments, `~` expanded).
 Each pass takes, per workspace, the next pending prompt and runs from the
 workspace root:
 
 ```
-claude -p "/relay:next docs/plans/<topic>.prompt-N.md" --model <model> \
+claude -p "/chirat:next docs/plans/<topic>.prompt-N.md" --model <model> \
   --permission-mode auto --permission-prompts none --output-format json
 ```
 
@@ -137,17 +137,17 @@ where `acceptEdits` prefix rules cannot match compound commands (`a && b`,
 `… | tail`) and deny them. `--permission-prompts none` stays in every mode:
 whatever would ask is denied, so an unwatched run ends `blocked` or `failed`
 instead of hanging. To fall back, pass `--permission-mode acceptEdits` (or set
-`RELAY_PERMISSION_MODE`; the flag wins) and allow every command a run needs
+`CHIRAT_PERMISSION_MODE`; the flag wins) and allow every command a run needs
 in the workspace's `.claude/settings.local.json`; the template allows `git`,
 `npm test`, `shellcheck` and more, and denies `git push` and `npm publish`.
 Never use `--dangerously-skip-permissions`.
 
-**Outputs.** `.relay/runs/<topic>.prompt-N.<YYYYMMDD-HHMMSS>.json` holds the
+**Outputs.** `.chirat/runs/<topic>.prompt-N.<YYYYMMDD-HHMMSS>.json` holds the
 result and metadata (not a transcript), the matching `.err` holds stderr; the
 watcher commits both as `docs: run log <stem>`. A prompt still `running`
 (the run died) or `pending` (plugin missing, login expired) after `claude`
 exits is set to `failed` with a note in the `.err`; set `pending` to retry.
-Each run adds a line to `~/.local/state/relay/watch.log` (or under
+Each run adds a line to `~/.local/state/chirat/watch.log` (or under
 `$XDG_STATE_HOME`) and stdout, as do `waiting` (at most every 10 minutes) and
 `misnamed` (once per file) prompts; the formats are in the script header.
 
@@ -157,48 +157,48 @@ Each run adds a line to `~/.local/state/relay/watch.log` (or under
 | `--dry-run` | print the `claude` command instead of running it; writes nothing |
 | `--interval N` | seconds between passes (default 60) |
 | `--permission-mode M` | `claude` permission mode, passed through (default `auto`) |
-| `--tmux` | start the watcher in a detached tmux session `relay`; refuses if it exists |
+| `--tmux` | start the watcher in a detached tmux session `chirat`; refuses if it exists |
 | `--version` | print the version |
-| `status [ws…]` | read-only: watcher, tmux session, log, and per workspace the queue, lock, last run and a `next:` line; exit 1 when something is `STALE` (a `running` prompt without a lock, as an interactive `/relay:next` leaves, is only `warn:`). Reads `watcher.pid` and `watcher.flags`, which a running watcher keeps next to `watch.log` |
+| `status [ws…]` | read-only: watcher, tmux session, log, and per workspace the queue, lock, last run and a `next:` line; exit 1 when something is `STALE` (a `running` prompt without a lock, as an interactive `/chirat:next` leaves, is only `warn:`). Reads `watcher.pid` and `watcher.flags`, which a running watcher keeps next to `watch.log` |
 | `recover [--dry-run] [ws…]` | stale-lock recovery on demand; refuses a workspace whose lock is live |
 | `logs [-n N] [-f] [ws…]` | the last N (default 20) lines of `watch.log`; `-f` follows |
 | `tail [-f] [ws]` | the run in progress: assistant text and tool calls, one line each, from Claude Code's transcripts under `~/.claude/projects/`; no tool output; times in UTC |
 | `doctor [--online]` | one `ok` / `warn` / `FAIL` line per setup check; `--online` also makes a real `claude -p` call, where an expired login shows up; exit 1 on any `FAIL` |
 | `restart [--force]` | stop the watcher and start `--tmux` again with the same flags; refused while `claude` runs unless `--force` (the prompt goes back to `pending`) |
-| `install [dir]` | symlink `relay-watch` and `relay-prompt` into `dir` (default `~/.local/bin`); replaces symlinks, refuses anything else, hints at `PATH` |
+| `install [dir]` | symlink `chirat-watch` and `chirat-prompt` into `dir` (default `~/.local/bin`); replaces symlinks, refuses anything else, hints at `PATH` |
 | `[ws…]` | workspace paths, or a bare name: `demo` selects the configured path ending in `/demo` |
 
 **Locks and stopping.** Run with `--tmux`, not one Ctrl-C away from an
-interrupted run. `.relay/lock` keeps two watchers off one workspace and
+interrupted run. `.chirat/lock` keeps two watchers off one workspace and
 records both PIDs; a lock whose processes are all dead is recovered on the
 next pass (a `running` prompt goes back to `pending`). On
 SIGINT, SIGTERM or SIGHUP (`tmux kill-session`) the watcher stops `claude`'s
 process group, sets the prompt back to `pending`, releases the lock and logs
-`interrupted`. The exact rules are in the header of `bin/relay-watch`.
+`interrupted`. The exact rules are in the header of `bin/chirat-watch`.
 
 ## Hearing back
 
 **Notifications.** When a run ends, the watcher posts a desktop notification
-titled `relay: done`, `relay: blocked` or `relay: failed` that says what to
-do next, so no chat has to poll. macOS only; `RELAY_NOTIFY=0` turns it off.
+titled `chirat: done`, `chirat: blocked` or `chirat: failed` that says what to
+do next, so no chat has to poll. macOS only; `CHIRAT_NOTIFY=0` turns it off.
 `terminal-notifier` 3.x (`brew install terminal-notifier`) is preferred: one
 notification per workspace, and it needs its own notification permission,
 granted once by launching the bundle and clicking Allow (until then every
-notification is dropped; `relay-watch doctor --online` checks):
+notification is dropped; `chirat-watch doctor --online` checks):
 `open "$(brew --prefix)/Cellar/terminal-notifier/<version>/terminal-notifier.app"`.
-A click does one of three things: with `RELAY_NOTIFY_OPEN=1` it opens the
+A click does one of three things: with `CHIRAT_NOTIFY_OPEN=1` it opens the
 status file (and `notify_open`, if set); else it opens what `notify_open`
-names; else it activates Claude Desktop (`RELAY_NOTIFY_ACTIVATE` overrides the
+names; else it activates Claude Desktop (`CHIRAT_NOTIFY_ACTIVATE` overrides the
 bundle id; empty means no click action). Anything `terminal-notifier` prints
 or a non-zero exit goes to the run's `.err`. The `osascript` fallback shows as
-"Script Editor" and ignores clicks (`RELAY_NOTIFY_OPEN=1` opens the status
+"Script Editor" and ignores clicks (`CHIRAT_NOTIFY_OPEN=1` opens the status
 file at once); with neither, nothing is sent.
 
-**`.relay/LATEST`.** Each finished run appends a tab-separated line — time,
+**`.chirat/LATEST`.** Each finished run appends a tab-separated line — time,
 stem, final status, branch, short commit of that branch in `repos/<repo>`,
 exit code or `interrupted`, seconds — committed with the run log. The chat
 reads it on "check" or right after enqueueing a prompt; for the away case,
-`/relay:poll` gives it an adaptive fingerprint check instead of a fixed timer
+`/chirat:poll` gives it an adaptive fingerprint check instead of a fixed timer
 ([template/docs/WORKFLOW.md §6](template/docs/WORKFLOW.md)).
 
 **`## Next for the human`.** Every status file ends with this section; for
@@ -209,14 +209,14 @@ when any touched path matches:
 
 ```
 ## Landing
-- plugin/ → claude plugin update relay@relay
-- bin/relay-watch → relay-watch restart
+- plugin/ → claude plugin update chirat@chirat
+- bin/chirat-watch → chirat-watch restart
 ```
 
 ## Workspace config
 
-Everything relay writes for itself is under `.relay/`; everything a human
-reads stays under `docs/`. An optional `.relay/config` has `key=value` lines,
+Everything chirat writes for itself is under `.chirat/`; everything a human
+reads stays under `docs/`. An optional `.chirat/config` has `key=value` lines,
 `#` comments, no quotes, paths relative to the workspace root; unknown keys
 are ignored and a line without `=` is a warning.
 
@@ -229,12 +229,12 @@ are ignored and a line without `=` is a warning.
 
 | Path | In the workspace repo | Content |
 |---|---|---|
-| `.relay/config` | committed | the keys above |
-| `.relay/runs/` | committed | `.json` result and `.err` per run |
-| `.relay/LATEST` | committed | one line per finished run |
-| `.relay/status.log` | committed | every `status` change made by `relay-prompt set` |
-| `.relay/lock/` | ignored | the running watcher's lock |
-| `.relay/review/` | ignored | diffs the planning chat renders for review |
+| `.chirat/config` | committed | the keys above |
+| `.chirat/runs/` | committed | `.json` result and `.err` per run |
+| `.chirat/LATEST` | committed | one line per finished run |
+| `.chirat/status.log` | committed | every `status` change made by `chirat-prompt set` |
+| `.chirat/lock/` | ignored | the running watcher's lock |
+| `.chirat/review/` | ignored | diffs the planning chat renders for review |
 | `repos/`, `.claude/`, `.DS_Store` | ignored | clones, local settings |
 
 ## Commit guard
@@ -243,23 +243,23 @@ A hook refuses `git commit` while workspace files are staged:
 
 | Staged path | Code repository | Workspace repository (`HEAD` has `docs/WORKFLOW.md`) |
 |---|---|---|
-| `.claude/`, `.planning/`, `*.local.md`, `settings.local.json`, `.DS_Store`, `.relay/lock/` | refused | refused |
-| rest of `.relay/` | refused | allowed (the run log) |
+| `.claude/`, `.planning/`, `*.local.md`, `settings.local.json`, `.DS_Store`, `.chirat/lock/` | refused | refused |
+| rest of `.chirat/` | refused | allowed (the run log) |
 | `docs/**/*.prompt-*.md`, `docs/WORKFLOW.md`, `docs/PARKED.md`, `docs/scope/BASELINE_*.md` | refused (other `docs/` files are fine) | allowed |
 
 ## Upgrading
 
-- **From 0.x** (run log moved from `docs/status/` to `.relay/`): per workspace,
-  `git mv docs/status/runs .relay/runs && git mv docs/status/LATEST .relay/LATEST`
-  (what exists; `status` and `doctor` warn until then), `relay-watch restart`.
+- **From 0.x** (run log moved from `docs/status/` to `.chirat/`): per workspace,
+  `git mv docs/status/runs .chirat/runs && git mv docs/status/LATEST .chirat/LATEST`
+  (what exists; `status` and `doctor` warn until then), `chirat-watch restart`.
 - **The plugin** is a cache snapshot, not a link to the clone: after merging
-  a branch that touches `plugin/`, run `claude plugin update relay@relay`.
+  a branch that touches `plugin/`, run `claude plugin update chirat@chirat`.
 
 ## Development
 
 ```bash
-bash tests/relay-watch.sh && bash tests/relay-init.sh && bash plugin/tests/run.sh
-shellcheck bin/relay-watch bin/relay-init plugin/bin/relay-prompt \
+bash tests/chirat-watch.sh && bash tests/chirat-init.sh && bash plugin/tests/run.sh
+shellcheck bin/chirat-watch bin/chirat-init plugin/bin/chirat-prompt \
   plugin/hooks/guard-commit.sh tests/*.sh plugin/tests/run.sh
 claude plugin validate plugin
 ```
@@ -279,44 +279,44 @@ notification permission: Notifications are not allowed for this application`.
 Launch the bundle, click **Allow**, then check:
 `open "$(dirname "$(dirname "$(dirname "$(readlink -f "$(command -v terminal-notifier)")")")")"`
 (or `open "$(brew --prefix)/Cellar/terminal-notifier/<version>/terminal-notifier.app"`),
-then `relay-watch doctor --online` → `ok … permission granted`. `doctor` derives
+then `chirat-watch doctor --online` → `ok … permission granted`. `doctor` derives
 the bundle path the same way and prints it when the permission is missing.
 
 **`[!] -sender is no longer supported` in `.err`.** terminal-notifier 3.x
-dropped `-sender`; relay no longer sends it, so upgrade relay if you see this.
+dropped `-sender`; chirat no longer sends it, so upgrade chirat if you see this.
 Conversely `-open` is unknown to 2.x: `brew upgrade terminal-notifier`.
 
 **The notification shows but the click does nothing.** With `notify_open`
 unset the click only activates Claude Desktop. Set
-`notify_open=claude://claude.ai/project/<uuid>` in `.relay/config` (read per
+`notify_open=claude://claude.ai/project/<uuid>` in `.chirat/config` (read per
 run, no restart). Test a URL by hand with `open "claude://…"`; a wrong chat id
 shows "That session is no longer available" in Claude Desktop. A `'` in the
 value is refused (`warn:` in `.err`).
 
 **Notifications come from "Script Editor".** The watcher did not find
 terminal-notifier, often because `brew install` ran after the tmux session
-started and its `PATH` is old: `relay-watch restart`. `relay-watch doctor`
+started and its `PATH` is old: `chirat-watch restart`. `chirat-watch doctor`
 says which notifier it sees.
 
 **Nothing at all and `.err` is quiet.** Focus / Do Not Disturb, or the style
 for terminal-notifier is "None": System Settings → Notifications →
-terminal-notifier → Banners or Alerts. `RELAY_NOTIFY=0` in the watcher's
-environment silences everything too; `relay-watch status` prints a `notify:`
-line per workspace with `RELAY_NOTIFY`, `RELAY_NOTIFY_OPEN` and `notify_open`
+terminal-notifier → Banners or Alerts. `CHIRAT_NOTIFY=0` in the watcher's
+environment silences everything too; `chirat-watch status` prints a `notify:`
+line per workspace with `CHIRAT_NOTIFY`, `CHIRAT_NOTIFY_OPEN` and `notify_open`
 as seen by the shell you ran it in, so run it from the watcher's environment.
 
 **Linux.** No desktop notifications; the loop still works through
-`.relay/LATEST`, `relay-watch status`, or `/relay:poll` in the chat.
+`.chirat/LATEST`, `chirat-watch status`, or `/chirat:poll` in the chat.
 
 ### The run itself
 
-**A prompt stays `pending`.** The watcher is not running (`relay-watch
-status`), the workspace is not in `~/.config/relay/workspaces`, the file name
-does not match the pattern (`relay-prompt lint <ws>`, or `misnamed` in the
-log), or an `after:` is unmet (`relay-prompt waiting <ws>`).
+**A prompt stays `pending`.** The watcher is not running (`chirat-watch
+status`), the workspace is not in `~/.config/chirat/workspaces`, the file name
+does not match the pattern (`chirat-prompt lint <ws>`, or `misnamed` in the
+log), or an `after:` is unmet (`chirat-prompt waiting <ws>`).
 
 **A run ends `failed` within seconds.** The plugin is not installed for this
-user, or the `claude` login expired: `relay-watch doctor --online`; the `.err`
+user, or the `claude` login expired: `chirat-watch doctor --online`; the `.err`
 names which.
 
 **A run ends `blocked` on a permission.** `--permission-prompts none` denied
@@ -324,6 +324,6 @@ something the classifier would have asked about; the top of the status file
 says what. Re-plan the prompt to avoid it, or (less safe) allow it in
 `.claude/settings.local.json` and run with `acceptEdits`.
 
-**`relay-watch status` says `STALE`.** Run `relay-watch recover --dry-run`
-first, then `relay-watch recover`; the rules are in the header of
-`bin/relay-watch`.
+**`chirat-watch status` says `STALE`.** Run `chirat-watch recover --dry-run`
+first, then `chirat-watch recover`; the rules are in the header of
+`bin/chirat-watch`.

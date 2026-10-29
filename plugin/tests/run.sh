@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Tests for bin/relay-prompt and hooks/guard-commit.sh in a throwaway workspace.
+# Tests for bin/chirat-prompt and hooks/guard-commit.sh in a throwaway workspace.
 # Usage: plugin/tests/run.sh
 
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 plugin=$(dirname "$here")
-rp=$plugin/bin/relay-prompt
+rp=$plugin/bin/chirat-prompt
 guard=$plugin/hooks/guard-commit.sh
 
 tmp=$(mktemp -d)
@@ -51,7 +51,7 @@ prompt other.prompt-4.md blocked 202601050000
 prompt other.prompt-5.md pending 202601060000
 echo "notes, not a prompt" >"$ws/docs/plans/demo.md"
 
-# --- relay-prompt get ----------------------------------------------------
+# --- chirat-prompt get ----------------------------------------------------
 
 eq "get status strips comment" pending "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
 eq "get branch" feat/x "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" branch)"
@@ -66,12 +66,12 @@ else
   ok "get without front matter exits non-zero"
 fi
 
-# --- relay-prompt next ---------------------------------------------------
+# --- chirat-prompt next ---------------------------------------------------
 
 eq "next: lowest number, then oldest mtime" \
   "$ws/docs/plans/other.prompt-2.md" "$("$rp" next "$ws")"
 
-# --- relay-prompt set ----------------------------------------------------
+# --- chirat-prompt set ----------------------------------------------------
 
 f=$ws/docs/plans/other.prompt-2.md
 before_body=$(sed -n '/^# Body/,$p' "$f")
@@ -98,7 +98,7 @@ else
   eq "next exits 1 when nothing is pending" "" "$out"
 fi
 
-# --- relay-prompt set keeps the file mode (GNU/BSD stat) ---------------------
+# --- chirat-prompt set keeps the file mode (GNU/BSD stat) ---------------------
 
 mf=$ws/docs/plans/mode.prompt-1.md
 prompt mode.prompt-1.md pending 202601070000
@@ -269,9 +269,9 @@ eq "lint line carries the reason" "name does not match <topic>.prompt-<N><suffix
 sprompt s.prompt-05b.md pending
 eq "leading zero with suffix is valid" "$sws/docs/plans/s.prompt-05b.md" "$("$rp" next "$sws")"
 
-# --- relay-prompt set: status.log ---------------------------------------
+# --- chirat-prompt set: status.log ---------------------------------------
 
-slog=$ws/.relay/status.log
+slog=$ws/.chirat/status.log
 rm -f "$slog"
 prompt log.prompt-1.md pending 202601010000
 lf=$ws/docs/plans/log.prompt-1.md
@@ -294,11 +294,11 @@ eq "set outside docs/plans succeeds" "done" "$("$rp" get "$tmp/loose/p.md" statu
 if grep -q "not logged" "$tmp/err"; then ok "set outside docs/plans warns"; else ko "set outside docs/plans warns" "$(cat "$tmp/err")"; fi
 eq "status.log: untouched by the loose file" 1 "$(wc -l <"$slog" | tr -d ' ')"
 
-# --- .relay/config in relay-prompt; guard and .relay/ -----------------------
+# --- .chirat/config in chirat-prompt; guard and .chirat/ -----------------------
 
 cws=$tmp/cws
-mkdir -p "$cws"/work/queue "$cws"/.relay "$cws"/repos
-printf '%s\n' 'plans_dir=work/queue' 'default_branch=trunk' >"$cws/.relay/config"
+mkdir -p "$cws"/work/queue "$cws"/.chirat "$cws"/repos
+printf '%s\n' 'plans_dir=work/queue' 'default_branch=trunk' >"$cws/.chirat/config"
 cr=$cws/repos/demo
 git init -q -b trunk "$cr"
 git -C "$cr" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
@@ -320,25 +320,25 @@ eq "default_branch: waiting names trunk" "$cws/work/queue/c.prompt-1.md	after=op
 git -C "$cr" merge -q --no-edit open-t
 eq "default_branch: merged into trunk is picked" "$cws/work/queue/c.prompt-1.md" "$("$rp" next "$cws")"
 "$rp" set "$cws/work/queue/c.prompt-1.md" status running
-eq "status.log lands in .relay/" "work/queue/c.prompt-1.md	pending	running" "$(cut -f2-4 "$cws/.relay/status.log")"
+eq "status.log lands in .chirat/" "work/queue/c.prompt-1.md	pending	running" "$(cut -f2-4 "$cws/.chirat/status.log")"
 absent_log=$cws/work/queue/status.log
 if [ -e "$absent_log" ] || [ -e "$cws/docs" ]; then ko "status.log: nothing under docs/ or the plans dir"; else ok "status.log: nothing under docs/ or the plans dir"; fi
 
-# .relay/ in a code repo is refused; in a workspace repo only the lock is.
-mkdir -p "$repo/.relay/runs"
-echo "{}" >"$repo/.relay/runs/x.json"
-git -C "$repo" add -f .relay/runs/x.json
-eq "guard refuses .relay/runs/x.json in a code repo" 2 "$(hook "$repo" "git commit -m test")"
-git -C "$repo" rm -q --cached .relay/runs/x.json
-mkdir -p "$wsrepo/.relay/lock"
-echo 1 >"$wsrepo/.relay/lock/pid"
+# .chirat/ in a code repo is refused; in a workspace repo only the lock is.
+mkdir -p "$repo/.chirat/runs"
+echo "{}" >"$repo/.chirat/runs/x.json"
+git -C "$repo" add -f .chirat/runs/x.json
+eq "guard refuses .chirat/runs/x.json in a code repo" 2 "$(hook "$repo" "git commit -m test")"
+git -C "$repo" rm -q --cached .chirat/runs/x.json
+mkdir -p "$wsrepo/.chirat/lock"
+echo 1 >"$wsrepo/.chirat/lock/pid"
 git -C "$wsrepo" reset -q
-git -C "$wsrepo" add -f .relay/lock/pid
-eq "guard refuses .relay/lock/pid in a workspace repo" 2 "$(hook "$wsrepo" "git commit -m test")"
+git -C "$wsrepo" add -f .chirat/lock/pid
+eq "guard refuses .chirat/lock/pid in a workspace repo" 2 "$(hook "$wsrepo" "git commit -m test")"
 git -C "$wsrepo" reset -q
-echo "t" >"$wsrepo/.relay/LATEST"
-git -C "$wsrepo" add .relay/LATEST
-eq "guard allows .relay/LATEST in a workspace repo" 0 "$(hook "$wsrepo" "git commit -m test")"
+echo "t" >"$wsrepo/.chirat/LATEST"
+git -C "$wsrepo" add .chirat/LATEST
+eq "guard allows .chirat/LATEST in a workspace repo" 0 "$(hook "$wsrepo" "git commit -m test")"
 
 # --- summary -------------------------------------------------------------
 

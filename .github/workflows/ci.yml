@@ -22,25 +22,25 @@ jobs:
       - name: Shellcheck
         run: |
           shellcheck --version
-          shellcheck bin/relay-watch bin/relay-init plugin/bin/relay-prompt \
+          shellcheck bin/chirat-watch bin/chirat-init plugin/bin/chirat-prompt \
             plugin/hooks/guard-commit.sh tests/*.sh plugin/tests/run.sh
 
-      - name: Test relay-watch
-        run: bash tests/relay-watch.sh
+      - name: Test chirat-watch
+        run: bash tests/chirat-watch.sh
 
-      - name: Test relay-init
-        run: bash tests/relay-init.sh
+      - name: Test chirat-init
+        run: bash tests/chirat-init.sh
 
       - name: Test plugin
         run: bash plugin/tests/run.sh
 
-      - name: Test relay-watch (Bash 3.2)
+      - name: Test chirat-watch (Bash 3.2)
         if: runner.os == 'macOS'
-        run: /bin/bash tests/relay-watch.sh
+        run: /bin/bash tests/chirat-watch.sh
 
-      - name: Test relay-init (Bash 3.2)
+      - name: Test chirat-init (Bash 3.2)
         if: runner.os == 'macOS'
-        run: /bin/bash tests/relay-init.sh
+        run: /bin/bash tests/chirat-init.sh
 
       - name: Test plugin (Bash 3.2)
         if: runner.os == 'macOS'
