@@ -21,6 +21,7 @@ jobs:
 
       - name: Shellcheck
         run: |
+          shellcheck --version
           shellcheck bin/relay-watch bin/relay-init plugin/bin/relay-prompt \
             plugin/hooks/guard-commit.sh tests/*.sh plugin/tests/run.sh
 

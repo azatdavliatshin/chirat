@@ -46,7 +46,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$ws_name" ] && [ -n "$git_name" ] && [ -n "$git_email" ] || usage
+if [ -z "$ws_name" ] || [ -z "$git_name" ] || [ -z "$git_email" ]; then usage; fi
 case $ws_name in */* | .* | *[[:space:]]*) die "invalid name: $ws_name" ;; esac
 [ -n "$description" ] || description="TODO: one paragraph on what $ws_name is."
 
