@@ -1,5 +1,7 @@
 # chirat
 
+*chirat* (*chi-RAHT*) is Tatar for "queue; one's turn".
+
 [![CI](https://github.com/azatdavliatshin/relay/actions/workflows/ci.yml/badge.svg)](https://github.com/azatdavliatshin/relay/actions/workflows/ci.yml)
 
 chirat lets you stay in the planning chat (Cowork or a Claude Project) as long
@@ -249,6 +251,29 @@ A hook refuses `git commit` while workspace files are staged:
 
 ## Upgrading
 
+- **From relay** (the earlier name; nothing is migrated automatically —
+  `chirat-watch status` and `doctor` print each command until it is done, and
+  the watcher skips a workspace that still has `.relay/`):
+  1. Stop the old watcher: `relay-watch status` must show no live run, then
+     `tmux kill-session -t relay`.
+  2. Merge or pull this version into your clone.
+  3. Remove the old symlinks (`rm ~/.local/bin/relay-watch
+     ~/.local/bin/relay-prompt`) and run `bin/chirat-watch install`.
+  4. Move the config: `mv ~/.config/relay ~/.config/chirat`; optionally the
+     state too: `mv ~/.local/state/relay ~/.local/state/chirat` (with
+     `$XDG_CONFIG_HOME` / `$XDG_STATE_HOME` instead of `~/.config` /
+     `~/.local/state` if you set them). Rename any `RELAY_*` variable to
+     `CHIRAT_*`; the old names are ignored.
+  5. Per workspace: `git mv .relay .chirat && sed -i.bak
+     's#^\.relay/#.chirat/#' .gitignore && rm .gitignore.bak`, and in
+     `.claude/settings.local.json` change `Bash(relay-prompt *)` to
+     `Bash(chirat-prompt *)`. If `.relay/lock/` exists, a run from the old
+     watcher may still be live: check it first, do not move.
+  6. Plugin, in Claude Code: `/plugin uninstall relay@relay`,
+     `/plugin marketplace remove relay`, add the marketplace again (see
+     Install), `/plugin install chirat@chirat`.
+  7. `chirat-watch doctor --online`, then start the watcher:
+     `chirat-watch --tmux`.
 - **From 0.x** (run log moved from `docs/status/` to `.chirat/`): per workspace,
   `git mv docs/status/runs .chirat/runs && git mv docs/status/LATEST .chirat/LATEST`
   (what exists; `status` and `doctor` warn until then), `chirat-watch restart`.

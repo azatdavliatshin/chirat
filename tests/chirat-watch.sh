@@ -1113,6 +1113,66 @@ XDG_CONFIG_HOME=$tmp/cfg2 "$watch" doctor >"$tmp/doc.out" 2>&1
 has "legacy run log: doctor warns" "$tmp/doc.out" "warn workspace $ws3: legacy run log at docs/status/runs"
 ws=$tmp/ws
 
+# --- upgrading from relay: warnings only ---------------------------------------
+
+lg=$tmp/lg
+mkdir -p "$lg/cfg/chirat" "$lg/state"
+wsl=$lg/old
+mkdir -p "$wsl/docs/plans" "$wsl/docs/status" "$wsl/repos" "$wsl/.relay/runs"
+cfgprompt "$wsl/docs/plans/demo.prompt-1.md" pending feat/l
+printf '%s\n' "$wsl" >"$lg/cfg/chirat/workspaces"
+lgw() { XDG_CONFIG_HOME=$lg/cfg XDG_STATE_HOME=$lg/state "$watch" "$@"; }
+mv_hint="legacy .relay/ — move it: git mv .relay .chirat && sed -i.bak 's#^\.relay/#.chirat/#' .gitignore && rm .gitignore.bak"
+lgw --once --dry-run >"$tmp/out" 2>&1
+eq "legacy .relay/: watcher skips the workspace" pending "$("$rp" get "$wsl/docs/plans/demo.prompt-1.md" status)"
+absent "legacy .relay/: no .chirat/ created" "$wsl/.chirat"
+has "legacy .relay/: logged" "$lg/state/chirat/watch.log" "$(printf 'legacy\t%s\t.relay/\t' "$wsl")"
+lgw --once --dry-run >"$tmp/out" 2>&1
+eq "legacy .relay/: logged once" 1 "$(grep -c "	legacy	" "$lg/state/chirat/watch.log")"
+lgw status >"$tmp/st.out" 2>&1
+has "legacy .relay/: status warns" "$tmp/st.out" "  warn: $mv_hint"
+PATH=$dpath lgw doctor >"$tmp/doc.out" 2>&1
+has "legacy .relay/: doctor warns" "$tmp/doc.out" "warn workspace $wsl: $mv_hint"
+mkdir "$wsl/.relay/lock"
+lgw status >"$tmp/st.out" 2>&1
+has "legacy .relay/lock: status says check first" "$tmp/st.out" "a run from the old watcher may still be live: check it first"
+if grep -qF "git mv .relay" "$tmp/st.out"; then ko "legacy .relay/lock: no move command"; else ok "legacy .relay/lock: no move command"; fi
+rmdir "$wsl/.relay/lock"
+mkdir "$wsl/.chirat"
+lgw status >"$tmp/st.out" 2>&1
+if grep -qF "legacy .relay/" "$tmp/st.out"; then ko "legacy .relay/: quiet once .chirat/ exists"; else ok "legacy .relay/: quiet once .chirat/ exists"; fi
+rmdir "$wsl/.chirat"
+
+# old config dir, chirat one missing
+mkdir -p "$lg/cfgold/relay"
+printf '%s\n' "$wsl" >"$lg/cfgold/relay/workspaces"
+XDG_CONFIG_HOME=$lg/cfgold XDG_STATE_HOME=$lg/state "$watch" status >"$tmp/st.out" 2>&1
+has "legacy config: status warns" "$tmp/st.out" "warn: legacy config $lg/cfgold/relay/workspaces — move it: mv $lg/cfgold/relay $lg/cfgold/chirat"
+XDG_CONFIG_HOME=$lg/cfgold XDG_STATE_HOME=$lg/state PATH=$dpath "$watch" doctor >"$tmp/doc.out" 2>&1
+has "legacy config: doctor warns" "$tmp/doc.out" "warn legacy config $lg/cfgold/relay/workspaces — move it: mv $lg/cfgold/relay $lg/cfgold/chirat"
+mkdir -p "$lg/home/.config/relay"
+printf '%s\n' "$wsl" >"$lg/home/.config/relay/workspaces"
+env -u XDG_CONFIG_HOME HOME="$lg/home" XDG_STATE_HOME="$lg/state" "$watch" status >"$tmp/st.out" 2>&1
+has "legacy config: default base under HOME" "$tmp/st.out" "mv $lg/home/.config/relay $lg/home/.config/chirat"
+
+# RELAY_* variables
+RELAY_NOTIFY=0 lgw status >"$tmp/st.out" 2>&1
+has "RELAY_NOTIFY: status warns" "$tmp/st.out" "warn: RELAY_NOTIFY is set and ignored — use CHIRAT_NOTIFY"
+has "RELAY_NOTIFY: ignored" "$tmp/st.out" "CHIRAT_NOTIFY=1"
+RELAY_STOP_GRACE=3 PATH=$dpath lgw doctor >"$tmp/doc.out" 2>&1
+has "RELAY_STOP_GRACE: doctor warns" "$tmp/doc.out" "warn RELAY_STOP_GRACE is set and ignored — use CHIRAT_STOP_GRACE"
+
+# old commands on PATH, old tmux session
+mkdir -p "$lg/oldbin"
+ln -s "$watch" "$lg/oldbin/relay-watch"
+ln -s "$rp" "$lg/oldbin/relay-prompt"
+FAKE_TMUX_SESSIONS=relay PATH=$lg/oldbin:$dpath lgw doctor >"$tmp/doc.out" 2>&1
+has "old relay-watch: doctor warns" "$tmp/doc.out" "warn relay-watch: old command still on PATH: rm $lg/oldbin/relay-watch"
+has "old relay-prompt: doctor warns" "$tmp/doc.out" "warn relay-prompt: old command still on PATH: rm $lg/oldbin/relay-prompt"
+has "old tmux session: doctor warns" "$tmp/doc.out" "warn old watcher still running: tmux kill-session -t relay"
+PATH=$dpath lgw doctor >"$tmp/doc.out" 2>&1
+if grep -qE "old command|old watcher" "$tmp/doc.out"; then ko "doctor: no old-install warnings without them" "$(cat "$tmp/doc.out")"; else ok "doctor: no old-install warnings without them"; fi
+
 # --- summary -------------------------------------------------------------
 
 echo

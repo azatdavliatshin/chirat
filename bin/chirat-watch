@@ -77,6 +77,14 @@
 # pass logs it, once per file ever (state in <log dir>/misnamed.seen):
 #   <iso time> <tab> misnamed <tab> <ws> <tab> <file> <tab> <reason>
 #
+# Upgrading from relay: nothing is migrated automatically. A workspace with
+# .relay/ and no .chirat/ is skipped and logged once (state in
+# <log dir>/legacy.seen):
+#   <iso time> <tab> legacy <tab> <ws> <tab> .relay/ <tab> <hint>
+# status and doctor print the move-it command for that, for the old config
+# dir and for RELAY_* variables (ignored); doctor also for old relay-watch /
+# relay-prompt on PATH and a live tmux session `relay`.
+#
 # The lock directory records its owners: watcher.pid (chirat-watch), prompt
 # (path relative to the workspace), run (<stem>.<stamp>, the basename of the
 # .json/.err), started (iso time) and, once claude is up, claude.pid. claude
@@ -170,6 +178,19 @@ config=${XDG_CONFIG_HOME:-$HOME/.config}/chirat/workspaces
 log=${XDG_STATE_HOME:-$HOME/.local/state}/chirat/watch.log
 session=chirat
 
+# Upgrading from relay: hints only, nothing is moved. legacy_global prints one
+# line per relay-era leftover outside the workspaces (old config dir, RELAY_*
+# variables, which are ignored).
+legacy_global() {
+  local base=${XDG_CONFIG_HOME:-$HOME/.config} v
+  if [ -f "$base/relay/workspaces" ] && [ ! -f "$config" ]; then
+    echo "legacy config $base/relay/workspaces — move it: mv $base/relay $base/chirat"
+  fi
+  while IFS= read -r v; do
+    case $v in RELAY_*) echo "$v is set and ignored — use CHIRAT_${v#RELAY_}" ;; esac
+  done < <(compgen -e)
+}
+
 usage() { # usage [exit code]
   sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//' >&2
   echo "config: $config (one absolute workspace path per line, # comments)" >&2
@@ -242,7 +263,11 @@ done
 # doctor reports these two itself
 if [ "$sub" != doctor ]; then
   [ -x "$chirat_prompt" ] || die "chirat-prompt not found next to this script: $chirat_prompt"
-  [ -f "$config" ] || { echo "chirat-watch: no config file: $config" >&2; usage 1; }
+  if [ ! -f "$config" ]; then
+    echo "chirat-watch: no config file: $config" >&2
+    legacy_global | sed 's/^/warn: /' >&2
+    usage 1
+  fi
 fi
 
 if [ "$use_tmux" = 1 ]; then
@@ -307,6 +332,17 @@ legacy_msg() {
     cmd="${cmd:+$cmd && }git mv docs/status/LATEST .chirat/LATEST"
   fi
   [ -z "$cmd" ] || printf 'legacy run log at docs/status/runs — move it: %s\n' "$cmd"
+}
+
+# legacy_ws_msg <ws>: the move-it hint when the workspace still has relay's
+# .relay/ and no .chirat/; the watcher skips such a workspace
+legacy_ws_msg() {
+  [ -d "$1/.relay" ] && [ ! -e "$1/.chirat" ] || return 0
+  if [ -d "$1/.relay/lock" ]; then
+    echo "legacy .relay/ with .relay/lock/ — a run from the old watcher may still be live: check it first (relay-watch status), do not move it yet"
+  else
+    echo 'legacy .relay/ — move it: git mv .relay .chirat && sed -i.bak '"'"'s#^\.relay/#.chirat/#'"'"' .gitignore && rm .gitignore.bak'
+  fi
 }
 
 log_line() { # log_line <ws> <file> <model> <exit> <seconds>
@@ -728,9 +764,25 @@ note_misnamed() { # note_misnamed <ws>
   done < <("$chirat_prompt" lint "$ws" 2>/dev/null)
 }
 
+# Log a relay-era workspace once; it is skipped until .relay/ is moved.
+# State: <ws> per line in legacy.seen.
+note_legacy() { # note_legacy <ws> <message>
+  local seen=$state_dir/legacy.seen line
+  grep -qxF -- "$1" "$seen" 2>/dev/null && return 0
+  printf '%s\n' "$1" >>"$seen"
+  line=$(printf '%s\tlegacy\t%s\t.relay/\t%s' "$(now_iso)" "$1" "$2")
+  printf '%s\n' "$line" >>"$log"
+  printf '%s\n' "$line"
+}
+
 pass() {
-  local ws file pd
+  local ws file pd lm
   while IFS= read -r ws; do
+    lm=$(legacy_ws_msg "$ws")
+    if [ -n "$lm" ]; then
+      note_legacy "$ws" "$lm"
+      continue
+    fi
     pd=$(chirat_config "$ws" plans_dir docs/plans)
     if [ ! -d "$ws/$pd" ]; then
       echo "chirat-watch: not a workspace (no $pd): $ws" >&2
@@ -892,6 +944,8 @@ status_ws() {
   local cnt_pending=0 cnt_running=0 cnt_blocked=0 cnt_failed=0
   local nm_pending="" nm_running="" nm_blocked="" nm_failed=""
   echo "$ws"
+  lm=$(legacy_ws_msg "$ws")
+  [ -z "$lm" ] || echo "  warn: $lm"
   pd=$(chirat_config "$ws" plans_dir docs/plans)
   if [ ! -d "$ws/$pd" ]; then
     echo "  not a workspace (no $pd)"
@@ -968,6 +1022,7 @@ cmd_status() {
   list=$(select_ws "$@") || exit 1
   # shellcheck disable=SC2016 # backticks are literal
   echo 'A `done` prompt is a branch waiting for your review and merge; nothing lands on `main` by itself, and the next `after:` prompt waits for that merge.'
+  legacy_global | sed 's/^/warn: /'
   watcher_line || bad=1
   alive_pid=$(watcher_alive)
   if ! command -v tmux >/dev/null 2>&1; then
@@ -1091,13 +1146,13 @@ cmd_logs() {
     shift
   done
   if [ ! -f "$log" ]; then echo "no log yet"; return 0; fi
-  # the ws column is the second tab-separated field; `waiting` and `misnamed`
-  # lines carry it third, so match either
+  # the ws column is the second tab-separated field; `waiting`, `misnamed` and
+  # `legacy` lines carry it third, so match either
   filter() {
     if [ ${#names[@]} -eq 0 ]; then cat; return; fi
     while IFS= read -r line; do
       w=$(printf '%s\n' "$line" | cut -f2)
-      case $w in waiting | misnamed) w=$(printf '%s\n' "$line" | cut -f3) ;; esac
+      case $w in waiting | misnamed | legacy) w=$(printf '%s\n' "$line" | cut -f3) ;; esac
       ws_match "$w" "${names[@]}" && printf '%s\n' "$line"
     done
   }
@@ -1225,12 +1280,15 @@ cmd_doctor() {
   fi
 
   # 4: config
+  while IFS= read -r lm; do warn "$lm"; done < <(legacy_global)
   if [ ! -f "$config" ]; then
     fail "config: $config missing"
   else
     while IFS= read -r ws; do
       [ -n "$ws" ] || continue
       n=$((n + 1))
+      lm=$(legacy_ws_msg "$ws")
+      [ -z "$lm" ] || warn "workspace $ws: $lm (skipped by the watcher)"
       if [ ! -d "$ws" ]; then fail "workspace $ws: no such directory"
       elif [ ! -d "$ws/$(chirat_config "$ws" plans_dir docs/plans)" ]; then fail "workspace $ws: no $(chirat_config "$ws" plans_dir docs/plans)"
       else
@@ -1251,8 +1309,12 @@ cmd_doctor() {
   fi
 
   # 5: tmux
-  if command -v tmux >/dev/null 2>&1; then ok "tmux: $(command -v tmux)"
-  else warn "tmux: not installed (--once works without it)"; fi
+  if command -v tmux >/dev/null 2>&1; then
+    ok "tmux: $(command -v tmux)"
+    if tmux has-session -t "=relay" 2>/dev/null; then warn "old watcher still running: tmux kill-session -t relay"; fi
+  else
+    warn "tmux: not installed (--once works without it)"
+  fi
 
   # 6: our own commands
   for p in chirat-prompt chirat-watch; do
@@ -1271,6 +1333,11 @@ cmd_doctor() {
       ok "$p: $pr_path"
     else
       warn "$p: resolves to $pr_path, this checkout has $want"
+    fi
+  done
+  for p in relay-watch relay-prompt; do
+    if pr_path=$(command -v "$p" 2>/dev/null) && [ -n "$pr_path" ]; then
+      warn "$p: old command still on PATH: rm $pr_path"
     fi
   done
 
