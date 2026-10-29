@@ -32,10 +32,12 @@ timer over a night is ~160 turns, almost all empty. So: signal first.
 
 One command over the workspace path `W`; it prints a single checksum of the
 prompt statuses, the status-file listing, the last LATEST line and the count
-of non-empty run logs:
+of non-empty run logs. `P` and `S` are the workspace's `plans_dir` and
+`status_dir`: read `$W/.chirat/config` if it exists (`key=value` lines, `#`
+comments); they default to `docs/plans` and `docs/status`.
 
 ```
-W=/path/to/workspace; { grep -H '^status:' "$W"/docs/plans/*.prompt-*.md; ls "$W"/docs/status/*.md; tail -n 1 "$W"/.chirat/LATEST; find "$W"/.chirat/runs -name '*.json' -size +0 | wc -l; } 2>/dev/null | cksum
+W=/path/to/workspace; P=docs/plans; S=docs/status; { grep -H '^status:' "$W/$P"/*.prompt-*.md; ls "$W/$S"/*.md; tail -n 1 "$W"/.chirat/LATEST; find "$W"/.chirat/runs -name '*.json' -size +0 | wc -l; } 2>/dev/null | cksum
 ```
 
 ## A tick

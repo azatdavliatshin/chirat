@@ -36,7 +36,9 @@ Front matter keys:
 | `repo` | folder name under `repos/` | required |
 | `branch` | branch name | required |
 | `worktree` | suffix, optional | work in `repos/<repo>-<worktree>` instead |
-| `after` | branch name, optional | eligible only once that branch is merged into `<default_branch>` of `repos/<repo>` (a deleted branch counts as merged) |
+| `after` | branch name, optional | eligible only once that branch is merged into `<default_branch>` of `repos/<repo>`; once the branch is deleted, the `commit:` recorded by the prompt that built it must be in `<default_branch>` — a deleted branch alone proves nothing |
+| `after_mode` | `merged` (default) \| `done`, optional | `done` opts out for squash merges and old prompts: satisfied as soon as the prompt that built `after`'s branch is `done`; `chirat-prompt check` then warns that this proves no merge — quote that warning in the status file |
+| `commit` | full sha, optional | the head of `branch` when the run ended; you record it in step 5, `after:` of later prompts reads it |
 
 Statuses: `pending` waits in the queue; `running` is claimed; `done` means
 the body was carried out; `blocked` means a human decision is needed before
@@ -57,7 +59,9 @@ plugin is enabled): `chirat-prompt get <file> <key>`,
    If the prompt has `after:`, run `chirat-prompt check . <file>`; when it
    exits non-zero the dependency is unmet even for an explicit path: write the
    status file (reason first line) and go to step 5 with `blocked`, without
-   claiming it or touching any tree.
+   claiming it or touching any tree. When it exits 0 but prints a warning
+   (`after_mode: done`), keep that warning for the status file's
+   `Open questions`.
    If `repo` or `branch` is empty or `repos/<repo>` is not a git repository,
    go to step 5 with `failed`.
 
@@ -142,11 +146,16 @@ plugin is enabled): `chirat-prompt get <file> <key>`,
    - bin/chirat-watch → chirat-watch restart
    ```
 
-5. **Close it.** `chirat-prompt set <file> status <final>` where `<final>`
-   is `done` when the body was carried out (including a clean stop at a
-   checkpoint the prompt defines), `blocked` when a human decision is
-   needed to continue, otherwise `failed`. Write the status file in every
-   case. Then, when the run used `repos/<repo>` directly (no `worktree`),
+5. **Record the result, then close it.** First the result: if the branch
+   exists — `git -C repos/<repo> rev-parse --verify -q refs/heads/<branch>`
+   prints a sha — run `chirat-prompt set <file> commit <that full sha>`
+   (always for `done`; for `blocked`/`failed` too, the branch has commits);
+   if it does not exist, `chirat-prompt unset <file> commit`, so a retry
+   never keeps a stale value. Only then `chirat-prompt set <file> status
+   <final>`, where `<final>` is `done` when the body was carried out
+   (including a clean stop at a checkpoint the prompt defines), `blocked`
+   when a human decision is needed to continue, otherwise `failed`. Write
+   the status file in every case. Then, when the run used `repos/<repo>` directly (no `worktree`),
    return it to `<default_branch>` so a human `git merge` lands there: if
    `git -C repos/<repo> status --porcelain` is empty run
    `git -C repos/<repo> checkout <default_branch>`, otherwise leave the tree as it is and

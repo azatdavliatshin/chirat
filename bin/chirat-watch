@@ -94,25 +94,41 @@
 # The lock directory records its owners: watcher.pid (chirat-watch), prompt
 # (path relative to the workspace), run (<stem>.<stamp>, the basename of the
 # .json/.err), started (iso time) and, once claude is up, claude.pid. claude
-# runs in its own process group (group id = claude.pid). Before every
+# runs in its own process group and is its leader, so claude.pid is also the
+# process group id (pgid) of everything it starts. "claude is alive" means:
+# the pid runs, or any process of that group still runs (`pgrep -g`, else
+# `ps -o pgid= -A`; zombies do not count), or the group cannot be inspected
+# at all (ps/pgrep failing) — unknown is never "gone". Before every
 # `chirat-prompt next`, a lock is stale when its watcher is dead and its claude
 # is dead or was never started: the prompt is put back to `pending` if it still
 # says `running`, a note goes to the run's .err, an empty .json is removed, the
 # lock is removed and a line with `recovered` in the exit column is logged. A
-# lock whose claude.pid or watcher.pid is alive is never stale: the workspace
+# lock whose claude or watcher.pid is alive is never stale: the workspace
 # is in progress and is skipped, whatever the prompt's status says (a live
 # watcher with a dead claude is between claude's exit and release_lock). Known
-# limitation: a dead PID reused by an unrelated process makes a lock look alive
-# until that process exits; liveness is `kill -0`, no timeouts or other
-# heuristics.
+# limitation: a dead PID (or group id) reused by an unrelated process makes a
+# lock look alive until that process exits; no timeouts or other heuristics.
 #
 # SIGINT/SIGTERM/SIGHUP (tmux kill-session) during a run: TERM to claude's
-# whole process group, KILL after $CHIRAT_STOP_GRACE seconds (default 15) and
-# another 5 s to be reaped. Once claude is gone the prompt goes back to
-# `pending` (note in the .err file), the lock is released and the run is logged
-# with `interrupted` in the exit column. If claude survives even KILL, the
-# prompt and the lock are left as they are and the exit column says
-# `interrupted-alive`; the next start then waits for that claude.
+# whole process group, then wait for the *group* (not just claude) up to
+# $CHIRAT_STOP_GRACE seconds (default 15), KILL the group, wait another 5 s.
+# Only once no process of the group is left does the prompt go back to
+# `pending` (note in the .err file), the lock is released and the run is
+# logged with `interrupted` in the exit column. If anything of the group
+# survives even KILL, or the group cannot be inspected, the prompt and the
+# lock are left as they are and the exit column says `interrupted-alive`; the
+# next start then waits for that group. `restart --force` applies the same
+# rule when it has to KILL a watcher that did not stop by itself.
+#
+# A run that ends `done`, `blocked` or `failed` leaves the result in the
+# prompt's front matter: `commit: <full sha>` is the head of its `branch:` in
+# repos/<repo> (the skill writes it before the final status; the watcher
+# fills or corrects it, and removes it when the branch does not exist, so a
+# retry never keeps a stale value). `after:` of later prompts checks that
+# commit once the branch is deleted. The prompt file is committed with the
+# run log. When the prompt chosen for a run was let through by
+# `after_mode: done`, the warning of `chirat-prompt check` is printed with
+# the run and kept at the top of its .err.
 #
 # Each finished run also appends one line to <ws>/.chirat/LATEST, the file
 # the planning side reads instead of polling (not written by --dry-run, nor
@@ -378,6 +394,72 @@ wait_gone() {
   done
 }
 
+# group_alive <pgid>: 0 when the process group has a live member (zombies do
+# not count), 1 when it has none, 2 when that cannot be told — pgrep and ps
+# both failed (denied, missing). `pgrep -g` first (macOS and Linux), then
+# `ps -o pid=,pgid=,stat= -A`; a producer that exits non-zero is an error, not
+# an empty group (pgrep exits 1 for "no match", which is the empty group).
+group_alive() {
+  local out rc p st live=0 pserr=0
+  case $1 in '' | 0 | *[!0-9]*) return 2 ;; esac
+  if command -v pgrep >/dev/null 2>&1; then
+    out=$(pgrep -g "$1" 2>/dev/null)
+    rc=$?
+    case $rc in
+      0)
+        for p in $out; do
+          if st=$(ps -o stat= -p "$p" 2>/dev/null); then
+            st=${st#"${st%%[![:space:]]*}"}
+            case $st in '' | Z*) ;; *) live=1 ;; esac
+          else
+            pserr=1
+          fi
+        done
+        [ "$live" = 0 ] || return 0
+        [ "$pserr" = 1 ] || return 1 ;;
+      1) return 1 ;;
+    esac
+  fi
+  out=$(ps -o pid=,pgid=,stat= -A 2>/dev/null) || return 2
+  [ -n "$out" ] || return 2
+  if printf '%s\n' "$out" | awk -v g="$1" '$2 == g && $3 !~ /^Z/ { f = 1 } END { exit !f }'; then return 0; fi
+  return 1
+}
+
+# claude_live <pid>: the claude of a lock counts as alive while its pid runs,
+# while any process of its group does, or while the group cannot be inspected
+claude_live() {
+  alive "$1" && return 0
+  group_alive "$1"
+  [ $? -ne 1 ]
+}
+
+# wait_group_gone <pgid> <seconds>: poll every 0.5 s; 0 once no live member
+# is left, 1 while one is after <seconds>, 2 when the group cannot be inspected
+wait_group_gone() {
+  local n=$(($2 * 2)) rc
+  while :; do
+    group_alive "$1"
+    rc=$?
+    case $rc in 1) return 0 ;; 2) return 2 ;; esac
+    [ "$n" -gt 0 ] || return 1
+    n=$((n - 1))
+    sleep 0.5
+  done
+}
+
+# stop_group <pgid>: TERM the group, wait up to $stop_grace, KILL it, wait 5 s;
+# 0 when it is gone, 1 when something survived, 2 when that cannot be told
+stop_group() {
+  local rc
+  kill -TERM -- "-$1" 2>/dev/null
+  wait_group_gone "$1" "$stop_grace"
+  rc=$?
+  [ "$rc" = 0 ] && return 0
+  kill -KILL -- "-$1" 2>/dev/null
+  wait_group_gone "$1" 5
+}
+
 # remove_lock <dir>: the five files by name, then the directory
 remove_lock() {
   local f
@@ -407,21 +489,20 @@ fail_if_unfinished() { # fail_if_unfinished <file> <err file> <note>
 # back to `pending` so the next watcher start retries it.
 current_ws="" current_model="" current_started="" child="" claude_pid="" sig=""
 interrupted() {
-  local status secs
+  local status secs gone why
   trap '' INT TERM HUP
   if [ -n "$child" ]; then
     kill -TERM "$child" 2>/dev/null
     wait "$child" 2>/dev/null
   fi
   if [ -n "$claude_pid" ]; then
-    kill -TERM -- "-$claude_pid" 2>/dev/null
-    if ! wait_gone "$claude_pid" "$stop_grace"; then
-      kill -KILL -- "-$claude_pid" 2>/dev/null
-      wait_gone "$claude_pid" 5
-    fi
-    if alive "$claude_pid"; then
+    stop_group "$claude_pid"
+    gone=$?
+    if [ "$gone" != 0 ]; then
       status=$("$chirat_prompt" get "$current_file" status 2>/dev/null) || status=""
-      echo "chirat-watch $(now_iso): interrupted, but claude $claude_pid could not be stopped; prompt left '$status', lock kept" >>"$current_err"
+      if [ "$gone" = 2 ]; then why="cannot inspect process group $claude_pid (ps and pgrep failed), so it may still be running"
+      else why="claude's process group $claude_pid could not be stopped"; fi
+      echo "chirat-watch $(now_iso): interrupted, but $why; prompt left '$status', lock kept" >>"$current_err"
       secs=$(( $(date +%s) - current_started ))
       log_line "$current_ws" "${current_file#"$current_ws"/}" "$current_model" interrupted-alive "$secs" >/dev/null
       exit 130
@@ -440,7 +521,7 @@ interrupted() {
     secs=$(( $(date +%s) - current_started ))
     write_latest "$current_ws" "$current_file" "$(basename "$current_file" .md)" interrupted "$secs"
     release_lock
-    commit_run_log "$current_ws" "$(basename "$current_file" .md)"
+    commit_run_log "$current_ws" "$(basename "$current_file" .md)" "${current_file#"$current_ws"/}"
     log_line "$current_ws" "${current_file#"$current_ws"/}" "$current_model" interrupted "$secs" >/dev/null
   fi
   release_lock
@@ -452,17 +533,46 @@ trap 'sig=SIGHUP; interrupted' HUP
 
 # The run log is complete only once claude has exited, so the skill leaves
 # the run log out of its own commit; .chirat/runs, .chirat/LATEST and
-# .chirat/status.log are committed here, never .chirat/lock. Failure
-# (not a git workspace, nothing to commit) is ignored.
-commit_run_log() { # commit_run_log <ws> <stem>
+# .chirat/status.log are committed here, never .chirat/lock, plus the run's
+# own prompt file when this run changed it (status, commit:) — no other
+# prompt, no other edit. Failure (not a git workspace, nothing to commit) is
+# ignored.
+commit_run_log() { # commit_run_log <ws> <stem> [<prompt rel path>]
   git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
   local paths=() p
   for p in .chirat/runs .chirat/LATEST .chirat/status.log; do
     [ -e "$1/$p" ] && paths+=("$p")
   done
+  if [ -n "${3:-}" ] && [ -n "$(git -C "$1" status --porcelain -- "$3" 2>/dev/null)" ]; then
+    paths+=("$3")
+  fi
   [ ${#paths[@]} -gt 0 ] || return 0
   git -C "$1" add -- "${paths[@]}" >/dev/null 2>&1 || return 0
   git -C "$1" commit -q -m "docs: run log $2" -- "${paths[@]}" >/dev/null 2>&1 || true
+}
+
+# branch_head <ws> <file>: the full sha of the prompt's branch in repos/<repo>;
+# fails when the prompt names no repo/branch or the branch does not exist.
+branch_head() {
+  local branch repo
+  branch=$("$chirat_prompt" get "$2" branch 2>/dev/null) || return 1
+  repo=$("$chirat_prompt" get "$2" repo 2>/dev/null) || return 1
+  [ -n "$branch" ] && [ -n "$repo" ] || return 1
+  git -C "$1/repos/$repo" rev-parse --verify -q "refs/heads/$branch^{commit}" 2>/dev/null
+}
+
+# record_commit <ws> <file>: `commit:` is the branch head after the run — fill
+# it in or correct it; remove it when there is no branch (a retry must not
+# keep a stale result).
+record_commit() {
+  local head cur
+  head=$(branch_head "$1" "$2") || head=""
+  cur=$("$chirat_prompt" get "$2" commit 2>/dev/null) || cur=""
+  if [ -n "$head" ]; then
+    [ "$cur" = "$head" ] || "$chirat_prompt" set "$2" commit "$head"
+  elif [ -n "$cur" ]; then
+    "$chirat_prompt" unset "$2" commit
+  fi
 }
 
 # One line per run for the planning side; created on first write, never
@@ -473,8 +583,8 @@ write_latest() { # write_latest <ws> <file> <stem> <exit> <seconds>
   status=$("$chirat_prompt" get "$file" status 2>/dev/null) || status=""
   branch=$("$chirat_prompt" get "$file" branch 2>/dev/null) || branch=""
   repo=$("$chirat_prompt" get "$file" repo 2>/dev/null) || repo=""
-  if [ -n "$branch" ] && [ -n "$repo" ]; then
-    hash=$(git -C "$ws/repos/$repo" rev-parse --short --verify -q "refs/heads/$branch" 2>/dev/null) && [ -n "$hash" ] && commit=$hash
+  if hash=$(branch_head "$ws" "$file") && [ -n "$hash" ]; then
+    commit=$(git -C "$ws/repos/$repo" rev-parse --short "$hash" 2>/dev/null) || commit=$hash
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(now_iso)" "$3" "${status:--}" "${branch:--}" "$commit" "$4" "$5" \
     >>"$ws/.chirat/LATEST"
@@ -600,6 +710,7 @@ run_one() { # run_one <ws> <prompt file>
   printf '%s\n' "$rel" >"$lock_dir/prompt"
   printf '%s\n' "$stem.$stamp" >"$lock_dir/run"
   now_iso >"$lock_dir/started"
+  [ -z "$select_warn" ] || printf '%s\n' "$select_warn" >>"$err"
 
   current_file=$file current_err=$err current_ws=$ws current_model=$model current_started=$started
   # Background + wait, so a signal reaches the trap while claude is running.
@@ -620,12 +731,13 @@ run_one() { # run_one <ws> <prompt file>
   claude_pid=""
 
   fail_if_unfinished "$file" "$err" "claude exited $exit_code"
+  case $("$chirat_prompt" get "$file" status 2>/dev/null) in done | blocked | failed) record_commit "$ws" "$file" ;; esac
   notify "$ws" "$stem" "$("$chirat_prompt" get "$file" status 2>/dev/null || echo unknown)" "$started" "$stem.$stamp"
   current_file="" current_err=""
   secs=$(( $(date +%s) - started ))
   write_latest "$ws" "$file" "$stem" "$exit_code" "$secs"
   release_lock
-  commit_run_log "$ws" "$stem"
+  commit_run_log "$ws" "$stem" "$rel"
   log_line "$ws" "$rel" "$model" "$exit_code" "$secs"
 }
 
@@ -654,7 +766,7 @@ lock_read() {
 lock_state() {
   [ -d "$1/.chirat/lock" ] || { echo none; return 0; }
   lock_read "$1"
-  if [ -n "$lk_cpid" ] && alive "$lk_cpid"; then echo live
+  if [ -n "$lk_cpid" ] && claude_live "$lk_cpid"; then echo live
   elif [ -n "$lk_wpid" ] && alive "$lk_wpid"; then
     if [ -z "$lk_cpid" ]; then echo setup; else echo live; fi
   elif [ -n "$lk_cpid" ]; then echo "stale claude $lk_cpid dead"
@@ -666,7 +778,7 @@ lock_state() {
 # in_progress <ws>: the "not touching it" line for a live or setup lock
 in_progress() {
   lock_read "$1"
-  if [ -n "$lk_cpid" ] && alive "$lk_cpid"; then
+  if [ -n "$lk_cpid" ] && claude_live "$lk_cpid"; then
     echo "chirat-watch: $1: in progress, lock held by claude $lk_cpid (${lk_rel:--})" >&2
   else
     echo "chirat-watch: $1: in progress, lock held by watcher $lk_wpid (${lk_rel:--})" >&2
@@ -677,7 +789,7 @@ in_progress() {
 # header). Returns 1 when the workspace is in progress and must be skipped.
 # With recover_dry=1 it only prints what it would do and sets dry_recovered=1
 # and dry_recovered_file (the prompt it would put back to pending, if any).
-recover_dry=0 dry_recovered=0 dry_recovered_file=""
+recover_dry=0 dry_recovered=0 dry_recovered_file="" select_warn=""
 recover_stale() {
   local ws=$1 runs lock cpid rel run started p f status state pd
   local err="" stem now secs=0 t model="-" first="-" word prompts=()
@@ -811,7 +923,12 @@ pass() {
     # Under --dry-run a stale lock is still there: the prompt it would
     # re-queue is what would run next, unless the queue has one before it.
     if file=$("$chirat_prompt" next "$ws" 2>/dev/null) || { [ -n "$dry_recovered_file" ] && file=$dry_recovered_file; }; then
+      # `next` is quiet; the chosen prompt's own warning (`after_mode: done`
+      # let it through) must be seen: printed here, kept in the run's .err.
+      select_warn=$("$chirat_prompt" check "$ws" "$file" 2>&1 >/dev/null) || select_warn=""
+      [ -z "$select_warn" ] || printf '%s\n' "$select_warn"
       run_one "$ws" "$file"
+      select_warn=""
     else
       note_waiting "$ws"
     fi
@@ -1006,7 +1123,7 @@ status_ws() {
   case $state in
     none) echo "  lock: none" ;;
     live | setup)
-      if [ -n "$lk_cpid" ] && alive "$lk_cpid"; then
+      if [ -n "$lk_cpid" ] && claude_live "$lk_cpid"; then
         echo "  lock: claude $lk_cpid alive since ${lk_started:--}$rel"
       else
         echo "  lock: held by watcher $lk_wpid$rel"
@@ -1099,7 +1216,7 @@ cmd_restart() {
     [ -n "$ws" ] || continue
     state=$(lock_state "$ws")
     lock_read "$ws"
-    if [ "$state" = live ] && [ -n "$lk_cpid" ] && alive "$lk_cpid" && [ "$force" = 0 ]; then
+    if [ "$state" = live ] && [ -n "$lk_cpid" ] && claude_live "$lk_cpid" && [ "$force" = 0 ]; then
       secs=0
       if [ -n "$lk_started" ] && t=$(iso_to_epoch "$lk_started") && [ -n "$t" ]; then secs=$(($(date +%s) - t)); fi
       [ "$secs" -ge 0 ] || secs=0
@@ -1122,6 +1239,18 @@ cmd_restart() {
       echo "chirat-watch: watcher $pid did not stop within $((stop_grace + 10)) s, sending KILL" >&2
       kill -KILL "$pid" 2>/dev/null
       wait_gone "$pid" 5
+      # The killed watcher could not clean up: apply its rule to the claude
+      # group of every lock it held — gone, or left for the next watcher.
+      while IFS= read -r ws; do
+        [ -n "$ws" ] || continue
+        lock_read "$ws"
+        [ "$lk_wpid" = "$pid" ] && [ -n "$lk_cpid" ] || continue
+        stop_group "$lk_cpid"
+        case $? in
+          0) echo "chirat-watch: $ws: stopped claude's process group $lk_cpid; the next pass recovers the lock" >&2 ;;
+          *) echo "chirat-watch: $ws: claude's process group $lk_cpid is still alive or cannot be inspected; lock and prompt left as they are" >&2 ;;
+        esac
+      done <<<"$list"
     fi
   else
     echo "no watcher running; starting one"

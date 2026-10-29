@@ -227,11 +227,69 @@ eq "after: merged branch is picked" "$ap" "$("$rp" next "$aws")"
 eq "waiting is empty when satisfied" "" "$("$rp" waiting "$aws")"
 eq "check exits 0 when merged" 0 "$("$rp" check "$aws" "$ap" >/dev/null; echo $?)"
 git -C "$ar" branch -q -D merged-b
-printf -- '---\nmodel: sonnet\nstatus: done\nrepo: demo\nbranch: merged-b\n---\n' >"$aws/docs/plans/b.prompt-0.md"
-eq "after: deleted branch is picked" "$ap" "$("$rp" next "$aws")"
+init_sha=$(git -C "$ar" rev-parse main)
+open_sha=$(git -C "$ar" rev-parse open-b)
+bp=$aws/docs/plans/b.prompt-0.md
+no_commit_reason="branch merged-b is gone and no result commit is recorded; merge it or set \`after_mode: done\`"
+check_reason() { "$rp" check "$aws" "$ap" 2>/dev/null; }
+printf -- '---\nmodel: sonnet\nstatus: done\nrepo: demo\nbranch: merged-b\n---\n' >"$bp"
+if out=$("$rp" next "$aws" 2>/dev/null); then ko "after: deleted branch without a recorded commit is unmet" "picked $out"; else ok "after: deleted branch without a recorded commit is unmet"; fi
+eq "after: waiting gives the reason" "$ap	after=merged-b	$no_commit_reason" "$("$rp" waiting "$aws" 2>/dev/null)"
+"$rp" set "$bp" commit "$init_sha"
+eq "after: deleted branch whose recorded commit is in main is met" "$ap" "$("$rp" next "$aws")"
+eq "check exits 0 on a recorded, merged commit" 0 "$("$rp" check "$aws" "$ap" >/dev/null; echo $?)"
+"$rp" set "$bp" commit "$open_sha"
+eq "after: recorded commit not in main is unmet" "branch merged-b is gone and its result commit ${open_sha:0:7} is not merged into main" "$(check_reason)"
+"$rp" set "$bp" commit 0123456789abcdef0123456789abcdef01234567
+eq "after: recorded commit unknown to the repo is unmet" "branch merged-b is gone and its result commit 0123456789abcdef0123456789abcdef01234567 is not in repos/demo" "$(check_reason)"
+"$rp" unset "$bp" commit
+eq "unset removes the key" 1 "$("$rp" get "$bp" commit >/dev/null 2>&1; echo $?)"
+eq "unset keeps the front matter intact" "---
+model: sonnet
+status: done
+repo: demo
+branch: merged-b
+---" "$(cat "$bp")"
+eq "after: after unset the reason is back" "$no_commit_reason" "$(check_reason)"
+# A done prompt of another repository is never the result, even with the same branch name.
+git init -q -b main "$aws/repos/other"
+git -C "$aws/repos/other" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+printf -- '---\nmodel: sonnet\nstatus: done\nrepo: other\nbranch: merged-b\ncommit: %s\n---\n' "$(git -C "$aws/repos/other" rev-parse main)" >"$aws/docs/plans/o.prompt-0.md"
+eq "after: a done prompt of another repo is not the result" "$no_commit_reason" "$(check_reason)"
+rm -f "$aws/docs/plans/o.prompt-0.md"
+# Several results on one branch: the last in queue order decides.
+"$rp" set "$bp" commit "$init_sha"
+printf -- '---\nmodel: sonnet\nstatus: done\nrepo: demo\nbranch: merged-b\ncommit: %s\n---\n' "$open_sha" >"$aws/docs/plans/b.prompt-7.md"
+eq "after: with several results the last in queue order decides" "branch merged-b is gone and its result commit ${open_sha:0:7} is not merged into main" "$(check_reason)"
+rm -f "$aws/docs/plans/b.prompt-7.md"
+# after_mode: done — satisfied by a done prompt, with a warning; never silent.
+amprompt() { # amprompt <after> <after_mode>
+  printf -- '---\nmodel: sonnet\nstatus: pending\nrepo: demo\nbranch: feat/y\nafter: %s\nafter_mode: %s\n---\n' "$1" "$2" >"$ap"
+}
+"$rp" unset "$bp" commit
+amprompt merged-b "done"
+eq "after_mode: done — deleted branch with a done prompt is met" "$ap" "$("$rp" next "$aws" 2>"$tmp/stderr")"
+if grep -q "after_mode: done — merged-b counts as satisfied because docs/plans/b.prompt-0.md is done; this does not prove a merge into main" "$tmp/stderr"; then ok "after_mode: done — next warns"; else ko "after_mode: done — next warns" "$(cat "$tmp/stderr")"; fi
+eq "after_mode: done — check exits 0" 0 "$("$rp" check "$aws" "$ap" 2>"$tmp/stderr" >/dev/null; echo $?)"
+if grep -q "does not prove a merge" "$tmp/stderr"; then ok "after_mode: done — check warns"; else ko "after_mode: done — check warns" "$(cat "$tmp/stderr")"; fi
+eq "after_mode: done — waiting lists nothing" "" "$("$rp" waiting "$aws" 2>"$tmp/stderr")"
+if grep -q "does not prove a merge" "$tmp/stderr"; then ok "after_mode: done — waiting warns"; else ko "after_mode: done — waiting warns" "$(cat "$tmp/stderr")"; fi
+printf -- '---\nmodel: sonnet\nstatus: done\nrepo: demo\nbranch: open-b\n---\n' >"$aws/docs/plans/d.prompt-0.md"
+amprompt open-b "done"
+eq "after_mode: done — an existing, unmerged branch (squash merge) is met" "$ap" "$("$rp" next "$aws" 2>/dev/null)"
+amprompt open-b merged
+eq "after_mode: merged — the same branch stays unmet" "branch open-b is not merged into main" "$(check_reason)"
+"$rp" set "$aws/docs/plans/d.prompt-0.md" status failed
+amprompt open-b "done"
+eq "after_mode: done — a failed prompt does not satisfy it" "branch open-b: no done prompt with repo: demo and branch: open-b (after_mode: done)" "$(check_reason)"
+rm -f "$aws/docs/plans/d.prompt-0.md"
+amprompt merged-b squashed
+eq "after_mode: unknown value is unmet" "after_mode: unknown value 'squashed' (merged | done)" "$(check_reason)"
+if out=$("$rp" next "$aws" 2>/dev/null); then ko "after_mode: unknown value is never picked" "picked $out"; else ok "after_mode: unknown value is never picked"; fi
 aprompt a.prompt-1.md never-b
 if out=$("$rp" next "$aws" 2>"$tmp/stderr"); then ko "after: never-existing branch is skipped" "picked $out"; else ok "after: never-existing branch is skipped"; fi
 if grep -q "never-b does not exist" "$tmp/stderr"; then ok "after: never-existing branch warns"; else ko "after: never-existing branch warns" "$(cat "$tmp/stderr")"; fi
+eq "after: never-existing branch gives the result-commit reason" "branch never-b is gone and no result commit is recorded; merge it or set \`after_mode: done\`" "$(check_reason)"
 printf -- '---\nmodel: sonnet\nstatus: pending\nrepo: demo\nbranch: feat/z\n---\n' >"$aws/docs/plans/c.prompt-2.md"
 eq "next skips a waiting prompt for a later free one" "$aws/docs/plans/c.prompt-2.md" "$("$rp" next "$aws" 2>/dev/null)"
 

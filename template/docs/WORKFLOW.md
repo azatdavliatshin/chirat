@@ -64,6 +64,8 @@ failed runs.
   branch: <branch name>
   worktree: <optional suffix → repos/<repo>-<suffix>>
   after: <optional branch; wait until it is merged into main>
+  after_mode: <optional: merged (default) | done — done releases the prompt as soon as the prompt that built `after` is done; for squash merges, proves no merge>
+  commit: <written when a run ends: the head of branch in repos/<repo>; after: of later prompts checks it once the branch is deleted>
   ---
   ```
   A `done` prompt is a branch waiting for the human's review and merge; nothing lands on `main` by itself, and the next `after:` prompt waits for that merge.

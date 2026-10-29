@@ -72,9 +72,12 @@ gone() { # gone <pid>: wait up to 5 s until it no longer exists
 # claims it (`running`) and marks it `done`. FAKE_MODE=noflip stops after the
 # claim; FAKE_MODE=noclaim touches nothing; FAKE_MODE=sleep claims and then
 # sleeps 30 seconds; FAKE_MODE=hang claims and sleeps but prints nothing (the
-# .json stays empty); FAKE_MODE=stubborn is sleep with TERM ignored. Exits with
-# $FAKE_EXIT (default 0). FAKE_FINAL sets the status it ends with (default
-# done); FAKE_SF names a status file it writes before that.
+# .json stays empty); FAKE_MODE=stubborn is sleep with TERM ignored;
+# FAKE_MODE=orphan is sleep with a child that ignores TERM (its pid goes to
+# $FAKE_CHILD). Exits with $FAKE_EXIT (default 0). FAKE_FINAL sets the status it ends with (default
+# done); FAKE_SF names a status file it writes before that; FAKE_COMMIT=1 makes
+# one commit on the prompt's branch in repos/demo first; FAKE_SET_COMMIT sets
+# `commit:` to that value (a wrong one, for the watcher to correct).
 
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/claude" <<'EOF'
@@ -94,10 +97,21 @@ if [ "$mode" != hang ]; then
   echo "fake claude stderr" >&2
 fi
 [ "$mode" = stubborn ] && trap '' TERM
+if [ "$mode" = orphan ]; then
+  bash -c 'trap "" TERM; sleep 300' &
+  echo $! >"$FAKE_CHILD"
+fi
 if [ -n "$file" ] && [ "$mode" != noclaim ]; then
   "$RP" set "$file" status running
-  case $mode in sleep | hang | stubborn) sleep 30 ;; esac
+  case $mode in sleep | hang | stubborn | orphan) sleep 30 ;; esac
   [ -z "${FAKE_SF:-}" ] || echo "status" >"$FAKE_SF"
+  if [ -n "${FAKE_COMMIT:-}" ]; then
+    br=$("$RP" get "$file" branch)
+    git -C "$PWD/repos/demo" checkout -q "$br" 2>/dev/null || git -C "$PWD/repos/demo" checkout -q -b "$br"
+    git -C "$PWD/repos/demo" commit -q --allow-empty -m "work on $br"
+    git -C "$PWD/repos/demo" checkout -q main
+  fi
+  [ -z "${FAKE_SET_COMMIT:-}" ] || "$RP" set "$file" commit "$FAKE_SET_COMMIT"
   case $mode in noflip | sleep | hang | stubborn) ;; *) "$RP" set "$file" status "${FAKE_FINAL:-done}" ;; esac
 fi
 exit "${FAKE_EXIT:-0}"
@@ -210,10 +224,11 @@ eq "prompt-1 is done afterwards" "done" "$("$rp" get "$ws/docs/plans/demo.prompt
 eq "prompt-2 is still pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
 absent "lock released" "$ws/.chirat/lock"
 eq "run log commit message" "docs: run log demo.prompt-1" "$(git -C "$ws" log -1 --format=%s)"
-eq "run log commit holds runs/ files, status.log and LATEST, not the lock" ".chirat/LATEST
+eq "run log commit holds runs/ files, status.log, LATEST and the prompt, not the lock" ".chirat/LATEST
 .chirat/runs/${err##*/}
 .chirat/runs/${json##*/}
-.chirat/status.log" "$(git -C "$ws" show --name-only --format= HEAD | sort)"
+.chirat/status.log
+docs/plans/demo.prompt-1.md" "$(git -C "$ws" show --name-only --format= HEAD | sort)"
 eq "LATEST: no pending changes" "" "$(git -C "$ws" status --porcelain -- .chirat/LATEST)"
 eq "LATEST: one line after the first run" 1 "$(wc -l <"$ws/.chirat/LATEST" | tr -d ' ')"
 IFS=$'\t' read -r a_ts a_stem a_status a_branch a_commit a_exit a_secs <"$ws/.chirat/LATEST"
@@ -338,17 +353,25 @@ runs=$ws/.chirat/runs
 pf=$ws/docs/plans/demo.prompt-20.md
 
 # A dead watcher and a dead claude leave the prompt `running` and the lock.
-# recover <FAKE_MODE>: start, kill both with -9, leave wpid/cpid/err/json set.
+# die_mid_run <FAKE_MODE>: start, kill the watcher and claude's whole process
+# group with -9, leave wpid/cpid/err/json set.
 die_mid_run() {
   FAKE_MODE=$1 "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
   wpid=$!
   wait_claude "$pf"
   cpid=$(cat "$ws/.chirat/lock/claude.pid")
   run=$(cat "$ws/.chirat/lock/run")
+  # Let the fake reach its sleep first: KILL to the group must not cut
+  # chirat-prompt off between renaming the file and logging the change.
+  for _ in $(seq 1 50); do
+    ps -o pgid=,comm= -A 2>/dev/null | awk -v g="$cpid" '$1 == g && $2 ~ /sleep$/ { f = 1 } END { exit !f }' && break
+    sleep 0.1
+  done
   kill -9 "$wpid"
-  kill -9 "$cpid"
+  kill -9 -- "-$cpid"
   wait "$wpid" 2>/dev/null
   gone "$cpid"
+  for _ in $(seq 1 50); do ps -o pgid= -A 2>/dev/null | tr -d ' ' | grep -qx "$cpid" || break; sleep 0.1; done
 }
 
 prompt demo.prompt-20.md sonnet pending
@@ -452,6 +475,142 @@ if [ $(($(date +%s) - t0)) -le 20 ]; then ok "stubborn: stopped within 20 s"; el
 if kill -0 "$cpid" 2>/dev/null; then ko "stubborn: claude PID gone (KILL)"; else ok "stubborn: claude PID gone (KILL)"; fi
 eq "stubborn: prompt pending" pending "$("$rp" get "$pf" status)"
 absent "stubborn: lock released" "$ws/.chirat/lock"
+
+# --- process group: children of claude, group inspection ---------------------
+# Four tests here need to look at other processes (pgrep -g / ps -A); when a
+# sandbox denies that, they are skipped, not failed.
+can_inspect=0
+if ps -o pid=,pgid=,stat= -A >/dev/null 2>&1 || pgrep -g "$$" >/dev/null 2>&1; then can_inspect=1; fi
+latest_err() { find "$runs" -name "demo.prompt-20.*.err" -print | sort | tail -n 1; }
+if [ "$can_inspect" = 1 ]; then
+  # The audit's repro: claude dies on TERM, its child ignores TERM. The
+  # watcher must wait for the whole group, KILL it, and only then re-queue.
+  export FAKE_CHILD=$tmp/child.pid
+  rm -f "$FAKE_CHILD"
+  FAKE_MODE=orphan CHIRAT_STOP_GRACE=2 "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
+  wpid=$!
+  wait_claude "$pf"
+  cpid=$(cat "$ws/.chirat/lock/claude.pid")
+  for _ in $(seq 1 50); do [ -s "$FAKE_CHILD" ] && break; sleep 0.1; done
+  child=$(cat "$FAKE_CHILD")
+  eq "orphan: the child is in claude's process group" "$cpid" "$(ps -o pgid= -p "$child" | tr -d ' ')"
+  kill -TERM "$wpid"
+  wait "$wpid"
+  eq "orphan: watcher exits 130" 130 $?
+  if kill -0 "$child" 2>/dev/null; then ko "orphan: child is dead after the watcher exits"; kill -9 "$child" 2>/dev/null; else ok "orphan: child is dead after the watcher exits"; fi
+  if kill -0 "$cpid" 2>/dev/null; then ko "orphan: claude is gone"; else ok "orphan: claude is gone"; fi
+  eq "orphan: prompt back to pending" pending "$("$rp" get "$pf" status)"
+  absent "orphan: lock released" "$ws/.chirat/lock"
+  eq "orphan: log exit column is interrupted" interrupted "$(tail -n 1 "$log" | cut -f5)"
+
+  # Stubs for the branches KILL cannot produce: pgrep that always reports a
+  # live member, pgrep/ps that fail. Without FAKE_PGREP / FAKE_PS they run the
+  # real commands.
+  real_pgrep=$(command -v pgrep) real_ps=$(command -v ps)
+  cat >"$tmp/bin/pgrep" <<EOF
+#!/usr/bin/env bash
+case "\${FAKE_PGREP:-}:\$*" in
+  alive:-g*) echo "\$FAKE_LIVE_PID"; exit 0 ;;
+  error:-g*) exit 3 ;;
+esac
+exec "$real_pgrep" "\$@"
+EOF
+  cat >"$tmp/bin/ps" <<EOF
+#!/usr/bin/env bash
+case "\${FAKE_PS:-}:\$*" in
+  error:*pgid*) exit 1 ;;
+esac
+exec "$real_ps" "\$@"
+EOF
+  chmod +x "$tmp/bin/pgrep" "$tmp/bin/ps"
+
+  # A group that stays alive after KILL: prompt and lock are left alone.
+  sleep 100 &
+  live_pid=$!
+  FAKE_MODE=sleep FAKE_PGREP=alive FAKE_LIVE_PID=$live_pid CHIRAT_STOP_GRACE=1 "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
+  wpid=$!
+  wait_claude "$pf"
+  cpid=$(cat "$ws/.chirat/lock/claude.pid")
+  kill -TERM "$wpid"
+  wait "$wpid"
+  eq "group alive after KILL: watcher exits 130" 130 $?
+  eq "group alive after KILL: prompt left running" running "$("$rp" get "$pf" status)"
+  exists "group alive after KILL: lock kept" -d "$ws/.chirat/lock"
+  eq "group alive after KILL: log says interrupted-alive" interrupted-alive "$(tail -n 1 "$log" | cut -f5)"
+  has "group alive after KILL: err says the group could not be stopped" "$(latest_err)" "process group $cpid could not be stopped; prompt left 'running', lock kept"
+  kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+  kill -9 -- "-$cpid" 2>/dev/null
+  rm -rf "$ws/.chirat/lock"
+  "$rp" set "$pf" status pending
+
+  # Inspection fails: unknown is never "gone" — prompt and lock are kept.
+  FAKE_MODE=sleep FAKE_PGREP=error FAKE_PS=error CHIRAT_STOP_GRACE=1 "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
+  wpid=$!
+  wait_claude "$pf"
+  cpid=$(cat "$ws/.chirat/lock/claude.pid")
+  kill -TERM "$wpid"
+  wait "$wpid"
+  eq "inspection error: watcher exits 130" 130 $?
+  eq "inspection error: prompt left running" running "$("$rp" get "$pf" status)"
+  exists "inspection error: lock kept" -d "$ws/.chirat/lock"
+  eq "inspection error: log says interrupted-alive" interrupted-alive "$(tail -n 1 "$log" | cut -f5)"
+  has "inspection error: err says the group cannot be inspected" "$(latest_err)" "cannot inspect process group $cpid"
+  kill -9 -- "-$cpid" 2>/dev/null
+  rm -rf "$ws/.chirat/lock"
+  "$rp" set "$pf" status pending
+  rm -f "$tmp/bin/pgrep" "$tmp/bin/ps"
+
+  # Lock liveness looks at the group: a dead leader with a live child is
+  # live; a dead leader with only a zombie is stale.
+  "$rp" set "$pf" status running
+  set -m
+  ( bash -c 'sleep 100 & sleep 0.2' ) &
+  gl=$!
+  set +m
+  wait "$gl" 2>/dev/null
+  mkdir -p "$ws/.chirat/lock"
+  echo 999999 >"$ws/.chirat/lock/watcher.pid"
+  echo "$gl" >"$ws/.chirat/lock/claude.pid"
+  echo docs/plans/demo.prompt-20.md >"$ws/.chirat/lock/prompt"
+  "$watch" status >"$tmp/st.out" 2>&1
+  eq "dead leader, live child: status is not stale" 0 $?
+  has "dead leader, live child: lock is claude's" "$tmp/st.out" "lock: claude $gl alive"
+  "$watch" recover >"$tmp/out" 2>"$tmp/stderr"
+  eq "dead leader, live child: recover refuses" 1 $?
+  "$watch" --once >/dev/null 2>"$tmp/stderr"
+  has "dead leader, live child: pass skips it as in progress" "$tmp/stderr" "in progress, lock held by claude $gl"
+  eq "dead leader, live child: prompt untouched" running "$("$rp" get "$pf" status)"
+  kill -9 -- "-$gl" 2>/dev/null
+  for _ in $(seq 1 50); do ps -o pgid= -A 2>/dev/null | tr -d ' ' | grep -qx "$gl" || break; sleep 0.1; done
+  "$watch" status >"$tmp/st.out" 2>&1
+  eq "group gone: status is stale" 1 $?
+  has "group gone: says claude dead" "$tmp/st.out" "STALE: claude $gl dead"
+  rm -rf "$ws/.chirat/lock"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os, subprocess, sys, time
+p = subprocess.Popen(["sleep", "0.1"], preexec_fn=os.setsid)
+time.sleep(0.6)
+print(p.pid, flush=True)
+time.sleep(60)' >"$tmp/zpid" &
+    zholder=$!
+    for _ in $(seq 1 50); do [ -s "$tmp/zpid" ] && break; sleep 0.1; done
+    zpid=$(cat "$tmp/zpid")
+    eq "zombie: the member is a zombie" Z "$(ps -o stat= -p "$zpid" | cut -c1)"
+    mkdir -p "$ws/.chirat/lock"
+    echo 999999 >"$ws/.chirat/lock/watcher.pid"
+    echo "$zpid" >"$ws/.chirat/lock/claude.pid"
+    "$watch" status >"$tmp/st.out" 2>&1
+    eq "zombie-only group: status is stale" 1 $?
+    has "zombie-only group: says claude dead" "$tmp/st.out" "STALE: claude $zpid dead"
+    kill "$zholder" 2>/dev/null; wait "$zholder" 2>/dev/null
+    rm -rf "$ws/.chirat/lock"
+  else
+    echo "skip zombie-only group test (needs python3)"
+  fi
+  "$rp" set "$pf" status pending
+else
+  echo "skip process group tests: orphan child, group alive after KILL, inspection error, dead/zombie members (ps/pgrep unavailable in this sandbox)"
+fi
 rm -f "$pf"
 
 # --dry-run takes no lock and writes nothing, even with a live watcher's pid files around.
@@ -496,6 +655,42 @@ prompt demo.prompt-6.md sonnet pending
 eq "LATEST: commit is the short hash of the branch" "$want" "$(tail -n 1 "$ws/.chirat/LATEST" | cut -f5)"
 eq "LATEST: one line per run, none for waiting/misnamed" $((lines + 1)) "$(wc -l <"$ws/.chirat/LATEST" | tr -d ' ')"
 rm -f "$ws/docs/plans/demo.prompt-6.md"
+
+# --- commit: the result of a run, recorded in the prompt -----------------------
+
+prompt demo.prompt-7.md sonnet pending
+FAKE_COMMIT=1 "$watch" --once >/dev/null 2>&1
+head7=$(git -C "$wr" rev-parse feat/x)
+eq "commit: recorded after a done run (full sha of the branch head)" "$head7" "$("$rp" get "$ws/docs/plans/demo.prompt-7.md" commit)"
+eq "commit: the prompt is part of the run log commit, no other prompt" "docs/plans/demo.prompt-7.md" "$(git -C "$ws" show --name-only --format= HEAD | grep '^docs/')"
+eq "commit: nothing pending on the prompt" "" "$(git -C "$ws" status --porcelain -- docs/plans/demo.prompt-7.md)"
+eq "LATEST: still the short hash" "$(git -C "$wr" rev-parse --short feat/x)" "$(tail -n 1 "$ws/.chirat/LATEST" | cut -f5)"
+prompt demo.prompt-8.md sonnet pending
+FAKE_COMMIT=1 FAKE_SET_COMMIT=deadbeef "$watch" --once >/dev/null 2>&1
+eq "commit: a wrong value left by the run is corrected" "$(git -C "$wr" rev-parse feat/x)" "$("$rp" get "$ws/docs/plans/demo.prompt-8.md" commit)"
+prompt demo.prompt-9b.md sonnet pending
+"$rp" set "$ws/docs/plans/demo.prompt-9b.md" branch feat/gone
+"$rp" set "$ws/docs/plans/demo.prompt-9b.md" commit "$head7"
+"$watch" --once >/dev/null 2>&1
+eq "commit: a rerun without a branch removes the stale value" 1 "$("$rp" get "$ws/docs/plans/demo.prompt-9b.md" commit >/dev/null 2>&1; echo $?)"
+eq "commit: stale value removed — prompt still done" "done" "$("$rp" get "$ws/docs/plans/demo.prompt-9b.md" status)"
+prompt demo.prompt-9c.md sonnet pending
+FAKE_COMMIT=1 FAKE_FINAL=blocked "$watch" --once >/dev/null 2>&1
+eq "commit: recorded for a blocked run with commits" "$(git -C "$wr" rev-parse feat/x)" "$("$rp" get "$ws/docs/plans/demo.prompt-9c.md" commit)"
+prompt demo.prompt-9d.md sonnet pending
+"$rp" set "$ws/docs/plans/demo.prompt-9d.md" branch feat/none
+FAKE_MODE=noflip FAKE_EXIT=1 "$watch" --once >/dev/null 2>&1
+eq "commit: none for a failed run without a branch" 1 "$("$rp" get "$ws/docs/plans/demo.prompt-9d.md" commit >/dev/null 2>&1; echo $?)"
+rm -f "$ws"/docs/plans/demo.prompt-9[bcd].md
+# after_mode: done — the opt-out warning is printed by the watcher and kept in the .err
+prompt demo.prompt-10.md sonnet pending
+"$rp" set "$ws/docs/plans/demo.prompt-10.md" after feat/x
+"$rp" set "$ws/docs/plans/demo.prompt-10.md" after_mode "done"
+out=$("$watch" --once 2>/dev/null)
+eq "after_mode: done — the prompt ran" "done" "$("$rp" get "$ws/docs/plans/demo.prompt-10.md" status)"
+case $out in *"after_mode: done — feat/x counts as satisfied because docs/plans/demo.prompt-8.md is done; this does not prove a merge into main"*) ok "after_mode: done — watcher prints the warning" ;; *) ko "after_mode: done — watcher prints the warning" "$out" ;; esac
+has "after_mode: done — warning kept in the run's .err" "$(find "$ws/.chirat/runs" -name 'demo.prompt-10.*.err' | head -n 1)" "does not prove a merge"
+rm -f "$ws/docs/plans/demo.prompt-10.md" "$ws"/docs/plans/demo.prompt-[78].md
 
 # --- misnamed pending file, logged once ----------------------------------------
 
@@ -1124,10 +1319,11 @@ has "config: malformed line is a warning" "$tmp/stderr" "not key=value"
 eq "config: status.log lands in .chirat/" "work/queue/demo.prompt-1.md" "$(sed -n 1p "$ws2/.chirat/status.log" | cut -f2)"
 json2=$(first "$ws2"/.chirat/runs/demo.prompt-1.*.json)
 err2=${json2%.json}.err
-eq "run log commit holds .chirat/runs and LATEST, not the lock" ".chirat/LATEST
+eq "run log commit holds .chirat/runs, LATEST and the prompt, not the lock" ".chirat/LATEST
 .chirat/runs/${err2##*/}
 .chirat/runs/${json2##*/}
-.chirat/status.log" "$(git -C "$ws2" show --name-only --format= HEAD | sort)"
+.chirat/status.log
+work/queue/demo.prompt-1.md" "$(git -C "$ws2" show --name-only --format= HEAD | sort)"
 absent "config: lock released" "$ws2/.chirat/lock"
 
 XDG_CONFIG_HOME=$tmp/cfg2 "$watch" status ws3 >"$tmp/st.out" 2>&1

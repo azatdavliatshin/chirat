@@ -3,6 +3,7 @@
 #
 #   chirat-prompt get  <file> <key>           print the value of <key>
 #   chirat-prompt set  <file> <key> <value>   set <key> in place, keep the rest
+#   chirat-prompt unset <file> <key>          remove <key> from the front matter
 #   chirat-prompt next <workspace>            print the next pending prompt
 #   chirat-prompt waiting <workspace>         list pending prompts held back by after:
 #   chirat-prompt check <workspace> <file>    exit 0 if <file>'s after: is satisfied
@@ -33,10 +34,18 @@
 # without front matter are ignored.
 #
 # Optional `after: <branch>`: the prompt is eligible only once <branch> is
-# merged into <default_branch> of <workspace>/repos/<repo>. A branch that no longer exists
-# counts as merged when the workspace shows it was built (a done prompt with
-# that `branch:`, or a merge commit naming it); a branch that never existed is
-# a planning error: the prompt waits and a warning goes to stderr.
+# merged into <default_branch> of <workspace>/repos/<repo>. While the branch
+# exists, `git merge-base --is-ancestor` decides. Once it is gone, only the
+# recorded result can: the prompt that built it — same `repo:` and `branch:`;
+# the last one in queue order when there are several — carries
+# `commit: <full sha>` (written when its run finished), and that commit must
+# be an ancestor of <default_branch>. Without a recorded commit the
+# dependency stays unmet (the reason says so); a branch no prompt ever built
+# is a planning error (warning on stderr). `after_mode: done` on the
+# dependent prompt (default `merged`) opts out, for squash merges and for
+# prompts from before `commit:` existed: satisfied as soon as that prompt is
+# `done`, with a warning on stderr that this proves no merge; it is applied
+# before the branch is looked at. Any other value leaves the prompt unmet.
 #
 # Optional <workspace>/.chirat/config (`key=value` lines, `#` comments, no
 # quotes): plans_dir (default docs/plans), default_branch (default main).
@@ -47,7 +56,7 @@ set -euo pipefail
 export LC_ALL=C # byte-order suffix comparison and [a-z] without locale surprises
 
 usage() {
-  sed -n '4,9p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '4,10p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 64
 }
 
@@ -176,6 +185,25 @@ cmd_set() {
   return 0
 }
 
+cmd_unset() {
+  local file=$1 key=$2 tmp
+  [ -f "$file" ] || die "no such file: $file"
+  has_front_matter "$file" || die "no front matter: $file"
+  tmp=$(mktemp "${file}.XXXXXX")
+  awk -v key="$key" '
+    NR == 1 { print; next }
+    !done && $0 == "---" { done = 1; print; next }
+    !done {
+      k = $0; sub(/:.*/, "", k)
+      if (k == key) next
+    }
+    { print }
+  ' "$file" >"$tmp"
+  chmod "$(stat -c %a "$file" 2>/dev/null || stat -f %Lp "$file")" "$tmp"
+  mv "$tmp" "$file"
+  return 0
+}
+
 mtime() {
   stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"
 }
@@ -190,18 +218,55 @@ parse_stem() {
   PROMPT_SUFFIX=${BASH_REMATCH[2]:-}
 }
 
+# result_prompt <workspace> <plans_dir> <repo> <branch> <except>: the prompt
+# that built <branch> in <repo> — same `repo:` and `branch:`, not <except>; the
+# last in queue order (N, then suffix, as `next` orders) when there are
+# several — or nothing.
+result_prompt() {
+  local ws=$1 pd=$2 repo=$3 br=$4 skip=$5 p best="" best_n="" best_s="" n suf
+  for p in "$ws/$pd"/*.prompt-*.md; do
+    [ -f "$p" ] || continue
+    [ "$p" != "$skip" ] || continue
+    parse_stem "$p" || continue
+    [ "$(cmd_get "$p" branch 2>/dev/null)" = "$br" ] || continue
+    [ "$(cmd_get "$p" repo 2>/dev/null)" = "$repo" ] || continue
+    n=$((10#$PROMPT_N)) suf=$PROMPT_SUFFIX
+    if [ -z "$best" ] || [ "$n" -gt "$best_n" ] || { [ "$n" -eq "$best_n" ] && [[ $suf > $best_s ]]; }; then
+      best=$p best_n=$n best_s=$suf
+    fi
+  done
+  [ -n "$best" ] && printf '%s\n' "$best"
+  return 0
+}
+
 # after_unmet <workspace> <file>: print why <file>'s after: is not satisfied
-# and return 1; return 0 (silent) when there is no after: or it is satisfied.
+# and return 1; return 0 (silent on stdout) when there is no after: or it is
+# satisfied. Rules in the header.
 after_unmet() {
-  local ws=$1 f=$2 after repo r p db pd
+  local ws=$1 f=$2 after repo r p db pd mode commit
   db=$(chirat_config "$ws" default_branch main 2>/dev/null)
   pd=$(chirat_config "$ws" plans_dir docs/plans 2>/dev/null)
   after=$(cmd_get "$f" after 2>/dev/null) || return 0
   [ -n "$after" ] || return 0
+  mode=$(cmd_get "$f" after_mode 2>/dev/null) || mode=""
+  [ -n "$mode" ] || mode=merged
+  case $mode in
+    merged | done) ;;
+    *) echo "after_mode: unknown value '$mode' (merged | done)"; return 1 ;;
+  esac
   repo=$(cmd_get "$f" repo 2>/dev/null) || repo=""
   r=$ws/repos/$repo
   if [ -z "$repo" ] || ! git -C "$r" rev-parse --git-dir >/dev/null 2>&1; then
     echo "repos/$repo is not a git repository"
+    return 1
+  fi
+  if [ "$mode" = "done" ]; then
+    p=$(result_prompt "$ws" "$pd" "$repo" "$after" "$f")
+    if [ -n "$p" ] && [ "$(cmd_get "$p" status 2>/dev/null)" = "done" ]; then
+      echo "chirat-prompt: warning: ${f#"$ws"/}: after_mode: done — $after counts as satisfied because ${p#"$ws"/} is done; this does not prove a merge into $db" >&2
+      return 0
+    fi
+    echo "branch $after: no done prompt with repo: $repo and branch: $after (after_mode: done)"
     return 1
   fi
   git -C "$r" rev-parse --verify -q "refs/heads/$db" >/dev/null || { echo "branch $db not found in repos/$repo"; return 1; }
@@ -210,15 +275,21 @@ after_unmet() {
     echo "branch $after is not merged into $db"
     return 1
   fi
-  # Branch is gone: merged and deleted, or never created?
-  for p in "$ws/$pd"/*.prompt-*.md; do
-    [ -f "$p" ] || continue
-    [ "$(cmd_get "$p" branch 2>/dev/null)" = "$after" ] &&
-      [ "$(cmd_get "$p" status 2>/dev/null)" = "done" ] && return 0
-  done
-  [ -z "$(git -C "$r" log "refs/heads/$db" -1 --format=%h --fixed-strings --grep="$after" 2>/dev/null)" ] || return 0
-  echo "branch $after does not exist (never created?)"
-  echo "chirat-prompt: warning: $f: after: branch $after does not exist in repos/$repo" >&2
+  # Branch is gone: only the recorded result commit can prove the merge.
+  p=$(result_prompt "$ws" "$pd" "$repo" "$after" "$f")
+  commit=""
+  [ -z "$p" ] || { commit=$(cmd_get "$p" commit 2>/dev/null) || commit=""; }
+  if [ -z "$commit" ]; then
+    echo "branch $after is gone and no result commit is recorded; merge it or set \`after_mode: done\`"
+    [ -n "$p" ] || echo "chirat-prompt: warning: ${f#"$ws"/}: after: branch $after does not exist in repos/$repo and no prompt built it (never created?)" >&2
+    return 1
+  fi
+  if ! git -C "$r" cat-file -e "$commit^{commit}" 2>/dev/null; then
+    echo "branch $after is gone and its result commit $commit is not in repos/$repo"
+    return 1
+  fi
+  git -C "$r" merge-base --is-ancestor "$commit" "refs/heads/$db" && return 0
+  echo "branch $after is gone and its result commit ${commit:0:7} is not merged into $db"
   return 1
 }
 
@@ -237,7 +308,7 @@ cmd_waiting() {
     parse_stem "$f" || continue
     status=$(cmd_get "$f" status 2>/dev/null) || continue
     [ "$status" = pending ] || continue
-    reason=$(after_unmet "$ws" "$f" 2>/dev/null) && continue
+    reason=$(after_unmet "$ws" "$f") && continue
     after=$(cmd_get "$f" after)
     printf '%s\tafter=%s\t%s\n' "$f" "$after" "$reason"
   done
@@ -284,6 +355,7 @@ cmd_next() {
 case $1 in
   get) [ $# -eq 3 ] || usage; cmd_get "$2" "$3" ;;
   set) [ $# -eq 4 ] || usage; cmd_set "$2" "$3" "$4" ;;
+  unset) [ $# -eq 3 ] || usage; cmd_unset "$2" "$3" ;;
   next) [ $# -eq 2 ] || usage; cmd_next "$2" ;;
   waiting) [ $# -eq 2 ] || usage; cmd_waiting "$2" ;;
   check) [ $# -eq 3 ] || usage; cmd_check "$2" "$3" ;;

@@ -125,7 +125,9 @@ which is how a prompt is inserted between two existing ones.
 | `repo` | folder under `repos/` | required |
 | `branch` | branch name | required |
 | `worktree` | suffix | optional; work in `repos/<repo>-<suffix>` |
-| `after` | branch name | optional; wait until that branch is merged into `default_branch` of `repos/<repo>`. A deleted branch counts as merged if a `done` prompt used it as `branch:` or a merge commit names it; one that never existed is a planning error: the prompt keeps waiting and `chirat-prompt` warns. A dependent prompt is enqueued `pending` with `after:`, never parked as `blocked`; `/chirat:next <file>` with an unmet `after:` ends `blocked`, so an explicit path cannot bypass it |
+| `after` | branch name | optional; wait until that branch is merged into `default_branch` of `repos/<repo>` (see below). A dependent prompt is enqueued `pending` with `after:`, never parked as `blocked`; `/chirat:next <file>` with an unmet `after:` ends `blocked`, so an explicit path cannot bypass it |
+| `after_mode` | `merged` (default) \| `done` | optional; `done` means "satisfied as soon as the prompt that built `after`'s branch is `done`" — for squash merges and prompts from before `commit:` existed; `chirat-prompt check` / `waiting` and the watcher warn that this proves no merge. Any other value: unmet |
+| `commit` | full sha | written when a run ends `done`, `blocked` or `failed`: the head of `branch` in `repos/<repo>` (`/chirat:next` records it before the final status; the watcher fills or corrects it, and removes it when the branch is gone). `after:` reads it once the branch is deleted |
 
 Statuses go `pending` → `running` → `done` | `blocked` | `failed`. A `done`
 prompt is a branch waiting for your review and merge; nothing lands on `main`
@@ -134,12 +136,25 @@ human decision is needed (the question tops the status file); set `pending` to
 re-queue. `failed`: the run could not do the work. `draft` is inert, for
 prompts under review (`template/docs/WORKFLOW.md` §4).
 
+**`after:` and merges.** While the branch exists, `git merge-base
+--is-ancestor` decides. Once it is deleted, only the recorded result can: the
+prompt that built it (same `repo:` and `branch:`; the last in queue order if
+several) carries `commit:`, and that commit must be in `default_branch`.
+Without it the dependency stays unmet — `chirat-prompt waiting` says `branch
+X is gone and no result commit is recorded; merge it or set \`after_mode:
+done\``. A branch that no prompt built is a planning error (warning). Squash
+merges rewrite the commit, so the ancestry check cannot see them: set
+`after_mode: done` on the dependent prompt; it is then released by the
+`done` status alone (checked before the branch is looked at, so it also
+covers a squash-merged branch that still exists), with a warning on every
+check and on the run that it does not prove a merge.
+
 | `chirat-prompt` | Effect |
 |---|---|
-| `get <file> <key>` / `set <file> <key> <value>` | read / write one front-matter key; a `status` change is appended to `.chirat/status.log` (time, file, old, new, pid, parent pid, parent command), so an unexpected flip can be traced |
+| `get <file> <key>` / `set <file> <key> <value>` / `unset <file> <key>` | read / write / remove one front-matter key; a `status` change is appended to `.chirat/status.log` (time, file, old, new, pid, parent pid, parent command), so an unexpected flip can be traced |
 | `next <ws>` | print the next pending prompt; exit 1 if none |
 | `waiting <ws>` | list pending prompts held back by `after:`, and why |
-| `check <ws> <file>` | exit 0 if the file's `after:` is satisfied |
+| `check <ws> <file>` | exit 0 if the file's `after:` is satisfied (the reason on stdout when not; the `after_mode: done` warning on stderr when it is) |
 | `lint <ws>` | list `pending`/`running` files whose name does not match the pattern, as `<file>\t<reason>`; exit 1 if any; renaming the file is enough |
 
 ## The watcher
@@ -191,11 +206,17 @@ Each run adds a line to `~/.local/state/chirat/watch.log` (or under
 
 **Locks and stopping.** Run with `--tmux`, not one Ctrl-C away from an
 interrupted run. `.chirat/lock` keeps two watchers off one workspace and
-records both PIDs; a lock whose processes are all dead is recovered on the
-next pass (a `running` prompt goes back to `pending`). On
-SIGINT, SIGTERM or SIGHUP (`tmux kill-session`) the watcher stops `claude`'s
-process group, sets the prompt back to `pending`, releases the lock and logs
-`interrupted`. The exact rules are in the header of `bin/chirat-watch`.
+records both PIDs (`claude.pid` is also the id of `claude`'s process group);
+a lock is live while the watcher, `claude` or anything in `claude`'s group
+runs — or while the group cannot be inspected — and is recovered on the next
+pass only once all of that is dead (a `running` prompt goes back to
+`pending`). On SIGINT, SIGTERM or SIGHUP (`tmux kill-session`) the watcher
+sends TERM to `claude`'s whole process group, waits for the *group* (up to
+`CHIRAT_STOP_GRACE` seconds, default 15), sends KILL and waits again; only
+when nothing of the group is left does it set the prompt back to `pending`,
+release the lock and log `interrupted`. If anything survives, or the group
+cannot be inspected, prompt and lock stay as they are and the log says
+`interrupted-alive`. The exact rules are in the header of `bin/chirat-watch`.
 
 ## Hearing back
 
@@ -253,6 +274,7 @@ are ignored and a line without `=` is a warning.
 | `.chirat/config` | committed | the keys above |
 | `.chirat/runs/` | committed | `.json` result and `.err` per run |
 | `.chirat/LATEST` | committed | one line per finished run |
+| `<plans_dir>/<topic>.prompt-N.md` | committed | the prompt; its `status` flip and `commit:` are part of the run log commit |
 | `.chirat/status.log` | committed | every `status` change made by `chirat-prompt set` |
 | `.chirat/lock/` | ignored | the running watcher's lock |
 | `.chirat/review/` | ignored | diffs the planning chat renders for review |
