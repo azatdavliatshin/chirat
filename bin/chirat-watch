@@ -1276,7 +1276,7 @@ cmd_doctor() {
   # 3: plugin
   if [ -n "$cl" ]; then
     if claude plugin list 2>&1 | grep -q chirat; then ok "plugin: chirat installed"
-    else fail "plugin: chirat not in \`claude plugin list\`: claude plugin marketplace add $root && claude plugin install chirat"; fi
+    else fail "plugin: chirat not in \`claude plugin list\`: claude plugin marketplace add $root && claude plugin install chirat@chirat"; fi
   fi
 
   # 4: config
@@ -1346,6 +1346,9 @@ cmd_doctor() {
   if command -v terminal-notifier >/dev/null 2>&1; then
     local tnv tnr tnerr2
     tnv=$(terminal-notifier -version 2>/dev/null | head -n 1) || tnv=""
+    # real output: "terminal-notifier 3.1.0." — keep the first number run
+    tnv=$(printf '%s\n' "$tnv" | grep -o '[0-9][0-9.]*' | head -n 1)
+    tnv=${tnv%.}
     [ -n "$tnv" ] || tnv="?"
     case $tnv in
       3.*) ok "terminal-notifier 3.x: click opens ${doc_open:-Claude}" ;;

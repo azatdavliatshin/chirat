@@ -2,7 +2,7 @@
 
 *chirat* (*chi-RAHT*) is Tatar for "queue; one's turn".
 
-[![CI](https://github.com/azatdavliatshin/relay/actions/workflows/ci.yml/badge.svg)](https://github.com/azatdavliatshin/relay/actions/workflows/ci.yml)
+[![CI](https://github.com/azatdavliatshin/chirat/actions/workflows/ci.yml/badge.svg)](https://github.com/azatdavliatshin/chirat/actions/workflows/ci.yml)
 
 chirat lets you stay in the planning chat (Cowork or a Claude Project) as long
 as possible and leave it only for what the chat cannot reach: merge and push.
@@ -40,12 +40,12 @@ logged in. Optional: `tmux` (for `--tmux`), `jq` (the commit guard and
 back"), and `shellcheck` for development.
 
 ```bash
-git clone https://github.com/azatdavliatshin/relay ~/code/chirat-src
+git clone https://github.com/azatdavliatshin/chirat ~/code/chirat-src
 ~/code/chirat-src/bin/chirat-watch install   # chirat-watch, chirat-prompt → ~/.local/bin
 ```
 
 Inside a Claude Code session, add the marketplace — a local clone path or
-`azatdavliatshin/relay` — and install the plugin; `chirat-watch doctor` then
+`azatdavliatshin/chirat` — and install the plugin; `chirat-watch doctor` then
 checks the setup. The plugin brings `/chirat:next` (run one prompt file),
 `/chirat:handover` (a status note for an interactive session), `/chirat:poll`
 (the planning-side check-in rule), a read-only `reviewer` agent pinned to
@@ -54,7 +54,7 @@ checks the setup. The plugin brings `/chirat:next` (run one prompt file),
 ```
 /plugin marketplace add ~/code/chirat-src      # local clone
 # or, from GitHub:
-/plugin marketplace add azatdavliatshin/relay
+/plugin marketplace add azatdavliatshin/chirat
 /plugin install chirat@chirat
 ```
 
@@ -272,7 +272,13 @@ A hook refuses `git commit` while workspace files are staged:
   6. Plugin, in Claude Code: `/plugin uninstall relay@relay`,
      `/plugin marketplace remove relay`, add the marketplace again (see
      Install), `/plugin install chirat@chirat`.
-  7. `chirat-watch doctor --online`, then start the watcher:
+  7. The GitHub repository was renamed too; old URLs redirect, but update
+     existing clones: `git remote set-url origin
+     https://github.com/azatdavliatshin/chirat` (or the ssh form), and if the
+     marketplace was added by GitHub name rather than a local path:
+     `claude plugin marketplace remove chirat && claude plugin marketplace
+     add azatdavliatshin/chirat`.
+  8. `chirat-watch doctor --online`, then start the watcher:
      `chirat-watch --tmux`.
 - **From 0.x** (run log moved from `docs/status/` to `.chirat/`): per workspace,
   `git mv docs/status/runs .chirat/runs && git mv docs/status/LATEST .chirat/LATEST`

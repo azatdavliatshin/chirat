@@ -785,9 +785,11 @@ if [ "$1" = -version ]; then [ -z "$FAKE_TNV" ] || echo "$FAKE_TNV"; exit 0; fi
 exit 0
 EOF2
 chmod +x "$tmp/dtn/terminal-notifier"
-FAKE_TNV=3.1.0 PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
+FAKE_TNV="terminal-notifier 3.1.0." PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
 has "doctor: terminal-notifier 3 ok" "$tmp/doc2.out" "ok   terminal-notifier 3.x: click opens Claude"
-FAKE_TNV=2.0.0 PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
+FAKE_TNV=3.1.0 PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
+has "doctor: terminal-notifier bare 3 ok" "$tmp/doc2.out" "ok   terminal-notifier 3.x: click opens Claude"
+FAKE_TNV="terminal-notifier 2.0.0." PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
 has "doctor: terminal-notifier 2 warns" "$tmp/doc2.out" "warn terminal-notifier 2.0.0: 3.x needed for -open; brew upgrade terminal-notifier"
 PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
 has "doctor: terminal-notifier unknown version warns" "$tmp/doc2.out" "warn terminal-notifier ?: 3.x needed"
