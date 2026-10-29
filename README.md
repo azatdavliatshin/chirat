@@ -266,3 +266,64 @@ claude plugin validate plugin
 
 CI (`.github/workflows/ci.yml`): all of the above on `ubuntu-latest` and
 `macos-latest`, plus the suites under macOS's `/bin/bash` (3.2).
+
+## Troubleshooting
+
+### Notifications
+
+**No notification, nothing in `.err`, `doctor` says `ok terminal-notifier`.**
+terminal-notifier has no notification permission yet. macOS lists a
+command-line tool under System Settings → Notifications only after its app
+bundle has been launched once; by hand the error is `Could not request
+notification permission: Notifications are not allowed for this application`.
+Launch the bundle, click **Allow**, then check:
+`open "$(dirname "$(dirname "$(dirname "$(readlink -f "$(command -v terminal-notifier)")")")")"`
+(or `open "$(brew --prefix)/Cellar/terminal-notifier/<version>/terminal-notifier.app"`),
+then `relay-watch doctor --online` → `ok … permission granted`. `doctor` derives
+the bundle path the same way and prints it when the permission is missing.
+
+**`[!] -sender is no longer supported` in `.err`.** terminal-notifier 3.x
+dropped `-sender`; relay no longer sends it, so upgrade relay if you see this.
+Conversely `-open` is unknown to 2.x: `brew upgrade terminal-notifier`.
+
+**The notification shows but the click does nothing.** With `notify_open`
+unset the click only activates Claude Desktop. Set
+`notify_open=claude://claude.ai/project/<uuid>` in `.relay/config` (read per
+run, no restart). Test a URL by hand with `open "claude://…"`; a wrong chat id
+shows "That session is no longer available" in Claude Desktop. A `'` in the
+value is refused (`warn:` in `.err`).
+
+**Notifications come from "Script Editor".** The watcher did not find
+terminal-notifier, often because `brew install` ran after the tmux session
+started and its `PATH` is old: `relay-watch restart`. `relay-watch doctor`
+says which notifier it sees.
+
+**Nothing at all and `.err` is quiet.** Focus / Do Not Disturb, or the style
+for terminal-notifier is "None": System Settings → Notifications →
+terminal-notifier → Banners or Alerts. `RELAY_NOTIFY=0` in the watcher's
+environment silences everything too; `relay-watch status` prints a `notify:`
+line per workspace with `RELAY_NOTIFY`, `RELAY_NOTIFY_OPEN` and `notify_open`
+as seen by the shell you ran it in, so run it from the watcher's environment.
+
+**Linux.** No desktop notifications; the loop still works through
+`.relay/LATEST`, `relay-watch status`, or `/relay:poll` in the chat.
+
+### The run itself
+
+**A prompt stays `pending`.** The watcher is not running (`relay-watch
+status`), the workspace is not in `~/.config/relay/workspaces`, the file name
+does not match the pattern (`relay-prompt lint <ws>`, or `misnamed` in the
+log), or an `after:` is unmet (`relay-prompt waiting <ws>`).
+
+**A run ends `failed` within seconds.** The plugin is not installed for this
+user, or the `claude` login expired: `relay-watch doctor --online`; the `.err`
+names which.
+
+**A run ends `blocked` on a permission.** `--permission-prompts none` denied
+something the classifier would have asked about; the top of the status file
+says what. Re-plan the prompt to avoid it, or (less safe) allow it in
+`.claude/settings.local.json` and run with `acceptEdits`.
+
+**`relay-watch status` says `STALE`.** Run `relay-watch recover --dry-run`
+first, then `relay-watch recover`; the rules are in the header of
+`bin/relay-watch`.

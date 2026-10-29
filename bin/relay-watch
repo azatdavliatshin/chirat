@@ -785,6 +785,22 @@ watcher_alive() {
 }
 
 # watcher_line: the `watcher:` line of status; returns 1 for a stale pid file
+# tn_app_path: the terminal-notifier.app bundle behind the command on PATH
+# (symlinks followed); a Cellar template when it cannot be derived. Used by
+# doctor, and the README gives the same expression.
+tn_app_path() {
+  local p dir
+  p=$(command -v terminal-notifier) || return 1
+  while [ -L "$p" ]; do
+    dir=$(readlink "$p")
+    case $dir in /*) p=$dir ;; *) p=$(dirname "$p")/$dir ;; esac
+  done
+  case $p in
+    *.app/*) printf '%s\n' "${p%%.app/*}.app" ;;
+    *) printf '%s\n' "$(brew --prefix 2>/dev/null || echo /opt/homebrew)/Cellar/terminal-notifier/<ver>/terminal-notifier.app" ;;
+  esac
+}
+
 watcher_line() {
   local pid flags
   if [ ! -f "$state_dir/watcher.pid" ]; then echo "watcher: not running"; return 0; fi
@@ -910,6 +926,7 @@ status_ws() {
     line="$line$([ "$st" = pending ] || printf ,) $n $st${name:+ ($name)}"
   done
   echo "$line"
+  echo "  notify: RELAY_NOTIFY=${RELAY_NOTIFY:-1} RELAY_NOTIFY_OPEN=${RELAY_NOTIFY_OPEN:-0} notify_open=$(relay_config "$ws" notify_open "") (this shell's environment)"
 
   state=$(lock_state "$ws")
   lock_read "$ws"
@@ -1260,7 +1277,7 @@ cmd_doctor() {
   # 7: state dir, osascript, jq
   if [ -w "$state_dir" ]; then ok "state dir: $state_dir writable"; else fail "state dir: $state_dir not writable"; fi
   if command -v terminal-notifier >/dev/null 2>&1; then
-    local tnv tnp tnr tnerr2
+    local tnv tnr tnerr2
     tnv=$(terminal-notifier -version 2>/dev/null | head -n 1) || tnv=""
     [ -n "$tnv" ] || tnv="?"
     case $tnv in
@@ -1271,16 +1288,7 @@ cmd_doctor() {
       tnerr2=$(terminal-notifier -title relay -message "doctor probe" -group relay:doctor 2>&1 >/dev/null) || true
       case $tnerr2 in
         *"not allowed"*)
-          tnp=$(command -v terminal-notifier)
-          tnr=$tnp
-          while [ -L "$tnr" ]; do
-            dir=$(readlink "$tnr")
-            case $dir in /*) tnr=$dir ;; *) tnr=$(dirname "$tnr")/$dir ;; esac
-          done
-          case $tnr in
-            *.app/*) tnr=${tnr%%.app/*}.app ;;
-            *) tnr="$(brew --prefix 2>/dev/null || echo /opt/homebrew)/Cellar/terminal-notifier/<ver>/terminal-notifier.app" ;;
-          esac
+          tnr=$(tn_app_path)
           fail "terminal-notifier: notifications not allowed — run: open \"$tnr\" once and click Allow"
           ;;
         *) ok "terminal-notifier: permission granted" ;;

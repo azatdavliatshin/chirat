@@ -801,6 +801,15 @@ if grep -q 'permission' "$tmp/doc2.out"; then ko "doctor without --online: no pr
 printf 'notify_open=nonsense\n' >"$ws/.relay/config"
 PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
 has "doctor: notify_open unrecognized" "$tmp/doc2.out" "warn notify_open: unrecognized value nonsense"
+printf 'notify_open=claude://claude.ai/project/x\n' >"$ws/.relay/config"
+RELAY_NOTIFY=0 "$watch" status "$ws" >"$tmp/st.out" 2>&1
+has "status: notify line" "$tmp/st.out" "  notify: RELAY_NOTIFY=0 RELAY_NOTIFY_OPEN=0 notify_open=claude://claude.ai/project/x"
+rm -f "$ws/.relay/config"
+mkdir -p "$tmp/tnapp/terminal-notifier.app/Contents/MacOS" "$tmp/tnbin"
+cp "$tmp/dtn/terminal-notifier" "$tmp/tnapp/terminal-notifier.app/Contents/MacOS/terminal-notifier"
+ln -sf "$tmp/tnapp/terminal-notifier.app/Contents/MacOS/terminal-notifier" "$tmp/tnbin/terminal-notifier"
+FAKE_TNV=3.1.0 FAKE_TNERR="Notifications are not allowed for this application" PATH=$tmp/tnbin:$dpath "$watch" doctor --online >"$tmp/doc2.out" 2>&1
+has "doctor: permission FAIL names the .app bundle" "$tmp/doc2.out" "open \"$tmp/tnapp/terminal-notifier.app\" once"
 rm -f "$ws/.relay/config"
 if grep -q '^FAIL' "$tmp/doc.out"; then ko "doctor: no FAIL lines" "$(cat "$tmp/doc.out")"; else ok "doctor: no FAIL lines"; fi
 FAKE_PLUGINS="other@x 1.0" doc
