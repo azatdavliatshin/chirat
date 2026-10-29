@@ -42,7 +42,7 @@ first() { # first <glob...>: print the first existing match, or nothing
 wait_claude() { # wait_claude <prompt file>: until it is running and the lock has claude.pid
   local _
   for _ in $(seq 1 100); do
-    [ "$("$rp" get "$1" status)" = running ] && [ -s "$ws/docs/status/runs/.lock/claude.pid" ] && return 0
+    [ "$("$rp" get "$1" status)" = running ] && [ -s "$ws/.relay/lock/claude.pid" ] && return 0
     sleep 0.1
   done
   return 1
@@ -139,10 +139,10 @@ out=$("$watch" --once --dry-run 2>"$tmp/stderr")
 eq "dry-run exits 0" 0 $?
 has "dry-run prints the claude command" <(printf '%s\n' "$out") "claude -p /relay:next\\ docs/plans/demo.prompt-1.md --model opus --permission-mode auto --permission-prompts none --output-format json"
 eq "dry-run leaves the prompt pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-1.md" status)"
-eq "dry-run runs nothing" "" "$(first "$ws"/docs/status/runs/*)"
-exists "dry-run creates runs/" -d "$ws/docs/status/runs"
+eq "dry-run runs nothing" "" "$(first "$ws"/.relay/runs/*)"
+exists "dry-run creates runs/" -d "$ws/.relay/runs"
 has "dry-run warns about a non-workspace path" "$tmp/stderr" "not a workspace (no docs/plans): $tmp/not-a-workspace"
-absent "dry-run does not write LATEST" "$ws/docs/status/LATEST"
+absent "dry-run does not write LATEST" "$ws/.relay/LATEST"
 eq "dry-run logs one line" 1 "$(wc -l <"$log" | tr -d ' ')"
 eq "log: mode column shows auto" auto "$(cut -f7 "$log")"
 : >"$log"
@@ -171,11 +171,11 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT
 git -C "$ws" init -q
 git -C "$ws" add docs/plans
 git -C "$ws" commit -q -m "docs: plans"
-rm -rf "$ws/docs/status/runs"
+rm -rf "$ws/.relay/runs"
 
 out=$("$watch" --once 2>"$tmp/stderr")
 eq "once exits 0" 0 $?
-json=$(first "$ws"/docs/status/runs/demo.prompt-1.*.json)
+json=$(first "$ws"/.relay/runs/demo.prompt-1.*.json)
 err=${json%.json}.err
 exists "writes runs/<stem>.<ts>.json" -f "$json"
 case ${json##*/} in demo.prompt-1.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].json) ok "timestamp is YYYYMMDD-HHMMSS" ;; *) ko "timestamp is YYYYMMDD-HHMMSS" "$json" ;; esac
@@ -189,15 +189,15 @@ has "passes --output-format json" "$FAKE_ARGV" "--output-format"
 eq "runs from the workspace root" "PWD=$ws" "$(grep '^PWD=' "$FAKE_ARGV")"
 eq "prompt-1 is done afterwards" "done" "$("$rp" get "$ws/docs/plans/demo.prompt-1.md" status)"
 eq "prompt-2 is still pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
-absent "lock released" "$ws/docs/status/runs/.lock"
+absent "lock released" "$ws/.relay/lock"
 eq "run log commit message" "docs: run log demo.prompt-1" "$(git -C "$ws" log -1 --format=%s)"
-eq "run log commit holds runs/ files, status.log and LATEST" "docs/status/LATEST
-docs/status/runs/${err##*/}
-docs/status/runs/${json##*/}
-docs/status/runs/status.log" "$(git -C "$ws" show --name-only --format= HEAD | sort)"
-eq "LATEST: no pending changes" "" "$(git -C "$ws" status --porcelain -- docs/status/LATEST)"
-eq "LATEST: one line after the first run" 1 "$(wc -l <"$ws/docs/status/LATEST" | tr -d ' ')"
-IFS=$'\t' read -r a_ts a_stem a_status a_branch a_commit a_exit a_secs <"$ws/docs/status/LATEST"
+eq "run log commit holds runs/ files, status.log and LATEST, not the lock" ".relay/LATEST
+.relay/runs/${err##*/}
+.relay/runs/${json##*/}
+.relay/status.log" "$(git -C "$ws" show --name-only --format= HEAD | sort)"
+eq "LATEST: no pending changes" "" "$(git -C "$ws" status --porcelain -- .relay/LATEST)"
+eq "LATEST: one line after the first run" 1 "$(wc -l <"$ws/.relay/LATEST" | tr -d ' ')"
+IFS=$'\t' read -r a_ts a_stem a_status a_branch a_commit a_exit a_secs <"$ws/.relay/LATEST"
 case $a_ts in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*) ok "LATEST: iso timestamp" ;; *) ko "LATEST: iso timestamp" "$a_ts" ;; esac
 eq "LATEST: stem" demo.prompt-1 "$a_stem"
 eq "LATEST: status" "done" "$a_status"
@@ -205,7 +205,7 @@ eq "LATEST: branch" feat/x "$a_branch"
 eq "LATEST: no repo → commit -" - "$a_commit"
 eq "LATEST: exit" 0 "$a_exit"
 case $a_secs in '' | *[!0-9]*) ko "LATEST: seconds" "$a_secs" ;; *) ok "LATEST: seconds" ;; esac
-eq "run log: no pending runs/ changes" "" "$(git -C "$ws" status --porcelain -- docs/status/runs)"
+eq "run log: no pending runs/ changes" "" "$(git -C "$ws" status --porcelain -- .relay/runs)"
 eq "one log line" 1 "$(wc -l <"$log" | tr -d ' ')"
 line=$(cat "$log")
 eq "log line echoed to stdout" "$line" "$out"
@@ -227,22 +227,22 @@ RELAY_NOTIFY=0 FAKE_MODE=noflip FAKE_EXIT=3 "$watch" --once >"$tmp/out" 2>"$tmp/
 eq "once still exits 0 when claude fails" 0 $?
 absent "RELAY_NOTIFY=0 sends nothing" "$FAKE_OSA"
 eq "prompt-2 set to failed" failed "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
-err2=$(first "$ws"/docs/status/runs/demo.prompt-2.*.err)
+err2=$(first "$ws"/.relay/runs/demo.prompt-2.*.err)
 has "err notes the forced failure" "$err2" "claude exited 3 with the prompt still 'running'; set to failed"
 has "err keeps claude's own stderr first" "$err2" "fake claude stderr"
-eq "LATEST: second run appends a line" 2 "$(wc -l <"$ws/docs/status/LATEST" | tr -d ' ')"
-eq "LATEST: forced failure recorded" "demo.prompt-2	failed	feat/x	-	3" "$(tail -n 1 "$ws/docs/status/LATEST" | cut -f2-6)"
-eq "LATEST: first line untouched" demo.prompt-1 "$(head -n 1 "$ws/docs/status/LATEST" | cut -f2)"
+eq "LATEST: second run appends a line" 2 "$(wc -l <"$ws/.relay/LATEST" | tr -d ' ')"
+eq "LATEST: forced failure recorded" "demo.prompt-2	failed	feat/x	-	3" "$(tail -n 1 "$ws/.relay/LATEST" | cut -f2-6)"
+eq "LATEST: first line untouched" demo.prompt-1 "$(head -n 1 "$ws/.relay/LATEST" | cut -f2)"
 eq "log: exit code 3" 3 "$(tail -n 1 "$log" | cut -f5)"
 eq "log: model sonnet by default" sonnet "$(tail -n 1 "$log" | cut -f4)"
-absent "lock released after failure" "$ws/docs/status/runs/.lock"
+absent "lock released after failure" "$ws/.relay/lock"
 
 # --- --once: claude exits before claiming the prompt ----------------------
 
 prompt demo.prompt-3.md sonnet pending
 FAKE_MODE=noclaim FAKE_EXIT=1 "$watch" --once >/dev/null 2>&1
 eq "unclaimed prompt set to failed (no retry loop)" failed "$("$rp" get "$ws/docs/plans/demo.prompt-3.md" status)"
-err3=$(first "$ws"/docs/status/runs/demo.prompt-3.*.err)
+err3=$(first "$ws"/.relay/runs/demo.prompt-3.*.err)
 has "err notes the prompt was still pending" "$err3" "claude exited 1 with the prompt still 'pending'; set to failed"
 rm -f "$ws/docs/plans/demo.prompt-3.md"
 
@@ -256,17 +256,17 @@ eq "once with empty queue logs nothing" 3 "$(wc -l <"$log" | tr -d ' ')"
 # --- lock held → skip -----------------------------------------------------
 
 "$rp" set "$ws/docs/plans/demo.prompt-2.md" status pending
-mkdir "$ws/docs/status/runs/.lock"
-echo $$ >"$ws/docs/status/runs/.lock/watcher.pid" # a live owner: this shell
+mkdir "$ws/.relay/lock"
+echo $$ >"$ws/.relay/lock/watcher.pid" # a live owner: this shell
 : >"$FAKE_ARGV"
 "$watch" --once >/dev/null 2>"$tmp/stderr"
 eq "locked workspace: exit 0" 0 $?
 has "locked workspace: says so on stderr" "$tmp/stderr" "in progress, lock held by watcher $$"
 eq "locked workspace: claude not called" "" "$(cat "$FAKE_ARGV")"
 eq "locked workspace: prompt stays pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-2.md" status)"
-exists "locked workspace: lock left alone" -d "$ws/docs/status/runs/.lock"
-rm -f "$ws/docs/status/runs/.lock/watcher.pid"
-rmdir "$ws/docs/status/runs/.lock"
+exists "locked workspace: lock left alone" -d "$ws/.relay/lock"
+rm -f "$ws/.relay/lock/watcher.pid"
+rmdir "$ws/.relay/lock"
 
 # --- model missing → sonnet; --interval validation -----------------------
 
@@ -287,7 +287,7 @@ prompt demo.prompt-9.md sonnet pending
 lines_before=$(wc -l <"$log" | tr -d ' ')
 FAKE_MODE="sleep" "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
 wpid=$!
-lock=$ws/docs/status/runs/.lock
+lock=$ws/.relay/lock
 wait_claude "$ws/docs/plans/demo.prompt-9.md"
 eq "sleeping run has claimed the prompt" running "$("$rp" get "$ws/docs/plans/demo.prompt-9.md" status)"
 cpid=$(cat "$lock/claude.pid" 2>/dev/null)
@@ -295,27 +295,27 @@ for f in watcher.pid prompt run started claude.pid; do exists "lock holds $f" -s
 eq "lock: watcher.pid is the watcher" "$wpid" "$(cat "$lock/watcher.pid")"
 eq "lock: prompt" docs/plans/demo.prompt-9.md "$(cat "$lock/prompt")"
 case $(cat "$lock/run") in demo.prompt-9.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ok "lock: run is <stem>.<stamp>" ;; *) ko "lock: run is <stem>.<stamp>" "$(cat "$lock/run")" ;; esac
-exists "lock: run names the .err of this run" -e "$ws/docs/status/runs/$(cat "$lock/run").err"
+exists "lock: run names the .err of this run" -e "$ws/.relay/runs/$(cat "$lock/run").err"
 case $(cat "$lock/started") in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*) ok "lock: started is iso" ;; *) ko "lock: started is iso" "$(cat "$lock/started")" ;; esac
 has "lock: claude.pid is the fake claude" <(ps -o args= -p "$cpid") "bin/claude -p"
 kill -TERM "$wpid"
 wait "$wpid"
 eq "SIGTERM: watcher exits 130" 130 $?
 eq "SIGTERM: prompt back to pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-9.md" status)"
-err9=$(first "$ws"/docs/status/runs/demo.prompt-9.*.err)
+err9=$(first "$ws"/.relay/runs/demo.prompt-9.*.err)
 has "SIGTERM: err notes the interruption" "$err9" "relay-watch was interrupted with the prompt still 'running'; set to pending (SIGTERM)"
 eq "SIGTERM: one more log line" $((lines_before + 1)) "$(wc -l <"$log" | tr -d ' ')"
-eq "SIGTERM: LATEST records interrupted" "demo.prompt-9	pending	feat/x	-	interrupted" "$(tail -n 1 "$ws/docs/status/LATEST" | cut -f2-6)"
-eq "SIGTERM: LATEST committed" "" "$(git -C "$ws" status --porcelain -- docs/status/LATEST)"
+eq "SIGTERM: LATEST records interrupted" "demo.prompt-9	pending	feat/x	-	interrupted" "$(tail -n 1 "$ws/.relay/LATEST" | cut -f2-6)"
+eq "SIGTERM: LATEST committed" "" "$(git -C "$ws" status --porcelain -- .relay/LATEST)"
 eq "SIGTERM: log exit column is interrupted" interrupted "$(tail -n 1 "$log" | cut -f5)"
 eq "SIGTERM: log names the prompt" docs/plans/demo.prompt-9.md "$(tail -n 1 "$log" | cut -f3)"
-absent "SIGTERM: lock released" "$ws/docs/status/runs/.lock"
+absent "SIGTERM: lock released" "$ws/.relay/lock"
 if kill -0 "$cpid" 2>/dev/null; then ko "SIGTERM: claude is gone"; else ok "SIGTERM: claude is gone"; fi
 rm -f "$ws/docs/plans/demo.prompt-9.md"
 
 # --- lock owners, stale locks, stopping claude -----------------------------
 
-runs=$ws/docs/status/runs
+runs=$ws/.relay/runs
 pf=$ws/docs/plans/demo.prompt-20.md
 
 # A dead watcher and a dead claude leave the prompt `running` and the lock.
@@ -324,8 +324,8 @@ die_mid_run() {
   FAKE_MODE=$1 "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
   wpid=$!
   wait_claude "$pf"
-  cpid=$(cat "$runs/.lock/claude.pid")
-  run=$(cat "$runs/.lock/run")
+  cpid=$(cat "$ws/.relay/lock/claude.pid")
+  run=$(cat "$ws/.relay/lock/run")
   kill -9 "$wpid"
   kill -9 "$cpid"
   wait "$wpid" 2>/dev/null
@@ -334,16 +334,16 @@ die_mid_run() {
 
 prompt demo.prompt-20.md sonnet pending
 : >"$log"
-rm -f "$runs/status.log"
+rm -f "$ws/.relay/status.log"
 die_mid_run hang
 eq "dead run: prompt still running" running "$("$rp" get "$pf" status)"
-exists "dead run: lock left behind" -d "$runs/.lock"
+exists "dead run: lock left behind" -d "$ws/.relay/lock"
 exists "dead run: .json is empty" -f "$runs/$run.json"
 "$watch" --once >"$tmp/out" 2>"$tmp/stderr"
 has "heal: stderr says so" "$tmp/stderr" "recovered stale lock (claude $cpid dead)"
 has "heal: err holds the note" "$runs/$run.err" "recovered: watcher/claude died with the prompt 'running'; set to pending"
 absent "heal: empty .json removed" "$runs/$run.json"
-absent "heal: lock gone" "$runs/.lock"
+absent "heal: lock gone" "$ws/.relay/lock"
 eq "heal: first log line is recovered" recovered "$(head -n 1 "$log" | cut -f5)"
 eq "heal: log names the prompt" docs/plans/demo.prompt-20.md "$(head -n 1 "$log" | cut -f3)"
 eq "heal: then the prompt ran again" "done" "$("$rp" get "$pf" status)"
@@ -352,13 +352,13 @@ eq "status.log: pending → running, running → pending (recovery), pending →
   "pending	running
 running	pending
 pending	running
-running	done" "$(cut -f3,4 "$runs/status.log" | sed -n '1,4p;')"
-eq "status.log: recovery's parent is relay-watch" relay-watch "$(sed -n 2p "$runs/status.log" | cut -f7)"
-eq "status.log: claude's parent is the fake claude" claude "$(sed -n 4p "$runs/status.log" | cut -f7)"
-eq "status.log: file column" docs/plans/demo.prompt-20.md "$(sed -n 1p "$runs/status.log" | cut -f2)"
-before=$(wc -l <"$runs/status.log" | tr -d ' ')
+running	done" "$(cut -f3,4 "$ws/.relay/status.log" | sed -n '1,4p;')"
+eq "status.log: recovery's parent is relay-watch" relay-watch "$(sed -n 2p "$ws/.relay/status.log" | cut -f7)"
+eq "status.log: claude's parent is the fake claude" claude "$(sed -n 4p "$ws/.relay/status.log" | cut -f7)"
+eq "status.log: file column" docs/plans/demo.prompt-20.md "$(sed -n 1p "$ws/.relay/status.log" | cut -f2)"
+before=$(wc -l <"$ws/.relay/status.log" | tr -d ' ')
 "$rp" set "$pf" model opus
-eq "status.log: other keys add nothing" "$before" "$(wc -l <"$runs/status.log" | tr -d ' ')"
+eq "status.log: other keys add nothing" "$before" "$(wc -l <"$ws/.relay/status.log" | tr -d ' ')"
 
 # A non-empty .json survives recovery.
 "$rp" set "$pf" status pending
@@ -370,21 +370,21 @@ eq "heal (sleep): prompt ran again" "done" "$("$rp" get "$pf" status)"
 
 # Legacy lock: an empty directory and a running prompt.
 "$rp" set "$pf" status running
-mkdir "$runs/.lock"
+mkdir "$ws/.relay/lock"
 rm -f "$runs"/demo.prompt-20.*.err
 : >"$log"
 "$watch" --once >/dev/null 2>&1
 eq "legacy lock: prompt ran again after recovery" "done" "$("$rp" get "$pf" status)"
-absent "legacy lock: lock gone" "$runs/.lock"
+absent "legacy lock: lock gone" "$ws/.relay/lock"
 has "legacy lock: fresh err has the note" "$(first "$runs"/demo.prompt-20.*.err)" "recovered: watcher/claude died with the prompt 'running'; set to pending"
 eq "legacy lock: recovered line logged" recovered "$(head -n 1 "$log" | cut -f5)"
 eq "legacy lock: log names the prompt" docs/plans/demo.prompt-20.md "$(head -n 1 "$log" | cut -f3)"
 
 # Legacy lock, nothing running: just removed, file column -.
-mkdir "$runs/.lock"
+mkdir "$ws/.relay/lock"
 : >"$log"
 "$watch" --once >/dev/null 2>&1
-absent "legacy lock without running prompt: lock gone" "$runs/.lock"
+absent "legacy lock without running prompt: lock gone" "$ws/.relay/lock"
 eq "legacy lock without running prompt: file column -" - "$(head -n 1 "$log" | cut -f3)"
 
 # A live lock is respected, even when the prompt reads pending (not retried).
@@ -392,31 +392,31 @@ eq "legacy lock without running prompt: file column -" - "$(head -n 1 "$log" | c
 FAKE_MODE="sleep" "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
 wpid=$!
 wait_claude "$pf"
-cpid=$(cat "$runs/.lock/claude.pid")
+cpid=$(cat "$ws/.relay/lock/claude.pid")
 "$rp" set "$pf" status pending
 : >"$FAKE_ARGV"
 "$watch" --once >"$tmp/out2" 2>"$tmp/stderr2"
 has "live lock: says in progress" "$tmp/stderr2" "in progress, lock held by claude $cpid (docs/plans/demo.prompt-20.md)"
 eq "live lock: prompt not retried" pending "$("$rp" get "$pf" status)"
 eq "live lock: claude not started again" "" "$(cat "$FAKE_ARGV")"
-exists "live lock: lock still there" -d "$runs/.lock"
+exists "live lock: lock still there" -d "$ws/.relay/lock"
 kill -TERM "$wpid"
 wait "$wpid"
 eq "live lock: first watcher still exits 130 on TERM" 130 $?
 if kill -0 "$cpid" 2>/dev/null; then ko "live lock: claude gone after TERM"; else ok "live lock: claude gone after TERM"; fi
-absent "live lock: lock released after TERM" "$runs/.lock"
+absent "live lock: lock released after TERM" "$ws/.relay/lock"
 
 # SIGHUP behaves like SIGTERM.
 "$rp" set "$pf" status pending
 FAKE_MODE="sleep" "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
 wpid=$!
 wait_claude "$pf"
-cpid=$(cat "$runs/.lock/claude.pid")
+cpid=$(cat "$ws/.relay/lock/claude.pid")
 kill -HUP "$wpid"
 wait "$wpid"
 eq "SIGHUP: watcher exits 130" 130 $?
 eq "SIGHUP: prompt back to pending" pending "$("$rp" get "$pf" status)"
-absent "SIGHUP: lock released" "$runs/.lock"
+absent "SIGHUP: lock released" "$ws/.relay/lock"
 if kill -0 "$cpid" 2>/dev/null; then ko "SIGHUP: claude is gone"; else ok "SIGHUP: claude is gone"; fi
 has "SIGHUP: err names the signal" "$(find "$runs" -name 'demo.prompt-20.*.err' -print | sort | tail -n 1)" "(SIGHUP)"
 
@@ -424,7 +424,7 @@ has "SIGHUP: err names the signal" "$(find "$runs" -name 'demo.prompt-20.*.err' 
 FAKE_MODE=stubborn RELAY_STOP_GRACE=2 "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
 wpid=$!
 wait_claude "$pf"
-cpid=$(cat "$runs/.lock/claude.pid")
+cpid=$(cat "$ws/.relay/lock/claude.pid")
 t0=$(date +%s)
 kill -TERM "$wpid"
 wait "$wpid"
@@ -432,13 +432,13 @@ eq "stubborn: watcher exits 130" 130 $?
 if [ $(($(date +%s) - t0)) -le 20 ]; then ok "stubborn: stopped within 20 s"; else ko "stubborn: stopped within 20 s"; fi
 if kill -0 "$cpid" 2>/dev/null; then ko "stubborn: claude PID gone (KILL)"; else ok "stubborn: claude PID gone (KILL)"; fi
 eq "stubborn: prompt pending" pending "$("$rp" get "$pf" status)"
-absent "stubborn: lock released" "$runs/.lock"
+absent "stubborn: lock released" "$ws/.relay/lock"
 rm -f "$pf"
 
 # --dry-run takes and releases the lock.
 prompt demo.prompt-21.md sonnet pending
 "$watch" --once --dry-run >/dev/null 2>&1
-absent "dry-run: lock absent afterwards" "$runs/.lock"
+absent "dry-run: lock absent afterwards" "$ws/.relay/lock"
 rm -f "$ws/docs/plans/demo.prompt-21.md"
 
 # --- after: waiting line, logged once --------------------------------------
@@ -464,13 +464,13 @@ git -C "$wr" merge -q --no-edit dep
 "$watch" --once >/dev/null 2>&1
 eq "merged dependency: prompt runs" "done" "$("$rp" get "$ws/docs/plans/demo.prompt-5.md" status)"
 
-lines=$(wc -l <"$ws/docs/status/LATEST" | tr -d ' ')
+lines=$(wc -l <"$ws/.relay/LATEST" | tr -d ' ')
 git -C "$wr" branch feat/x
 want=$(git -C "$wr" rev-parse --short feat/x)
 prompt demo.prompt-6.md sonnet pending
 "$watch" --once >/dev/null 2>&1
-eq "LATEST: commit is the short hash of the branch" "$want" "$(tail -n 1 "$ws/docs/status/LATEST" | cut -f5)"
-eq "LATEST: one line per run, none for waiting/misnamed" $((lines + 1)) "$(wc -l <"$ws/docs/status/LATEST" | tr -d ' ')"
+eq "LATEST: commit is the short hash of the branch" "$want" "$(tail -n 1 "$ws/.relay/LATEST" | cut -f5)"
+eq "LATEST: one line per run, none for waiting/misnamed" $((lines + 1)) "$(wc -l <"$ws/.relay/LATEST" | tr -d ' ')"
 rm -f "$ws/docs/plans/demo.prompt-6.md"
 
 # --- misnamed pending file, logged once ----------------------------------------
@@ -531,7 +531,7 @@ export FAKE_TMUX_LOG=$tmp/tmux.log
 
 # A second workspace, alone in the config, so the earlier state does not matter.
 ws=$tmp/ops
-runs=$ws/docs/status/runs
+runs=$ws/.relay/runs
 mkdir -p "$ws"/docs/{plans,status} "$ws"/repos
 printf '%s\n' "$ws" >"$XDG_CONFIG_HOME/relay/workspaces"
 git init -q -b main "$ws/repos/demo"
@@ -573,13 +573,13 @@ st
 eq "status: dead run exits 1" 1 $?
 has "status: stale lock" "$tmp/st.out" "STALE: claude $cpid dead on docs/plans/demo.prompt-1.md"
 has "status: dead watcher" "$tmp/st.out" "watcher: dead (stale pid file, pid $wpid)"
-snap() { find "$ws" "$XDG_STATE_HOME" -type f -exec cksum {} + | sort; ls -A "$runs/.lock"; }
+snap() { find "$ws" "$XDG_STATE_HOME" -type f -exec cksum {} + | sort; ls -A "$ws/.relay/lock"; }
 before=$(snap)
 "$watch" recover --dry-run >"$tmp/out" 2>"$tmp/stderr"
 eq "recover --dry-run exits 0" 0 $?
 has "dry-run: would set pending" "$tmp/out" "would set docs/plans/demo.prompt-1.md pending"
 has "dry-run: would remove the empty json" "$tmp/out" "would remove empty $runs/$run.json"
-has "dry-run: would remove the lock" "$tmp/out" "would remove lock $runs/.lock"
+has "dry-run: would remove the lock" "$tmp/out" "would remove lock $ws/.relay/lock"
 eq "dry-run: nothing changed" "$before" "$(snap)"
 eq "dry-run: prompt still running" running "$("$rp" get "$pf" status)"
 "$watch" recover >"$tmp/out" 2>"$tmp/stderr"
@@ -587,7 +587,7 @@ eq "recover exits 0" 0 $?
 has "recover: stderr line" "$tmp/stderr" "recovered stale lock (claude $cpid dead)"
 has "recover: err note" "$runs/$run.err" "recovered: watcher/claude died with the prompt 'running'; set to pending"
 eq "recover: prompt pending" pending "$("$rp" get "$pf" status)"
-absent "recover: lock gone" "$runs/.lock"
+absent "recover: lock gone" "$ws/.relay/lock"
 absent "recover: empty json gone" "$runs/$run.json"
 eq "recover: logged" recovered "$(head -n 1 "$log" | cut -f5)"
 "$watch" recover >"$tmp/out" 2>&1
@@ -596,12 +596,12 @@ has "recover: says so" "$tmp/out" "nothing to recover"
 rm -f "$XDG_STATE_HOME"/relay/watcher.*
 
 # A live watcher with a dead claude is between claude's exit and release_lock.
-mkdir "$runs/.lock"
-echo $$ >"$runs/.lock/watcher.pid"
-echo "$cpid" >"$runs/.lock/claude.pid"
-echo docs/plans/demo.prompt-1.md >"$runs/.lock/prompt"
-echo "$run" >"$runs/.lock/run"
-date +%Y-%m-%dT%H:%M:%S%z >"$runs/.lock/started"
+mkdir "$ws/.relay/lock"
+echo $$ >"$ws/.relay/lock/watcher.pid"
+echo "$cpid" >"$ws/.relay/lock/claude.pid"
+echo docs/plans/demo.prompt-1.md >"$ws/.relay/lock/prompt"
+echo "$run" >"$ws/.relay/lock/run"
+date +%Y-%m-%dT%H:%M:%S%z >"$ws/.relay/lock/started"
 "$rp" set "$pf" status running
 st
 eq "status: live watcher, dead claude is not stale" 0 $?
@@ -613,8 +613,8 @@ has "recover: names the owner" "$tmp/stderr" "lock held by watcher $$"
 "$watch" --once >/dev/null 2>"$tmp/stderr"
 has "pass: skips it as in progress" "$tmp/stderr" "in progress, lock held by watcher $$"
 eq "recover/pass left everything alone" "$before" "$(snap)"
-rm -f "$runs/.lock"/*
-rmdir "$runs/.lock"
+rm -f "$ws/.relay/lock"/*
+rmdir "$ws/.relay/lock"
 
 # running prompt without a lock
 st
@@ -636,7 +636,7 @@ eq "status: live run exits 0" 0 $?
 has "status: watcher alive with flags" "$tmp/st.out" "watcher: alive (pid $wpid, flags: --interval 1000)"
 has "status: claude alive since" "$tmp/st.out" "alive since"
 has "status: running prompt listed" "$tmp/st.out" "1 running (demo.prompt-1)"
-cpid=$(cat "$runs/.lock/claude.pid")
+cpid=$(cat "$ws/.relay/lock/claude.pid")
 "$watch" restart >"$tmp/out" 2>"$tmp/stderr"
 eq "restart: refused during a live run" 1 $?
 has "restart: names the prompt" "$tmp/stderr" "docs/plans/demo.prompt-1.md is running"
@@ -858,7 +858,7 @@ rm -f "$FAKE_OSA"
 
 nprompt demo.prompt-1.md sonnet pending
 FAKE_MODE=noflip FAKE_SF=$sf RELAY_NOTIFY_OPEN=1 "$watch" --once >/dev/null 2>&1
-has "notify failed: status file and err" "$FAKE_OSA" "demo.prompt-1 failed → docs/status/2026-10-29-demo.prompt-1.md, runs/demo.prompt-1."
+has "notify failed: status file and err" "$FAKE_OSA" "demo.prompt-1 failed → docs/status/2026-10-29-demo.prompt-1.md, .relay/runs/demo.prompt-1."
 has "notify failed: err suffix" "$FAKE_OSA" ".err"
 has "RELAY_NOTIFY_OPEN=1 opens on failed too" "$FAKE_OPEN" "$sf"
 rm -f "$FAKE_OSA" "$FAKE_OPEN" "$sf"
@@ -908,6 +908,64 @@ eq "status next: done unmerged, oldest first, releases" "  next: review demo.pro
 git -C "$ws/repos/demo" merge -q --no-edit feat/a
 git -C "$ws/repos/demo" merge -q --no-edit feat/b
 eq "status next: merged → pending" "  next: wait (2 pending)" "$(nx)"
+ws=$tmp/ws
+
+# --- .relay/config: plans_dir, status_dir, default_branch -------------------
+
+ws2=$tmp/ws2
+mkdir -p "$ws2/work/queue" "$ws2/work/notes" "$ws2/.relay"
+printf '%s\n' '# custom layout' 'plans_dir=work/queue' 'status_dir = work/notes' 'bogus line' 'unknown=1' >"$ws2/.relay/config"
+cfgprompt() { # cfgprompt <file> <status> <branch> [after]
+  {
+    printf '%s\n' '---' 'model: sonnet' "status: $2" 'repo: demo' "branch: $3"
+    [ -z "${4:-}" ] || printf 'after: %s\n' "$4"
+    printf '%s\n' '---' '# demo'
+  } >"$1"
+}
+cfgprompt "$ws2/work/queue/demo.prompt-1.md" pending feat/x
+git -C "$ws2" init -q
+git -C "$ws2" add -A
+git -C "$ws2" commit -q -m "start"
+ws3=$tmp/ws3
+mkdir -p "$ws3/docs/plans" "$ws3/docs/status/runs" "$ws3/repos/demo" "$ws3/.relay"
+: >"$ws3/docs/status/LATEST"
+git -C "$ws3/repos/demo" init -q -b trunk
+git -C "$ws3/repos/demo" commit -q --allow-empty -m base
+git -C "$ws3/repos/demo" checkout -q -b feat/t
+git -C "$ws3/repos/demo" commit -q --allow-empty -m t
+git -C "$ws3/repos/demo" checkout -q trunk
+mkdir -p "$tmp/cfg2/relay"
+printf '%s\n' "$ws2" "$ws3" >"$tmp/cfg2/relay/workspaces"
+cfgprompt "$ws3/docs/plans/demo.prompt-1.md" done feat/t
+cfgprompt "$ws3/docs/plans/demo.prompt-2.md" pending feat/u feat/t
+printf '%s\n' 'default_branch=trunk' >"$ws3/.relay/config"
+
+: >"$tmp/osa"
+XDG_CONFIG_HOME=$tmp/cfg2 FAKE_SF=$ws2/work/notes/2026-10-29-demo.prompt-1.md "$watch" --once >"$tmp/out" 2>"$tmp/stderr"
+eq "config: plans_dir: prompt from work/queue ran" done "$("$rp" get "$ws2/work/queue/demo.prompt-1.md" status)"
+eq "config: plans_dir: claude gets the configured path" "/relay:next work/queue/demo.prompt-1.md" "$(sed -n '/^-p$/{n;p;}' "$FAKE_ARGV")"
+has "config: status_dir: notification names work/notes file" "$tmp/osa" "work/notes/2026-10-29-demo.prompt-1.md"
+has "config: malformed line is a warning" "$tmp/stderr" "not key=value"
+eq "config: status.log lands in .relay/" "work/queue/demo.prompt-1.md" "$(sed -n 1p "$ws2/.relay/status.log" | cut -f2)"
+json2=$(first "$ws2"/.relay/runs/demo.prompt-1.*.json)
+err2=${json2%.json}.err
+eq "run log commit holds .relay/runs and LATEST, not the lock" ".relay/LATEST
+.relay/runs/${err2##*/}
+.relay/runs/${json2##*/}
+.relay/status.log" "$(git -C "$ws2" show --name-only --format= HEAD | sort)"
+absent "config: lock released" "$ws2/.relay/lock"
+
+XDG_CONFIG_HOME=$tmp/cfg2 "$watch" status ws3 >"$tmp/st.out" 2>&1
+has "default_branch=trunk: unmerged branch is reviewed" "$tmp/st.out" "next: review demo.prompt-1 (feat/t, (no status file)), then merge; releases demo.prompt-2"
+has "legacy run log: status warns" "$tmp/st.out" "warn: legacy run log at docs/status/runs — move it: git mv docs/status/runs .relay/runs && git mv docs/status/LATEST .relay/LATEST"
+git -C "$ws3/repos/demo" merge -q --no-edit feat/t
+XDG_CONFIG_HOME=$tmp/cfg2 "$watch" status ws3 >"$tmp/st.out" 2>&1
+has "default_branch=trunk: merged branch → next is the waiting prompt" "$tmp/st.out" "next: wait (1 pending)"
+rmdir "$ws3/docs/status/runs"
+XDG_CONFIG_HOME=$tmp/cfg2 "$watch" status ws3 >"$tmp/st.out" 2>&1
+has "legacy: only LATEST left" "$tmp/st.out" "move it: git mv docs/status/LATEST .relay/LATEST"
+XDG_CONFIG_HOME=$tmp/cfg2 "$watch" doctor >"$tmp/doc.out" 2>&1
+has "legacy run log: doctor warns" "$tmp/doc.out" "warn workspace $ws3: legacy run log at docs/status/runs"
 ws=$tmp/ws
 
 # --- summary -------------------------------------------------------------

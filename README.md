@@ -11,8 +11,9 @@ where the planning session picks it up. Code commits happen only at the
 checkpoints a prompt defines, on the prompt's branch; merging and pushing
 stay with the human, and a commit guard keeps workspace files out of the
 repository (a workspace repository itself — one with `docs/WORKFLOW.md` at its
-top level — may commit its own `docs/` files; `.claude/`, `*.local.md` and the
-rest are still refused).
+top level — may commit its own `docs/` files and its `.relay/` run log, except
+`.relay/lock/`; in a code repository anything under `.relay/` is refused, as
+are `.claude/`, `*.local.md` and the rest).
 
 Install the plugin from this repository's marketplace, inside a Claude Code
 session: `/plugin marketplace add <path-or-github>` (a local clone path, or
@@ -36,8 +37,8 @@ the name and description, and writes a workspace `.gitconfig` with your git
 identity (and `core.sshCommand` when `--ssh-key` is given). It never edits
 `~/.gitconfig`; instead it prints the `includeIf` block to add there, so every
 repo cloned under `repos/` picks up that identity. The workspace becomes its
-own private git repository (`git init -b main`, with `repos/`, `.claude/` and
-`.DS_Store` ignored — the template is the source of truth for
+own private git repository (`git init -b main`, with `repos/`, `.claude/`,
+`.DS_Store` and `.relay/lock/` ignored — the template is the source of truth for
 `settings.local.json`) so plans and status notes have a history; the output
 shows how to attach a private remote. It refuses to overwrite an existing directory. An
 existing project does not need the template — install the plugin and keep
@@ -96,12 +97,12 @@ than waiting for a human who is not there, so such a run ends `blocked` or
 `failed` instead of hanging. The template denies `git push` and
 `npm publish`. Never use `--dangerously-skip-permissions`.
 
-Outputs land in the workspace, under `docs/status/runs/`: the JSON result
+Outputs land in the workspace, under `.relay/runs/`: the JSON result
 in `<topic>.prompt-N.<YYYYMMDD-HHMMSS>.json`, stderr in the matching
 `.err`. They are kept in the workspace repository as the run log: the JSON
 holds the result and metadata, not a transcript, and goes into the
-workspace's `docs:` commits with the plans and status notes. A `.lock` directory
-there keeps two watchers off the same workspace; a locked workspace is
+workspace's `docs:` commits with the plans and status notes. A `.relay/lock`
+directory keeps two watchers off the same workspace; a locked workspace is
 skipped. If `claude` exits and the prompt is still `running` (the run died)
 or still `pending` (the skill never started — plugin missing, login expired),
 the watcher sets it to `failed` and says so in the `.err` file, so nothing
@@ -116,7 +117,7 @@ at the top of the status file. Set `RELAY_NOTIFY=0` to turn it off; on
 systems without `osascript` nothing is sent.
 
 For the planning side there is one more file: after each finished run the
-watcher appends a line to `docs/status/LATEST` in the workspace
+watcher appends a line to `.relay/LATEST` in the workspace
 (tab-separated: time, prompt stem, final status, branch, short commit of that
 branch in `repos/<repo>`, exit code or `interrupted`, seconds) and commits it
 with the run log. The notification comes first; on "check" (or right after enqueueing) the
@@ -182,7 +183,7 @@ watcher start picks the prompt up again.
 
 #### Stale locks and stopping
 
-The `.lock` directory records who holds it: `watcher.pid`, `prompt` (path in
+The `.relay/lock` directory records who holds it: `watcher.pid`, `prompt` (path in
 the workspace), `run` (`<stem>.<stamp>`, the name shared by the run's `.json`
 and `.err`), `started`, and `claude.pid` once `claude` is up. `claude` runs in
 its own process group. Before it looks for a pending prompt, every pass checks
@@ -208,7 +209,7 @@ whatever `claude.pid` says: the watcher is between `claude`'s exit and releasing
 the lock.
 
 Every change of a prompt's `status` made by `relay-prompt set` is appended to
-`docs/status/runs/status.log` (time, file, old, new, pid, parent pid, parent
+`.relay/status.log` (time, file, old, new, pid, parent pid, parent
 command), so an unexpected flip can be traced to its caller.
 
 `relay-watch install [dir]` symlinks `relay-watch` and `plugin/bin/relay-prompt`
@@ -218,7 +219,7 @@ to overwrite anything that is not one.
 
 ### Prompt files
 
-A prompt file is `docs/plans/<topic>.prompt-<N><suffix>.md`: `N` is digits and
+A prompt file is `<plans_dir>/<topic>.prompt-<N><suffix>.md`: `N` is digits and
 `suffix` is empty, lowercase letters (`5b`) or a dash and `[a-z0-9-]` (`5-fix`).
 Nothing else is picked up (`prompt-x.md`, `prompt-5 draft.md`). Order: `N`
 numerically, plain `N` before any suffix, suffixes in byte order, then oldest
@@ -229,15 +230,37 @@ existing ones.
 
 | Command | Effect |
 |---|---|
-| `get <file> <key>` / `set <file> <key> <value>` | read / write one front-matter key; a `status` change is logged to `docs/status/runs/status.log` |
+| `get <file> <key>` / `set <file> <key> <value>` | read / write one front-matter key; a `status` change is logged to `.relay/status.log` |
 | `next <ws>` | print the next pending prompt; exit 1 if none |
 | `waiting <ws>` | list pending prompts held back by `after:` |
 | `check <ws> <file>` | exit 0 if the file's `after:` is satisfied |
-| `lint <ws>` | list `pending`/`running` files in `docs/plans/` whose name does not match the pattern, as `<file>\t<reason>`; exit 1 if any |
+| `lint <ws>` | list `pending`/`running` files in the plans directory whose name does not match the pattern, as `<file>\t<reason>`; exit 1 if any |
 
 `relay-watch` logs each such file once as a `misnamed` line (time, `misnamed`,
 workspace, file, reason; state in `misnamed.seen` next to `waiting.seen`), next
 to the `waiting` lines; renaming the file to a valid name is enough.
+
+### Workspace config
+
+An optional `<ws>/.relay/config` (`key=value` lines, `#` comments, no quotes)
+moves the directories relay reads from and names the integration branch:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `plans_dir` | `docs/plans` | where prompt files live |
+| `status_dir` | `docs/status` | where status files are written and looked up |
+| `default_branch` | `main` | what `after:` and the review/merge hints compare against |
+
+```
+plans_dir=work/queue
+status_dir=work/notes
+default_branch=trunk
+```
+
+Paths are relative to the workspace root. Unknown keys are ignored and a line
+without `=` is a warning, not an error. Everything relay writes for itself is
+under `.relay/` (`runs/`, `LATEST`, `status.log`, `lock/`); everything a human
+reads stays under `docs/`.
 
 ### Prompt front matter
 
@@ -248,7 +271,7 @@ to the `waiting` lines; renaming the file to a valid name is enough.
 | `repo` | folder under `repos/` | required |
 | `branch` | branch name | required |
 | `worktree` | suffix | optional; work in `repos/<repo>-<suffix>` |
-| `after` | branch name | optional; the prompt waits until that branch is merged into `main` of `repos/<repo>`. A branch that no longer exists counts as merged if a done prompt used it as `branch:` or `main` has a merge commit naming it; a branch that never existed is a planning error: the prompt keeps waiting and `relay-prompt` warns. `relay-prompt waiting <ws>` lists what is held back and why; `relay-watch` logs a `waiting` line per held prompt at most every 10 minutes. |
+| `after` | branch name | optional; the prompt waits until that branch is merged into `default_branch` (`main`) of `repos/<repo>`. A branch that no longer exists counts as merged if a done prompt used it as `branch:` or that branch has a merge commit naming it; a branch that never existed is a planning error: the prompt keeps waiting and `relay-prompt` warns. `relay-prompt waiting <ws>` lists what is held back and why; `relay-watch` logs a `waiting` line per held prompt at most every 10 minutes. |
 
 Planning-side rule: a prompt that depends on another prompt's branch declares
 `after:` and is enqueued as `pending`; nothing is parked as `blocked` for that
@@ -257,6 +280,11 @@ ends `blocked`, so an explicit path cannot bypass the dependency.
 
 ### One-time setup notes
 
+- **Upgrading from 0.x.** The run log moved from `docs/status/` to `.relay/`.
+  In each workspace: `git mv docs/status/runs .relay/runs && git mv
+  docs/status/LATEST .relay/LATEST` (only the parts that exist; `status` and
+  `doctor` print a `warn:` while the old paths remain), then
+  `relay-watch restart`. Nothing is migrated automatically.
 - **Git identity per workspace.** `relay-init` writes `<workspace>/.gitconfig`
   and prints an `includeIf` block for `~/.gitconfig`; add it once, so every
   repo under `repos/` (and the workspace itself) commits with that identity

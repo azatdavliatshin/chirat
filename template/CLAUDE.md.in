@@ -19,6 +19,7 @@ user.* inside a repo.
 | `CLAUDE.md` | This file — main context |
 | `.claude/settings.local.json` | Local permissions for this workspace |
 | `.gitconfig` | Git identity for every repo under this workspace (via `includeIf` in `~/.gitconfig`) |
+| `.relay/` | relay's own state: run log, `LATEST`, lock; optional `config` (`plans_dir`, `status_dir`, `default_branch`) |
 | `docs/WORKFLOW.md` | Private process guide (never shared) |
 | `docs/PARKED.md` | Deferred ideas / open questions |
 | `docs/input/` | **Read-only.** Incoming material |

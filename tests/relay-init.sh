@@ -80,7 +80,7 @@ eq ".gitconfig has no other keys" 3 "$(git config -f "$ws/.gitconfig" --list | w
 eq "git rev-parse works in the workspace" "true" "$(git -C "$ws" rev-parse --is-inside-work-tree 2>/dev/null)"
 eq "workspace branch is main" main "$(git -C "$ws" symbolic-ref --short HEAD 2>/dev/null)"
 eq "workspace has no commits" "" "$(git -C "$ws" log --oneline 2>/dev/null)"
-eq ".gitignore content" "$(printf 'repos/\n.claude/\n.DS_Store')" "$(cat "$ws/.gitignore")"
+eq ".gitignore content" "$(printf 'repos/\n.claude/\n.DS_Store\n.relay/lock/')" "$(cat "$ws/.gitignore")"
 mkdir -p "$ws/repos/x"
 echo "y" >"$ws/repos/x/file"
 touch "$ws/.DS_Store"
@@ -94,6 +94,10 @@ if git -C "$ws" status --porcelain | grep -q 'DS_Store'; then
 else
   ok ".DS_Store is ignored by the workspace repo"
 fi
+exists ".relay/config exists in a new workspace" -f "$ws/.relay/config"
+has ".relay/config documents plans_dir" "$ws/.relay/config" "# plans_dir=docs/plans"
+has ".gitignore has .relay/lock/" "$ws/.gitignore" ".relay/lock/"
+absent "dot-relay is renamed" "$ws/dot-relay"
 if git -C "$ws" status --porcelain --ignored | grep -q '^!! .claude/'; then
   ok ".claude/ is ignored by the workspace repo"
 else
@@ -142,7 +146,7 @@ done
 
 fpline=$(grep '^W=' "$root/plugin/skills/poll/SKILL.md")
 fp() { bash -c "$(printf '%s' "$fpline" | sed "s|^W=[^;]*;|W=$ws;|")"; }
-mkdir -p "$ws/docs/status/runs"
+mkdir -p "$ws/.relay/runs"
 printf -- '---\nmodel: sonnet\nstatus: pending\nrepo: r\nbranch: b\n---\n' >"$ws/docs/plans/t.prompt-1.md"
 fp1=$(fp)
 eq "fingerprint is stable" "$fp1" "$(fp)"

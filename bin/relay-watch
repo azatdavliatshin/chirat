@@ -10,16 +10,16 @@
 #
 # Every --interval seconds (default 60) each workspace is asked for its next
 # pending prompt (`relay-prompt next`). For a hit, relay-watch takes the lock
-# <ws>/docs/status/runs/.lock, runs from <ws>
+# <ws>/.relay/lock, runs from <ws>
 #
 #   claude -p "/relay:next <file>" --model <model> --permission-mode <mode>
 #          --permission-prompts none --output-format json
 #
-# with stdout in <ws>/docs/status/runs/<stem>.<YYYYMMDD-HHMMSS>.json and stderr
+# with stdout in <ws>/.relay/runs/<stem>.<YYYYMMDD-HHMMSS>.json and stderr
 # appended to the matching .err, and marks the prompt `failed` if the run left
 # it `running`. If <ws> is a git repository, the run log is then committed as
-# `docs: run log <stem>` (docs/status/runs/ and docs/status/LATEST; never
-# pushed). One line per run goes to ~/.local/state/relay/watch.log
+# `docs: run log <stem>` (.relay/runs/, .relay/LATEST and .relay/status.log;
+# never the lock; never pushed). One line per run goes to ~/.local/state/relay/watch.log
 # ($XDG_STATE_HOME honoured) and to stdout:
 #
 #   <iso time> <tab> <ws> <tab> <file> <tab> <model> <tab> <exit> <tab> <seconds>
@@ -72,7 +72,7 @@
 #   <iso time> <tab> waiting <tab> <ws> <tab> <file> <tab> after=<branch>
 # at most once per 10 minutes (state in <log dir>/waiting.seen).
 #
-# A pending or running file in docs/plans/ whose name does not match
+# A pending or running file in <plans_dir>/ whose name does not match
 # <topic>.prompt-<N><suffix>.md is never picked up (`relay-prompt lint`). Each
 # pass logs it, once per file ever (state in <log dir>/misnamed.seen):
 #   <iso time> <tab> misnamed <tab> <ws> <tab> <file> <tab> <reason>
@@ -100,7 +100,7 @@
 # prompt and the lock are left as they are and the exit column says
 # `interrupted-alive`; the next start then waits for that claude.
 #
-# Each finished run also appends one line to <ws>/docs/status/LATEST, the file
+# Each finished run also appends one line to <ws>/.relay/LATEST, the file
 # the planning side reads instead of polling (not written by --dry-run, nor
 # for waiting / misnamed lines):
 #
@@ -119,12 +119,20 @@
 #   done      <stem> done → review <status file>, merge <branch>
 #   blocked   <stem> needs a decision → question at the top of <status file>
 #   failed    <stem> failed → <status file>, runs/<stem>.<stamp>.err
-#   other     <stem> <status> → <ws>/docs/status      (pending after an interrupt)
+#   other     <stem> <status> → <ws>/<status_dir>      (pending after an interrupt)
 #
-# <status file> is the newest docs/status/*<stem>*.md modified since the run
+# <status file> is the newest <status_dir>/*<stem>*.md modified since the run
 # started, relative to the workspace, or (no status file). macOS only
 # (osascript); silently skipped elsewhere or with RELAY_NOTIFY=0.
 # RELAY_NOTIFY_OPEN=1 also opens that file (`open`) for done / blocked / failed.
+#
+# Everything relay writes for itself lives in <ws>/.relay/ (runs/, LATEST,
+# status.log, lock/); everything a human reads stays under docs/. The optional
+# <ws>/.relay/config (`key=value` lines, `#` comments, no quotes; paths relative
+# to the workspace root) sets plans_dir (default docs/plans), status_dir
+# (default docs/status) and default_branch (default main). Unknown keys are
+# ignored. A run log still at docs/status/runs is reported by status and doctor
+# (`warn:`) and is not migrated.
 #
 # Needs bash, git, claude; jq is optional. macOS first (BSD date and stat),
 # but nothing here is macOS-only.
@@ -248,6 +256,40 @@ workspaces() {
   done <"$config"
 }
 
+# relay_config <ws> <key> <default>: value of <key> in <ws>/.relay/config, else
+# <default>. Identical copy lives in plugin/bin/relay-prompt (that one stays standalone).
+relay_config() {
+  local f=$1/.relay/config line k v val=$3 n=0
+  if [ -f "$f" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      n=$((n + 1))
+      line=${line#"${line%%[![:space:]]*}"}
+      case $line in '' | '#'*) continue ;; esac
+      case $line in
+        *=*) ;;
+        *) echo "relay: warning: $f:$n: not key=value, ignored" >&2; continue ;;
+      esac
+      k=${line%%=*}
+      v=${line#*=}
+      k=${k%"${k##*[![:space:]]}"}
+      v=${v#"${v%%[![:space:]]*}"}
+      v=${v%"${v##*[![:space:]]}"}
+      if [ "$k" = "$2" ] && [ -n "$v" ]; then val=$v; fi
+    done <"$f"
+  fi
+  printf '%s\n' "$val"
+}
+
+# legacy_msg <ws>: the move-it hint when a run log is still under docs/status
+legacy_msg() {
+  local cmd=""
+  [ -e "$1/docs/status/runs" ] && cmd="git mv docs/status/runs .relay/runs"
+  if [ -e "$1/docs/status/LATEST" ]; then
+    cmd="${cmd:+$cmd && }git mv docs/status/LATEST .relay/LATEST"
+  fi
+  [ -z "$cmd" ] || printf 'legacy run log at docs/status/runs — move it: %s\n' "$cmd"
+}
+
 log_line() { # log_line <ws> <file> <model> <exit> <seconds>
   local line
   line=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' "$(now_iso)" "$1" "$2" "$3" "$4" "$5" "$mode")
@@ -348,13 +390,16 @@ trap 'sig=SIGTERM; interrupted' TERM
 trap 'sig=SIGHUP; interrupted' HUP
 
 # The run log is complete only once claude has exited, so the skill leaves
-# docs/status/runs/ and docs/status/LATEST out of its own commit; both are
-# committed here. Failure
+# the run log out of its own commit; .relay/runs, .relay/LATEST and
+# .relay/status.log are committed here, never .relay/lock. Failure
 # (not a git workspace, nothing to commit) is ignored.
 commit_run_log() { # commit_run_log <ws> <stem>
   git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 0
-  local paths=(docs/status/runs)
-  [ -e "$1/docs/status/LATEST" ] && paths+=(docs/status/LATEST)
+  local paths=() p
+  for p in .relay/runs .relay/LATEST .relay/status.log; do
+    [ -e "$1/$p" ] && paths+=("$p")
+  done
+  [ ${#paths[@]} -gt 0 ] || return 0
   git -C "$1" add -- "${paths[@]}" >/dev/null 2>&1 || return 0
   git -C "$1" commit -q -m "docs: run log $2" -- "${paths[@]}" >/dev/null 2>&1 || true
 }
@@ -363,6 +408,7 @@ commit_run_log() { # commit_run_log <ws> <stem>
 # truncated.
 write_latest() { # write_latest <ws> <file> <stem> <exit> <seconds>
   local ws=$1 file=$2 status branch repo commit=- hash
+  mkdir -p "$ws/.relay"
   status=$("$relay_prompt" get "$file" status 2>/dev/null) || status=""
   branch=$("$relay_prompt" get "$file" branch 2>/dev/null) || branch=""
   repo=$("$relay_prompt" get "$file" repo 2>/dev/null) || repo=""
@@ -370,17 +416,18 @@ write_latest() { # write_latest <ws> <file> <stem> <exit> <seconds>
     hash=$(git -C "$ws/repos/$repo" rev-parse --short --verify -q "refs/heads/$branch" 2>/dev/null) && [ -n "$hash" ] && commit=$hash
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(now_iso)" "$3" "${status:--}" "${branch:--}" "$commit" "$4" "$5" \
-    >>"$ws/docs/status/LATEST"
+    >>"$ws/.relay/LATEST"
 }
 
 file_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
-# status_file_for <ws> <stem> [min mtime]: the newest docs/status/*<stem>*.md
+# status_file_for <ws> <stem> [min mtime]: the newest <status_dir>/*<stem>*.md
 # (modified at or after min mtime), relative to <ws>; nothing when none.
 # prompt-1 does not match prompt-16: a digit may not follow the stem.
 status_file_for() {
-  local ws=$1 stem=$2 min=${3:-0} f name t best="" best_t=0
-  for f in "$ws"/docs/status/*"$stem"*.md; do
+  local ws=$1 stem=$2 min=${3:-0} f name t best="" best_t=0 sd
+  sd=$(relay_config "$ws" status_dir docs/status)
+  for f in "$ws/$sd"/*"$stem"*.md; do
     [ -f "$f" ] || continue
     name=${f##*/}
     case ${name#*"$stem"} in [0-9]*) continue ;; esac
@@ -394,14 +441,16 @@ status_file_for() {
 
 notify() { # notify <ws> <stem> <status> <started epoch> <run>: desktop notification, best effort
   [ "${RELAY_NOTIFY:-1}" != 0 ] || return 0
-  local ws=$1 stem=$2 st=$3 sf branch text title="relay: $3"
+  local ws=$1 stem=$2 st=$3 sf branch text title="relay: $3" pd sd
+  pd=$(relay_config "$ws" plans_dir docs/plans)
+  sd=$(relay_config "$ws" status_dir docs/status)
   sf=$(status_file_for "$ws" "$stem" "${4:-0}")
-  branch=$("$relay_prompt" get "$ws/docs/plans/$stem.md" branch 2>/dev/null) || branch=""
+  branch=$("$relay_prompt" get "$ws/$pd/$stem.md" branch 2>/dev/null) || branch=""
   case $st in
     done) text="$stem done → review ${sf:-(no status file)}, merge ${branch:--}" ;;
     blocked) text="$stem needs a decision → question at the top of ${sf:-(no status file)}" ;;
-    failed) text="$stem failed → ${sf:-(no status file)}, runs/${5:-$stem.*}.err" ;;
-    *) text="$stem $st → ${ws##*/}/docs/status" ;;
+    failed) text="$stem failed → ${sf:-(no status file)}, .relay/runs/${5:-$stem.*}.err" ;;
+    *) text="$stem $st → ${ws##*/}/$sd" ;;
   esac
   text=${text//\\/}
   text=${text//\"/}
@@ -420,14 +469,14 @@ run_one() { # run_one <ws> <prompt file>
   stem=${stem%.md}
   model=$("$relay_prompt" get "$file" model 2>/dev/null) || model=""
   [ -n "$model" ] || model=sonnet
-  runs=$ws/docs/status/runs
+  runs=$ws/.relay/runs
   mkdir -p "$runs" || return
 
-  if ! mkdir "$runs/.lock" 2>/dev/null; then
-    echo "relay-watch: $ws is locked ($runs/.lock), skipping" >&2
+  if ! mkdir "$ws/.relay/lock" 2>/dev/null; then
+    echo "relay-watch: $ws is locked ($ws/.relay/lock), skipping" >&2
     return
   fi
-  lock_dir=$runs/.lock
+  lock_dir=$ws/.relay/lock
 
   stamp=$(now_stamp)
   # A second run within the same second must not reuse (and truncate) the
@@ -486,7 +535,7 @@ iso_to_epoch() { # iso_to_epoch <iso time>: epoch seconds, or nothing
 
 # lock_read <ws>: load the lock's owner files into lk_* (empty when absent)
 lock_read() {
-  local lock=$1/docs/status/runs/.lock
+  local lock=$1/.relay/lock
   lk_cpid="" lk_wpid="" lk_rel="" lk_run="" lk_started=""
   [ -f "$lock/claude.pid" ] && lk_cpid=$(<"$lock/claude.pid")
   [ -f "$lock/watcher.pid" ] && lk_wpid=$(<"$lock/watcher.pid")
@@ -503,7 +552,7 @@ lock_read() {
 #   setup                     no claude.pid yet, the watcher is alive
 #   stale <reason>            claude dead / watcher dead / legacy lock, no owners
 lock_state() {
-  [ -d "$1/docs/status/runs/.lock" ] || { echo none; return 0; }
+  [ -d "$1/.relay/lock" ] || { echo none; return 0; }
   lock_read "$1"
   if [ -n "$lk_cpid" ] && alive "$lk_cpid"; then echo live
   elif [ -n "$lk_wpid" ] && alive "$lk_wpid"; then
@@ -529,7 +578,7 @@ in_progress() {
 # With recover_dry=1 it only prints what it would do.
 recover_dry=0
 recover_stale() {
-  local ws=$1 runs lock cpid rel run started p f status state
+  local ws=$1 runs lock cpid rel run started p f status state pd
   local err="" stem now secs=0 t model="-" first="-" word prompts=()
   state=$(lock_state "$ws")
   case $state in
@@ -538,14 +587,15 @@ recover_stale() {
   esac
   lock_read "$ws"
   cpid=$lk_cpid rel=$lk_rel run=$lk_run started=$lk_started
-  runs=$ws/docs/status/runs
-  lock=$runs/.lock
+  runs=$ws/.relay/runs
+  lock=$ws/.relay/lock
+  pd=$(relay_config "$ws" plans_dir docs/plans)
 
   # Stale. Which prompt(s) were running?
   if [ -n "$rel" ]; then
     prompts=("$ws/$rel")
   else
-    for p in "$ws"/docs/plans/*.prompt-*.md; do
+    for p in "$ws/$pd"/*.prompt-*.md; do
       [ -f "$p" ] && [ "$("$relay_prompt" get "$p" status 2>/dev/null)" = running ] && prompts+=("$p")
     done
   fi
@@ -627,10 +677,11 @@ note_misnamed() { # note_misnamed <ws>
 }
 
 pass() {
-  local ws file
+  local ws file pd
   while IFS= read -r ws; do
-    if [ ! -d "$ws/docs/plans" ]; then
-      echo "relay-watch: not a workspace (no docs/plans): $ws" >&2
+    pd=$(relay_config "$ws" plans_dir docs/plans)
+    if [ ! -d "$ws/$pd" ]; then
+      echo "relay-watch: not a workspace (no $pd): $ws" >&2
       continue
     fi
     if ! recover_stale "$ws"; then
@@ -696,16 +747,17 @@ watcher_line() {
 }
 
 # unmerged <ws> <prompt file>: success when the prompt's branch exists in
-# repos/<repo> and is not yet in main (a deleted branch counts as merged)
+# repos/<repo> and is not yet in the default branch (a deleted branch counts as merged)
 unmerged() {
-  local r b repo
+  local r b repo db
+  db=$(relay_config "$1" default_branch main)
   b=$("$relay_prompt" get "$2" branch 2>/dev/null) || return 1
   repo=$("$relay_prompt" get "$2" repo 2>/dev/null) || return 1
   r=$1/repos/$repo
   [ -n "$b" ] && [ -n "$repo" ] || return 1
-  git -C "$r" rev-parse --verify -q refs/heads/main >/dev/null 2>&1 || return 1
+  git -C "$r" rev-parse --verify -q "refs/heads/$db" >/dev/null 2>&1 || return 1
   git -C "$r" rev-parse --verify -q "refs/heads/$b" >/dev/null 2>&1 || return 1
-  ! git -C "$r" merge-base --is-ancestor "refs/heads/$b" main 2>/dev/null
+  ! git -C "$r" merge-base --is-ancestor "refs/heads/$b" "refs/heads/$db" 2>/dev/null
 }
 
 # next_line <ws> <waiting lines> <done> <blocked> <failed> <running> <n pending>
@@ -767,17 +819,20 @@ next_line() {
 
 # status_ws <ws>: one block; returns 1 when something in it is stale
 status_ws() {
-  local ws=$1 p st rel state bad=0 f after n name line running=() lw
+  local ws=$1 p st rel state bad=0 f after n name line running=() lw pd lm
   local l_done="" l_blocked="" l_failed="" l_running=""
   local cnt_pending=0 cnt_running=0 cnt_blocked=0 cnt_failed=0
   local nm_pending="" nm_running="" nm_blocked="" nm_failed=""
   echo "$ws"
-  if [ ! -d "$ws/docs/plans" ]; then
-    echo "  not a workspace (no docs/plans)"
+  pd=$(relay_config "$ws" plans_dir docs/plans)
+  if [ ! -d "$ws/$pd" ]; then
+    echo "  not a workspace (no $pd)"
     return 0
   fi
+  lm=$(legacy_msg "$ws")
+  [ -z "$lm" ] || echo "  warn: $lm"
   lw=$("$relay_prompt" waiting "$ws" 2>/dev/null)
-  for p in "$ws"/docs/plans/*.prompt-*.md; do
+  for p in "$ws/$pd"/*.prompt-*.md; do
     [ -f "$p" ] || continue
     st=$("$relay_prompt" get "$p" status 2>/dev/null) || continue
     name=${p##*/}
@@ -1065,7 +1120,7 @@ cmd_tail() {
 }
 
 cmd_doctor() {
-  local online=0 bad=0 p ws n=0 cl="" dir real want pr_path v wl
+  local online=0 bad=0 p ws n=0 cl="" dir real want pr_path v wl lm
   case ${1:-} in --online) online=1; shift ;; esac
   [ $# -eq 0 ] || usage
   ok() { echo "ok   $*"; }
@@ -1108,8 +1163,12 @@ cmd_doctor() {
       [ -n "$ws" ] || continue
       n=$((n + 1))
       if [ ! -d "$ws" ]; then fail "workspace $ws: no such directory"
-      elif [ ! -d "$ws/docs/plans" ]; then fail "workspace $ws: no docs/plans"
-      else ok "workspace $ws"; fi
+      elif [ ! -d "$ws/$(relay_config "$ws" plans_dir docs/plans)" ]; then fail "workspace $ws: no $(relay_config "$ws" plans_dir docs/plans)"
+      else
+        ok "workspace $ws"
+        lm=$(legacy_msg "$ws")
+        [ -z "$lm" ] || warn "workspace $ws: $lm"
+      fi
     done < <(workspaces)
     [ "$n" -gt 0 ] || warn "no workspaces: $config has no entries"
   fi

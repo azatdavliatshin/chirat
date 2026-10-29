@@ -6,6 +6,9 @@
 #
 # Refused staged paths:
 #   - any `.claude/` or `.planning/` directory
+#   - in a code repo, anything under `.relay/` (relay's own state belongs to
+#     the workspace); in a workspace repo only `.relay/lock/` is refused, the
+#     rest of `.relay/` (runs, LATEST, status.log, config) is the run log
 #   - `*.local.md`, `settings.local.json`, `.DS_Store`
 #   - workspace planning files: `docs/**/*.prompt-*.md`, `docs/WORKFLOW.md`,
 #     `docs/PARKED.md`, `docs/scope/BASELINE_*.md` (a repo may carry its own
@@ -74,6 +77,10 @@ while IFS= read -r path; do
   esac
   case $base in
     *.local.md | settings.local.json | .DS_Store) bad+=("$path"); continue ;;
+  esac
+  case "/$path" in
+    */.relay/lock/*) bad+=("$path"); continue ;;
+    */.relay/*) [ "$workspace_repo" = 1 ] || { bad+=("$path"); continue; } ;;
   esac
   [ "$workspace_repo" = 1 ] && continue
   case $path in

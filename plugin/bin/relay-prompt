@@ -9,7 +9,7 @@
 #   relay-prompt lint <workspace>            list pending/running files with a bad name
 #
 # A change of `status` by `set` appends one line to
-# <workspace>/docs/status/runs/status.log (who called, so an unexpected flip can
+# <workspace>/.relay/status.log (who called, so an unexpected flip can
 # be traced): <iso time> <tab> <file rel to workspace> <tab> <old> <tab> <new>
 # <tab> <pid> <tab> <ppid> <tab> <parent command> (basename; a shell script is named
 # by its script). Other keys are not logged.
@@ -18,22 +18,27 @@
 # Values are single-line `key: value`; a trailing ` # comment` is ignored.
 #
 # `status` is one of: pending | running | blocked | done | failed. `next`
-# considers only `pending` files under <workspace>/docs/plans/, named
+# considers only `pending` files under <workspace>/<plans_dir>/, named
 # <topic>.prompt-<N><suffix>.md with N digits and suffix empty, [a-z]+ (`5b`)
 # or -[a-z0-9-]+ (`5-fix`). Order: N numerically, plain N before any suffix,
 # suffixes in byte order (5 < 5-fix < 5b < 6), oldest mtime as the last
 # tie-break (a queue). `next` exits 1 when the queue is empty.
 #
-# `lint` prints `<file> <tab> <reason>` for every docs/plans/*.md whose front
+# `lint` prints `<file> <tab> <reason>` for every <plans_dir>/*.md whose front
 # matter says status pending or running but whose name does not match the
 # pattern (such a file is never picked up); exit 1 if any, else 0. Files
 # without front matter are ignored.
 #
 # Optional `after: <branch>`: the prompt is eligible only once <branch> is
-# merged into main of <workspace>/repos/<repo>. A branch that no longer exists
+# merged into <default_branch> of <workspace>/repos/<repo>. A branch that no longer exists
 # counts as merged when the workspace shows it was built (a done prompt with
 # that `branch:`, or a merge commit naming it); a branch that never existed is
 # a planning error: the prompt waits and a warning goes to stderr.
+#
+# Optional <workspace>/.relay/config (`key=value` lines, `#` comments, no
+# quotes): plans_dir (default docs/plans), default_branch (default main).
+# Paths are relative to the workspace root. Unknown keys are ignored; a line
+# without `=` is a warning on stderr.
 
 set -euo pipefail
 export LC_ALL=C # byte-order suffix comparison and [a-z] without locale surprises
@@ -46,6 +51,30 @@ usage() {
 die() {
   echo "relay-prompt: $*" >&2
   exit 1
+}
+
+# relay_config <ws> <key> <default>: value of <key> in <ws>/.relay/config, else
+# <default>. Identical copy lives in bin/relay-watch (this script stays standalone).
+relay_config() {
+  local f=$1/.relay/config line k v val=$3 n=0
+  if [ -f "$f" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      n=$((n + 1))
+      line=${line#"${line%%[![:space:]]*}"}
+      case $line in '' | '#'*) continue ;; esac
+      case $line in
+        *=*) ;;
+        *) echo "relay: warning: $f:$n: not key=value, ignored" >&2; continue ;;
+      esac
+      k=${line%%=*}
+      v=${line#*=}
+      k=${k%"${k##*[![:space:]]}"}
+      v=${v#"${v%%[![:space:]]*}"}
+      v=${v%"${v##*[![:space:]]}"}
+      if [ "$k" = "$2" ] && [ -n "$v" ]; then val=$v; fi
+    done <"$f"
+  fi
+  printf '%s\n' "$val"
 }
 
 has_front_matter() {
@@ -71,18 +100,33 @@ cmd_get() {
   ' "$file"
 }
 
-# log_status_change <file> <old> <new>: append to <ws>/docs/status/runs/status.log
-# (<ws> = the directory holding docs/plans/<file>). Never fails the caller.
+# find_ws <file>: print the workspace whose <plans_dir> holds <file>, else fail.
+find_ws() {
+  local dir a pd
+  dir=$(cd "$(dirname "$1")" 2>/dev/null && pwd -P) || return 1
+  a=$dir
+  while [ "$a" != / ]; do
+    a=$(dirname "$a")
+    pd=$(relay_config "$a" plans_dir docs/plans 2>/dev/null)
+    if [ "$(cd "$a/$pd" 2>/dev/null && pwd -P)" = "$dir" ]; then
+      printf '%s\n' "$a"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# log_status_change <file> <old> <new>: append to <ws>/.relay/status.log
+# (<ws> = the workspace whose plans_dir holds <file>). Never fails the caller.
 log_status_change() {
-  local dir ws rel runs parent
-  dir=$(cd "$(dirname "$1")" 2>/dev/null && pwd) || dir=""
-  if [ "${dir##*/}" != plans ] || [ "$(basename "$(dirname "$dir")")" != docs ]; then
-    echo "relay-prompt: warning: $1 is not under <workspace>/docs/plans/, status change not logged" >&2
+  local ws rel runs parent pd
+  if ! ws=$(find_ws "$1"); then
+    echo "relay-prompt: warning: $1 is not under <workspace>/<plans_dir>/, status change not logged" >&2
     return 0
   fi
-  ws=$(dirname "$(dirname "$dir")")
-  rel=docs/plans/${1##*/}
-  runs=$ws/docs/status/runs
+  pd=$(relay_config "$ws" plans_dir docs/plans 2>/dev/null)
+  rel=$pd/${1##*/}
+  runs=$ws/.relay
   parent=$(ps -o comm= -p "$PPID" 2>/dev/null) || parent=""
   parent=${parent##*/}
   case $parent in # a script shows up as its interpreter: name the script instead
@@ -146,7 +190,9 @@ parse_stem() {
 # after_unmet <workspace> <file>: print why <file>'s after: is not satisfied
 # and return 1; return 0 (silent) when there is no after: or it is satisfied.
 after_unmet() {
-  local ws=$1 f=$2 after repo r p
+  local ws=$1 f=$2 after repo r p db pd
+  db=$(relay_config "$ws" default_branch main 2>/dev/null)
+  pd=$(relay_config "$ws" plans_dir docs/plans 2>/dev/null)
   after=$(cmd_get "$f" after 2>/dev/null) || return 0
   [ -n "$after" ] || return 0
   repo=$(cmd_get "$f" repo 2>/dev/null) || repo=""
@@ -155,19 +201,19 @@ after_unmet() {
     echo "repos/$repo is not a git repository"
     return 1
   fi
-  git -C "$r" rev-parse --verify -q refs/heads/main >/dev/null || { echo "branch main not found in repos/$repo"; return 1; }
+  git -C "$r" rev-parse --verify -q "refs/heads/$db" >/dev/null || { echo "branch $db not found in repos/$repo"; return 1; }
   if git -C "$r" rev-parse --verify -q "refs/heads/$after" >/dev/null; then
-    git -C "$r" merge-base --is-ancestor "refs/heads/$after" main && return 0
-    echo "branch $after is not merged into main"
+    git -C "$r" merge-base --is-ancestor "refs/heads/$after" "refs/heads/$db" && return 0
+    echo "branch $after is not merged into $db"
     return 1
   fi
   # Branch is gone: merged and deleted, or never created?
-  for p in "$ws"/docs/plans/*.prompt-*.md; do
+  for p in "$ws/$pd"/*.prompt-*.md; do
     [ -f "$p" ] || continue
     [ "$(cmd_get "$p" branch 2>/dev/null)" = "$after" ] &&
       [ "$(cmd_get "$p" status 2>/dev/null)" = "done" ] && return 0
   done
-  [ -z "$(git -C "$r" log main -1 --format=%h --fixed-strings --grep="$after" 2>/dev/null)" ] || return 0
+  [ -z "$(git -C "$r" log "refs/heads/$db" -1 --format=%h --fixed-strings --grep="$after" 2>/dev/null)" ] || return 0
   echo "branch $after does not exist (never created?)"
   echo "relay-prompt: warning: $f: after: branch $after does not exist in repos/$repo" >&2
   return 1
@@ -180,9 +226,10 @@ cmd_check() {
 }
 
 cmd_waiting() {
-  local ws=$1 f status after reason
-  [ -d "$ws/docs/plans" ] || die "no docs/plans in workspace: $ws"
-  for f in "$ws"/docs/plans/*.prompt-*.md; do
+  local ws=$1 f status after reason pd
+  pd=$(relay_config "$ws" plans_dir docs/plans)
+  [ -d "$ws/$pd" ] || die "no $pd in workspace: $ws"
+  for f in "$ws/$pd"/*.prompt-*.md; do
     [ -f "$f" ] || continue
     parse_stem "$f" || continue
     status=$(cmd_get "$f" status 2>/dev/null) || continue
@@ -194,9 +241,10 @@ cmd_waiting() {
 }
 
 cmd_lint() {
-  local ws=$1 f status bad=0
-  [ -d "$ws/docs/plans" ] || die "no docs/plans in workspace: $ws"
-  for f in "$ws"/docs/plans/*.md; do
+  local ws=$1 f status bad=0 pd
+  pd=$(relay_config "$ws" plans_dir docs/plans)
+  [ -d "$ws/$pd" ] || die "no $pd in workspace: $ws"
+  for f in "$ws/$pd"/*.md; do
     [ -f "$f" ] || continue
     parse_stem "$f" && continue
     status=$(cmd_get "$f" status 2>/dev/null) || continue
@@ -208,9 +256,10 @@ cmd_lint() {
 }
 
 cmd_next() {
-  local ws=$1 f n suf status best="" best_n="" best_s="" best_m="" m
-  [ -d "$ws/docs/plans" ] || die "no docs/plans in workspace: $ws"
-  for f in "$ws"/docs/plans/*.prompt-*.md; do
+  local ws=$1 f n suf status best="" best_n="" best_s="" best_m="" m pd
+  pd=$(relay_config "$ws" plans_dir docs/plans)
+  [ -d "$ws/$pd" ] || die "no $pd in workspace: $ws"
+  for f in "$ws/$pd"/*.prompt-*.md; do
     [ -f "$f" ] || continue
     parse_stem "$f" || continue
     n=$((10#$PROMPT_N)) suf=$PROMPT_SUFFIX

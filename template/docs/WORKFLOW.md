@@ -8,8 +8,9 @@ Private. Never leaves this folder; never goes into a repo.
 <workspace>/                   ← AI workspace, its own private git repo; root of the Claude Project
 ├── CLAUDE.md                  main context for Claude Code sessions
 ├── .gitconfig                 git identity, included from ~/.gitconfig
-├── .gitignore                 repos/, .claude/, .DS_Store — clones are separate repos
+├── .gitignore                 repos/, .claude/, .DS_Store, .relay/lock/ — clones are separate repos
 ├── .claude/settings.local.json   local permissions (ignored; template is the source)
+├── .relay/                    relay's own state — run log, LATEST, lock; see README
 ├── docs/
 │   ├── WORKFLOW.md            this file
 │   ├── PARKED.md              deferred ideas / questions
@@ -73,7 +74,7 @@ failed runs.
 - `docs/status/` is the memory between sessions: at the end of a session
   write `docs/status/YYYY-MM-DD-<topic>.md` (done / not done / open
   questions / branch + last commit hash), or run `/relay:handover`.
-  `docs/status/runs/` holds the runner's raw output per run; those files
+  `.relay/runs/` holds the runner's raw output per run; those files
   are versioned here as the run log.
 - After merging a branch that touches `plugin/` in the relay repo, run
   `claude plugin update relay@relay` (or uninstall and reinstall): the
@@ -96,7 +97,7 @@ its full context, and a 3-minute timer over a night is ~160 turns, almost
 all empty. Signal first.
 
 - **Log.** For each finished run `relay-watch` appends one line to
-  `docs/status/LATEST` (tab-separated: time, prompt stem, status, branch,
+  `.relay/LATEST` (tab-separated: time, prompt stem, status, branch,
   commit, exit code, seconds). On "check", or right after enqueueing a prompt,
   the planning chat reads the last line (or the lines newer than the last one
   it reported). `running` shows in the prompt's front matter, not in LATEST.
@@ -104,7 +105,7 @@ all empty. Signal first.
   1. Human at the machine: `relay-watch` posts a macOS notification when a
      run ends; the human reads the status file and pings the planning chat.
   2. Human away, Mac awake: adaptive poll. First check at the expected run
-     length (sonnet ≈ 10 min, opus ≈ 20–25 min, from `docs/status/runs/`),
+     length (sonnet ≈ 10 min, opus ≈ 20–25 min, from `.relay/runs/`),
      then every 10 min. Queue empty: one 60-min tick, then stop.
   3. Night: no poll; the human writes first in the morning and the planning
      chat catches up in one turn.
@@ -113,7 +114,7 @@ all empty. Signal first.
   read the last LATEST line and the newest status file, report in one short
   message, re-plan.
   ```
-  W=/path/to/workspace; { grep -H '^status:' "$W"/docs/plans/*.prompt-*.md; ls "$W"/docs/status/*.md; tail -n 1 "$W"/docs/status/LATEST; find "$W"/docs/status/runs -name '*.json' -size +0 | wc -l; } 2>/dev/null | cksum
+  W=/path/to/workspace; { grep -H '^status:' "$W"/docs/plans/*.prompt-*.md; ls "$W"/docs/status/*.md; tail -n 1 "$W"/.relay/LATEST; find "$W"/.relay/runs -name '*.json' -size +0 | wc -l; } 2>/dev/null | cksum
   ```
 - **Unreachable.** If a tick cannot reach the Mac (asleep, app closed): one
   retry after 10 min, then stop.

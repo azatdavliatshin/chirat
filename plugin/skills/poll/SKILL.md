@@ -19,7 +19,7 @@ timer over a night is ~160 turns, almost all empty. So: signal first.
    notification when a run ends; the human reads the status file and pings
    this chat.
 2. **"check"** (or right after enqueueing a prompt) — read the last line of
-   `docs/status/LATEST` (or the lines newer than the last one reported).
+   `.relay/LATEST` (or the lines newer than the last one reported).
    `running` lives in the prompt's front matter, not in LATEST.
 3. **Human away, Mac awake** — adaptive poll (below), unless the workspace
    `CLAUDE.md` or `docs/WORKFLOW.md` says `cowork_poll: off`.
@@ -35,7 +35,7 @@ prompt statuses, the status-file listing, the last LATEST line and the count
 of non-empty run logs:
 
 ```
-W=/path/to/workspace; { grep -H '^status:' "$W"/docs/plans/*.prompt-*.md; ls "$W"/docs/status/*.md; tail -n 1 "$W"/docs/status/LATEST; find "$W"/docs/status/runs -name '*.json' -size +0 | wc -l; } 2>/dev/null | cksum
+W=/path/to/workspace; { grep -H '^status:' "$W"/docs/plans/*.prompt-*.md; ls "$W"/docs/status/*.md; tail -n 1 "$W"/.relay/LATEST; find "$W"/.relay/runs -name '*.json' -size +0 | wc -l; } 2>/dev/null | cksum
 ```
 
 ## A tick
@@ -50,7 +50,7 @@ W=/path/to/workspace; { grep -H '^status:' "$W"/docs/plans/*.prompt-*.md; ls "$W
 
 | Situation | Next check |
 |---|---|
-| First check after enqueueing | expected run length: sonnet ≈ 10 min, opus ≈ 20–25 min (see `docs/status/runs/`) |
+| First check after enqueueing | expected run length: sonnet ≈ 10 min, opus ≈ 20–25 min (see `.relay/runs/`) |
 | Run still going, nothing changed | every 10 min |
 | Queue empty (no `pending`/`running`) | one 60-min tick, then stop |
 | Night | none |

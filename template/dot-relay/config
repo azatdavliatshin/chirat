@@ -1,0 +1,6 @@
+# relay workspace config — key=value, one per line, no quotes.
+# Paths are relative to the workspace root. Everything is optional;
+# the values below are the defaults.
+# plans_dir=docs/plans
+# status_dir=docs/status
+# default_branch=main
