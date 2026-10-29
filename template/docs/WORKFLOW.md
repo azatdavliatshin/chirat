@@ -66,7 +66,7 @@ failed runs.
   after: <optional branch; wait until it is merged into main>
   ---
   ```
-  A `done` prompt is a branch waiting for your review and merge; nothing lands on `main` by itself, and the next `after:` prompt waits for that merge.
+  A `done` prompt is a branch waiting for the human's review and merge; nothing lands on `main` by itself, and the next `after:` prompt waits for that merge.
   `blocked` = a human decision is needed; the question is at the top of the
   status file. Set it back to `pending` to re-queue. A prompt that depends
   on another prompt's branch declares `after:` and stays `pending`; it is
@@ -74,7 +74,7 @@ failed runs.
 - **Prompt review before it can run** (`prompt_review: on` in CLAUDE.md,
   the default): the planning chat writes a new prompt with `status: draft`
   (inert — the runner takes only `pending`), posts a three-line summary,
-  and flips it to `pending` only when I say "go" after reading or editing
+  and flips it to `pending` only when the human says "go" after reading or editing
   the file. `prompt_review: off` writes `pending` directly.
 - When the planning chat writes a draft prompt, it opens the file as a
   document in the chat's side panel (not pasted into the message), so the
