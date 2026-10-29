@@ -340,6 +340,79 @@ echo "t" >"$wsrepo/.chirat/LATEST"
 git -C "$wsrepo" add .chirat/LATEST
 eq "guard allows .chirat/LATEST in a workspace repo" 0 "$(hook "$wsrepo" "git commit -m test")"
 
+# --- guard: push, publish, every commit in the chain -------------------------
+
+jhook() { # jhook <cwd> <command>; like hook, but JSON-escapes the command
+  local c=$2 json
+  c=${c//\\/\\\\}
+  c=${c//\"/\\\"}
+  c=${c//$'\n'/\\n}
+  json=$(printf '{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"%s","tool_input":{"command":"%s"}}' "$1" "$c")
+  "${guard_shell[@]}" "$guard" <<<"$json" 2>"$tmp/stderr" >/dev/null
+  echo $?
+}
+guard_shell=(bash)
+
+gp="git push"
+blocked=(
+  "$gp" "$gp origin main" "$gp --help" "git -C repos/x push" "git -C a -C b push"
+  "cd repos/x && $gp" "git status; $gp" "true || $gp" "echo \$($gp)" "echo \`$gp\`"
+  "FOO=1 $gp" "env A=1 $gp" "command $gp" "/usr/bin/$gp" "git -c http.x=y push --force"
+  "git --no-pager push" "(cd x; $gp)" "bash -c '$gp'" "sudo -u me $gp" "nice -n 5 $gp"
+  "timeout 5 $gp" "git status
+$gp"
+  "npm publish" "pnpm publish" "yarn publish" "yarn npm publish" "npm --tag next publish"
+)
+allowed=(
+  "git stash push" "git log --grep push" "echo $gp" "grep -r \"$gp\" docs/"
+  "git remote -v" "git -C repos/x status" "npm run publish-docs" "npx publish"
+  "git status 2>&1 | head" "bash repos/x/tests/run.sh"
+)
+for c in "${blocked[@]}"; do eq "guard blocks: $c" 2 "$(jhook "$ws" "$c")"; done
+eq "guard push message" "chirat: git push is the human's step — commit on the branch and stop; the human reviews, merges and pushes." \
+  "$(jhook "$ws" "git -C repos/x push" >/dev/null; cat "$tmp/stderr")"
+if jhook "$ws" "npm publish" >/dev/null && grep -q "publish" "$tmp/stderr"; then
+  ok "guard publish message names publishing"
+else
+  ko "guard publish message names publishing" "$(cat "$tmp/stderr")"
+fi
+for c in "${allowed[@]}"; do eq "guard allows: $c" 0 "$(jhook "$ws" "$c")"; done
+
+# Commits seen through -C, a cd anywhere in the chain, and later in a chain.
+git -C "$repo" reset -q
+echo "code" >"$repo/ok.sh"
+git -C "$repo" add ok.sh
+eq "guard allows: git commit -m \"push later\"" 0 "$(jhook "$repo" "git commit -m \"push later\"")"
+eq "guard allows: git -C <repo> commit, clean" 0 "$(jhook "$ws" "git -C repos/demo commit -m x")"
+mkdir -p "$repo/.claude"
+echo "{}" >"$repo/.claude/settings.local.json"
+git -C "$repo" add -f .claude/settings.local.json
+eq "guard checks git -C <repo> commit" 2 "$(jhook "$ws" "git -C repos/demo commit -m x")"
+eq "guard checks git -C <abs repo> commit" 2 "$(jhook "$tmp" "git -C $repo commit -m x")"
+eq "guard checks a commit second in a chain" 2 "$(jhook "$ws" "git status && git -C repos/demo commit -m x")"
+eq "guard checks cd later in the chain" 2 "$(jhook "$ws" "git status; cd repos && git -C demo commit -m x")"
+eq "guard checks a commit after cd ... ; " 2 "$(jhook "$ws" "cd repos/demo; git add -A; git commit -m x")"
+eq "guard checks every commit, not just the first" 2 "$(jhook "$ws" "git -C $plain commit -m a; git -C repos/demo commit -m b")"
+if grep -q "settings.local.json" "$tmp/stderr"; then
+  ok "guard names the path from the second commit"
+else
+  ko "guard names the path from the second commit" "$(cat "$tmp/stderr")"
+fi
+eq "guard ignores a commit in another, clean repo" 0 "$(jhook "$ws" "git -C $tmp/aws/repos/demo commit -m x")"
+git -C "$repo" rm -q --cached .claude/settings.local.json
+
+# Without jq and python3: push/publish fail closed, the commit check fails open.
+nobin=$tmp/nobin
+mkdir -p "$nobin"
+for t in bash cat git grep; do ln -s "$(command -v "$t")" "$nobin/$t"; done
+guard_shell=(env PATH="$nobin" "$(command -v bash)")
+eq "no parser: git -C x push is blocked" 2 "$(jhook "$ws" "git -C x push")"
+if grep -q "false positive" "$tmp/stderr"; then ok "no parser: message admits false positives"; else ko "no parser: message admits false positives" "$(cat "$tmp/stderr")"; fi
+eq "no parser: npm publish is blocked" 2 "$(jhook "$ws" "npm publish")"
+eq "no parser: git commit is allowed" 0 "$(jhook "$repo" "git commit -m x")"
+eq "no parser: npm run publish-docs is allowed" 0 "$(jhook "$ws" "npm run publish-docs")"
+guard_shell=(bash)
+
 # --- summary -------------------------------------------------------------
 
 echo

@@ -241,7 +241,35 @@ are ignored and a line without `=` is a warning.
 
 ## Commit guard
 
-A hook refuses `git commit` while workspace files are staged:
+A `PreToolUse` hook on every Bash call. It also refuses push and publish:
+the human is the only one who pushes.
+
+It reads every simple command in the call — split on `&&`, `||`, `;`, `|`,
+`&` and newlines, including the insides of `$( … )`, backticks and
+subshells — after stripping `VAR=value` and wrappers such as `env`,
+`command`, `sudo`, `nohup`, `time` and `bash -c`, and walks git's global
+options (`-C`, `-c`, `--no-pager`, …) to find the subcommand. Quotes are not
+parsed, so a separator inside a quoted string splits too; the guard errs on
+the side of checking more.
+
+- **Push and publish, in any form:** `git push`, `git -C repos/x push`,
+  `cd repos/x && git push`, `git status; git push`, `echo $(git push)`,
+  `git -c k=v push --force`, `/usr/bin/git push`, and `npm publish`,
+  `pnpm publish`, `yarn publish`, `yarn npm publish`. `git stash push`,
+  `git log --grep push`, `echo git push` and `npm run publish-docs` pass.
+- **Every `git commit`** in the call is checked against the repo it would
+  commit to — the dir from `git -C`, an earlier `cd` in the chain, or the
+  session's cwd.
+- **Without `jq` or `python3`** the command cannot be read: the commit check
+  is skipped, but any text that looks like `git … push` or `npm … publish`
+  is refused (false positives are possible, and the message says so).
+
+The workspace template's deny rules (`Bash(git push)`, `Bash(git push *)`,
+`Bash(git -C * push*)`, `Bash(npm publish*)` in
+`.claude/settings.local.json`) are a second layer behind the hook. Workspaces
+created before this version should add the first and third rules by hand.
+
+A commit is refused while these workspace files are staged:
 
 | Staged path | Code repository | Workspace repository (`HEAD` has `docs/WORKFLOW.md`) |
 |---|---|---|

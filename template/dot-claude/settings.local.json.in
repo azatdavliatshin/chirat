@@ -17,7 +17,9 @@
     ],
     "deny": [
       "Bash(npm publish*)",
+      "Bash(git push)",
       "Bash(git push *)",
+      "Bash(git -C * push*)",
       "Bash(claude --dangerously-skip-permissions*)"
     ]
   }
