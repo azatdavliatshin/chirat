@@ -328,3 +328,6 @@ clean allow echo 'git push' | bash -c 'cat'
 clean allow cat "@FX@/cd-dirty.sh" | grep cd
 clean allow bash --version
 clean allow { bash; } >"$TMPDIR/o"
+
+# --- independent review of 5eb8f7b: function call prefix environment ---
+clean harm f() { git -C "@CLEAN@" commit -m t; }; GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@" f

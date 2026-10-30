@@ -326,9 +326,15 @@ refused, with or without `-C`. Start a fresh command. A subshell, a pipeline
 member, a background job or a `bash -c` body keeps its unknown state to
 itself. `export GIT_DIR=<repo>/.git` (or `GIT_WORK_TREE`) with a literal
 value is carried like `GIT_DIR=… git commit`, so the commit is checked where
-it really goes; `GIT_INDEX_FILE` and other `GIT_*` variables, which move
-git's layout or the very index the guard inspects, refuse a commit as a
-prefix and make the shell unknown when exported.
+it really goes. Every other `GIT_*` variable is not supported by the commit
+check: as a prefix (`GIT_INDEX_FILE=x git commit`, also `GIT_AUTHOR_DATE=…`)
+it refuses that commit — the reason says so and points at git's own option
+(`--date`, `-m`) — and exported it makes the shell unknown. Some of these
+move git's layout or the very index the guard inspects; others are
+harmless, and a small allow-list of verified-harmless names may come later
+(an allow-list, not a deny-list). A function whose body commits, called
+under any git environment its body was read without — exported, a prefix
+(`GIT_DIR=… f`), an `env` argument, resolved or not — is refused too.
 
 - **Push and publish, in any form:** `git push`, `git -C repos/x push`,
   `cd repos/x && git push`, `git status; git push`, `echo $(git push)`,

@@ -65,8 +65,9 @@
 #     `GIT_CEILING_DIRECTORIES`, …), `export -n`, `unset`, `export GIT_DIR`
 #     without a value, and a standalone `GIT_*=…` assignment (exported
 #     earlier or not — the hook does not know) all make the shell unknown. A
-#     function whose body commits, called while a git environment is
-#     exported, is refused (its body was walked without that environment).
+#     function whose body commits, called under a git environment its body
+#     was walked without — exported, a prefix (`GIT_DIR=… f`), an `env`
+#     argument, resolved or not — or once the shell is unknown, is refused.
 #     As a prefix (`GIT_INDEX_FILE=x git commit`, `env GIT_INDEX_FILE=x git
 #     commit`) a `GIT_*` variable other than the two refuses that commit.
 #
@@ -816,8 +817,9 @@ simple() {
   # A call of a function whose body touches the directory (or that shadows
   # a word this hook interprets) lands anywhere; one whose body changed the
   # shell leaves the shell unknown; one whose body commits was read with the
-  # git environment of its definition — called under an exported one, the
-  # commit would go elsewhere.
+  # git environment of its definition — called under another one (exported,
+  # a prefix or an `env` argument, resolved or not) the commit would go
+  # elsewhere, and once the shell is unknown so may the body itself.
   if set_has "$FN_SHELL" "$argv0"; then unknown_shell "a call of $argv0, whose body changes the shell"; return 0; fi
   if set_has "$FN_MOVES" "$argv0"; then CD_SET='?'; return 0; fi
   if set_has "$FN_BARE" "$argv0"; then
@@ -825,8 +827,11 @@ simple() {
     bare_shells=$((bare_shells + 1))
     return 0
   fi
-  if set_has "$FN_COMMITS" "$argv0" && [ -n "$ctx_gitdir$ctx_wt$ctx_genv" ]; then
-    refuse "chirat: $argv0 commits and is called with an exported git environment its body was read without; run git directly."
+  if set_has "$FN_COMMITS" "$argv0"; then
+    [ "$shu" = 0 ] || refuse "$(shell_msg "$argv0")"
+    if [ -n "$env_gitdir$env_wt$env_genv" ] || [ "$envu" = 1 ]; then
+      refuse "chirat: $argv0 commits and is called with a git environment (exported or a prefix) its body was read without; run git directly."
+    fi
   fi
   if [ "$shu" = 1 ]; then case $argv0 in cd | pushd | popd) CD_SET='?'; return 0 ;; esac; fi
   case $argv0 in
@@ -975,7 +980,7 @@ simple() {
       case $sub in
         push) refuse "$push_msg" ;;
         commit)
-          [ -z "$env_genv" ] || refuse "chirat: $env_genv in the environment changes where this commit goes (git's layout or index); run git without it."
+          [ -z "$env_genv" ] || refuse "chirat: $env_genv is not supported by the commit check (only GIT_DIR and GIT_WORK_TREE are followed); use git's own options instead, e.g. --date, -m."
           commit_dir+=("$dir"); commit_gitdir+=("$gitdir"); commit_wt+=("$worktree")
           if [ "$gu" = 0 ] && ! set_has "$dir" '?'; then commit_ok+=(1); else commit_ok+=(0); fi ;;
       esac ;;
