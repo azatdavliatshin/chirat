@@ -110,6 +110,43 @@ eq "set leaves a single front matter" 2 "$(grep -c '^---$' "$mf")"
 eq "set writes no stat output" 0 "$(grep -c -i -e 'File:' -e 'Device' "$mf")"
 eq "set status after mode test" running "$("$rp" get "$mf" status)"
 
+# --- chirat-prompt next --as-pending --------------------------------------
+# The named files count as pending for one call, nothing is written, and the
+# usual ordering decides between them and the really pending ones.
+
+nws=$tmp/np
+mkdir -p "$nws/docs/plans" "$nws/repos"
+nprompt() { # nprompt <name> <status> <mtime YYYYMMDDhhmm>
+  printf -- '---\nstatus: %s\nrepo: demo\nbranch: feat/x\n---\n# %s\n' "$2" "$1" >"$nws/docs/plans/$1"
+  touch -t "$3" "$nws/docs/plans/$1"
+}
+nprompt a.prompt-1.md running 202601010000
+nprompt a.prompt-2.md pending 202601010000
+nprompt a.prompt-3.md running 202601010000
+nprompt b.prompt-2.md running 202601010000
+nprompt notes.md running 202601010000
+nsnap() { # names, mtimes and contents of the plans dir
+  local f
+  for f in "$nws"/docs/plans/*; do printf '%s %s %s\n' "$f" "$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f")" "$(cksum <"$f")"; done
+}
+nbefore=$(nsnap)
+eq "as-pending: without it, the pending one" "$nws/docs/plans/a.prompt-2.md" "$("$rp" next "$nws")"
+eq "as-pending: a relative path counts as pending" "$nws/docs/plans/a.prompt-1.md" "$("$rp" next "$nws" --as-pending docs/plans/a.prompt-1.md)"
+eq "as-pending: an absolute path too" "$nws/docs/plans/a.prompt-1.md" "$("$rp" next "$nws" --as-pending "$nws/docs/plans/a.prompt-1.md")"
+eq "as-pending: ./ is dropped" "$nws/docs/plans/a.prompt-1.md" "$("$rp" next "$nws" --as-pending ./docs/plans/a.prompt-1.md)"
+eq "as-pending: a really pending lower number wins" "$nws/docs/plans/a.prompt-2.md" "$("$rp" next "$nws" --as-pending docs/plans/a.prompt-3.md)"
+eq "as-pending: several files, the lowest wins" "$nws/docs/plans/a.prompt-1.md" "$("$rp" next "$nws" --as-pending docs/plans/a.prompt-3.md docs/plans/a.prompt-1.md)"
+eq "as-pending: same number — counts as rewritten now, the older pending one wins" "$nws/docs/plans/a.prompt-2.md" "$("$rp" next "$nws" --as-pending docs/plans/b.prompt-2.md)"
+eq "as-pending: a file outside the name pattern is ignored" "$nws/docs/plans/a.prompt-2.md" "$("$rp" next "$nws" --as-pending docs/plans/notes.md)"
+eq "as-pending: status on disk untouched" running "$("$rp" get "$nws/docs/plans/a.prompt-1.md" status)"
+eq "as-pending: nothing written (names, mtimes, contents)" "$nbefore" "$(nsnap)"
+"$rp" set "$nws/docs/plans/a.prompt-1.md" after dep
+eq "as-pending: an unmet after: still holds it back" "$nws/docs/plans/a.prompt-2.md" "$("$rp" next "$nws" --as-pending docs/plans/a.prompt-1.md 2>/dev/null)"
+"$rp" set "$nws/docs/plans/a.prompt-2.md" status "done"
+if out=$("$rp" next "$nws" --as-pending docs/plans/a.prompt-1.md 2>/dev/null); then ko "as-pending: only held-back candidates → exit 1" "picked $out"; else ok "as-pending: only held-back candidates → exit 1"; fi
+"$rp" next "$nws" --bogus >/dev/null 2>&1
+eq "as-pending: an unknown flag is a usage error" 64 $?
+
 # --- guard-commit.sh -----------------------------------------------------
 
 repo=$ws/repos/demo

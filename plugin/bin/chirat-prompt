@@ -4,7 +4,8 @@
 #   chirat-prompt get  <file> <key>           print the value of <key>
 #   chirat-prompt set  <file> <key> <value>   set <key> in place, keep the rest
 #   chirat-prompt unset <file> <key>          remove <key> from the front matter
-#   chirat-prompt next <workspace>            print the next pending prompt
+#   chirat-prompt next <workspace> [--as-pending <file>…]
+#                                             print the next pending prompt
 #   chirat-prompt waiting <workspace>         list pending prompts held back by after:
 #   chirat-prompt check <workspace> <file>    exit 0 if <file>'s after: is satisfied
 #   chirat-prompt lint <workspace>            list pending/running files with a bad name
@@ -26,7 +27,13 @@
 # <topic>.prompt-<N><suffix>.md with N digits and suffix empty, [a-z]+ (`5b`)
 # or -[a-z0-9-]+ (`5-fix`). Order: N numerically, plain N before any suffix,
 # suffixes in byte order (5 < 5-fix < 5b < 6), oldest mtime as the last
-# tie-break (a queue). `next` exits 1 when the queue is empty.
+# tie-break (a queue). `next` exits 1 when the queue is empty. With
+# `--as-pending <file>…` the named files (absolute, or relative to the
+# workspace) count as `pending` for this one call, nothing written — so a
+# preview (`chirat-watch --dry-run`) can ask "what would run once these are
+# re-queued?" and get the answer the real pass gets; their mtime counts as now,
+# as a real `set status pending` would have left it. The name pattern and
+# `after:` still apply to them.
 #
 # `lint` prints `<file> <tab> <reason>` for every <plans_dir>/*.md whose front
 # matter says status pending or running but whose name does not match the
@@ -56,7 +63,7 @@ set -euo pipefail
 export LC_ALL=C # byte-order suffix comparison and [a-z] without locale surprises
 
 usage() {
-  sed -n '4,10p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '4,11p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 64
 }
 
@@ -208,6 +215,21 @@ mtime() {
   stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"
 }
 
+# abs_path <workspace> <path>: <path> as the plans glob spells it — absolute,
+# a relative one taken against <workspace>, a leading `./` dropped.
+abs_path() {
+  local p=$2
+  while case $p in ./*) p=${p#./} ;; *) false ;; esac; do :; done
+  case $p in /*) printf '%s\n' "$p" ;; *) printf '%s\n' "$1/$p" ;; esac
+}
+
+in_list() { # in_list <needle> <item>…
+  local x needle=$1
+  shift
+  for x in "$@"; do [ "$x" = "$needle" ] && return 0; done
+  return 1
+}
+
 # parse_stem <file>: split <topic>.prompt-<N><suffix>.md into the globals
 # PROMPT_N (digits) and PROMPT_SUFFIX (maybe empty); return 1 on no match.
 # The one place the file name pattern lives.
@@ -329,18 +351,36 @@ cmd_lint() {
   exit "$bad"
 }
 
+# cmd_next <workspace> [--as-pending <file>…]: the named files count as
+# `pending` for this call only (nothing is written), with the mtime a real
+# `set status pending` would have given them (now); everything else — name
+# pattern, `after:`, ordering — applies as usual.
 cmd_next() {
-  local ws=$1 f n suf status best="" best_n="" best_s="" best_m="" m pd
+  local ws=$1 f n suf status best="" best_n="" best_s="" best_m="" m pd now
+  local -a as_pending=()
+  shift
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --as-pending) shift; while [ $# -gt 0 ] && [ "$1" != --as-pending ]; do as_pending+=("$(abs_path "$ws" "$1")"); shift; done ;;
+      *) usage ;;
+    esac
+  done
+  now=$(date +%s)
   pd=$(chirat_config "$ws" plans_dir docs/plans)
   [ -d "$ws/$pd" ] || die "no $pd in workspace: $ws"
   for f in "$ws/$pd"/*.prompt-*.md; do
     [ -f "$f" ] || continue
     parse_stem "$f" || continue
     n=$((10#$PROMPT_N)) suf=$PROMPT_SUFFIX
-    status=$(cmd_get "$f" status 2>/dev/null) || continue
+    if in_list "$f" ${as_pending[@]+"${as_pending[@]}"}; then
+      status=pending m=$now
+    else
+      status=$(cmd_get "$f" status 2>/dev/null) || continue
+      m=""
+    fi
     [ "$status" = pending ] || continue
     after_unmet "$ws" "$f" >/dev/null || continue
-    m=$(mtime "$f")
+    [ -n "$m" ] || m=$(mtime "$f")
     if [ -z "$best" ] || [ "$n" -lt "$best_n" ] ||
       { [ "$n" -eq "$best_n" ] && [[ $suf < $best_s ]]; } ||
       { [ "$n" -eq "$best_n" ] && [ "$suf" = "$best_s" ] && [ "$m" -lt "$best_m" ]; }; then
@@ -356,7 +396,7 @@ case $1 in
   get) [ $# -eq 3 ] || usage; cmd_get "$2" "$3" ;;
   set) [ $# -eq 4 ] || usage; cmd_set "$2" "$3" "$4" ;;
   unset) [ $# -eq 3 ] || usage; cmd_unset "$2" "$3" ;;
-  next) [ $# -eq 2 ] || usage; cmd_next "$2" ;;
+  next) [ $# -ge 2 ] || usage; shift; cmd_next "$@" ;;
   waiting) [ $# -eq 2 ] || usage; cmd_waiting "$2" ;;
   check) [ $# -eq 3 ] || usage; cmd_check "$2" "$3" ;;
   lint) [ $# -eq 2 ] || usage; cmd_lint "$2" ;;

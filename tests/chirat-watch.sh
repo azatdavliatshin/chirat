@@ -1401,6 +1401,71 @@ has "old tmux session: doctor warns" "$tmp/doc.out" "warn old watcher still runn
 PATH=$dpath lgw doctor >"$tmp/doc.out" 2>&1
 if grep -qE "old command|old watcher" "$tmp/doc.out"; then ko "doctor: no old-install warnings without them" "$(cat "$tmp/doc.out")"; else ok "doctor: no old-install warnings without them"; fi
 
+# --- --dry-run previews the prompt a real pass would run -----------------------
+# A prompt left `running` under a stale lock is re-queued by a real pass and
+# then competes with the pending ones in queue order; the preview must name
+# the same prompt, and still write nothing.
+
+ws=$tmp/dry
+runs=$ws/.chirat/runs
+mkdir -p "$ws"/docs/{plans,status} "$ws"/repos
+printf '%s\n' "$ws" >"$XDG_CONFIG_HOME/chirat/workspaces"
+git init -q -b main "$ws/repos/demo"
+git -C "$ws/repos/demo" commit -q --allow-empty -m init
+git -C "$ws/repos/demo" checkout -q -b dep
+git -C "$ws/repos/demo" commit -q --allow-empty -m dep
+git -C "$ws/repos/demo" checkout -q main
+p1=$ws/docs/plans/demo.prompt-1.md
+p2=$ws/docs/plans/demo.prompt-2.md
+would_run() { printf '%s\n' "$1" | grep -o 'claude -p /chirat:next\\ [^ ]*' | sed 's/.*next\\ //'; }
+ran() { sed -n '/^-p$/{n;p;}' "$FAKE_ARGV" | sed 's#^/chirat:next ##'; }
+rm -f "$XDG_STATE_HOME"/chirat/watcher.*
+
+# The repro: 1 running under a stale lock, 2 pending — preview and real pass say 1.
+prompt demo.prompt-1.md sonnet pending
+prompt demo.prompt-2.md sonnet pending
+pf=$p1
+die_mid_run hang
+eq "preview: 1 is running under a stale lock" running "$("$rp" get "$p1" status)"
+before=$(fs_snapshot "$ws" "$XDG_STATE_HOME")
+out=$("$watch" --once --dry-run 2>/dev/null)
+has "preview: would re-queue 1" <(printf '%s\n' "$out") "would set docs/plans/demo.prompt-1.md pending"
+eq "preview: would run 1, not 2" docs/plans/demo.prompt-1.md "$(would_run "$out")"
+eq "preview: wrote nothing" "$before" "$(fs_snapshot "$ws" "$XDG_STATE_HOME")"
+: >"$FAKE_ARGV"
+"$watch" --once >/dev/null 2>&1
+eq "real pass: ran 1" docs/plans/demo.prompt-1.md "$(ran)"
+eq "real pass: 1 is done" "done" "$("$rp" get "$p1" status)"
+eq "real pass: 2 still pending" pending "$("$rp" get "$p2" status)"
+
+# The mirror: 2 running under a stale lock, 1 pending — both say 1.
+prompt demo.prompt-1.md sonnet blocked
+prompt demo.prompt-2.md sonnet pending
+pf=$p2
+die_mid_run hang
+"$rp" set "$p1" status pending
+out=$("$watch" --once --dry-run 2>/dev/null)
+has "preview (mirror): would re-queue 2" <(printf '%s\n' "$out") "would set docs/plans/demo.prompt-2.md pending"
+eq "preview (mirror): would run 1" docs/plans/demo.prompt-1.md "$(would_run "$out")"
+: >"$FAKE_ARGV"
+"$watch" --once >/dev/null 2>&1
+eq "real pass (mirror): ran 1" docs/plans/demo.prompt-1.md "$(ran)"
+eq "real pass (mirror): 2 re-queued, not run" pending "$("$rp" get "$p2" status)"
+
+# The recovered prompt has an unmet after: — both skip it.
+prompt demo.prompt-1.md sonnet pending
+prompt demo.prompt-2.md sonnet pending
+pf=$p1
+die_mid_run hang
+"$rp" set "$p1" after dep
+out=$("$watch" --once --dry-run 2>/dev/null)
+has "preview (after): would re-queue 1" <(printf '%s\n' "$out") "would set docs/plans/demo.prompt-1.md pending"
+eq "preview (after): would run 2, 1 waits for dep" docs/plans/demo.prompt-2.md "$(would_run "$out")"
+: >"$FAKE_ARGV"
+"$watch" --once >/dev/null 2>&1
+eq "real pass (after): ran 2" docs/plans/demo.prompt-2.md "$(ran)"
+eq "real pass (after): 1 re-queued and waiting" pending "$("$rp" get "$p1" status)"
+
 # --- summary -------------------------------------------------------------
 
 echo

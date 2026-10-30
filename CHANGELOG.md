@@ -12,15 +12,22 @@ All notable changes are listed here, in the
   commit` is checked like a commit from inside the repo; `--git-dir` /
   `--work-tree` (also `GIT_DIR` / `GIT_WORK_TREE`), `cd` / `pushd` /
   `env -C`, `bash -c` and `eval` bodies, `$(…)`, backticks and here-documents
-  are followed. The guard now fails closed: a commit whose repository it
-  cannot tell (a variable or glob in the path, `cd` to an unresolved dir, a
-  literal path that is not a repository, unbalanced quotes) is refused with
-  the reason instead of let through.
+  are followed, including substitutions nested in quotes
+  (`"${x:-"$(git push)"}"`), `-c` bodies with the caller's repository context
+  (`GIT_DIR=… bash -c 'git commit'`, `env -C … sh -c`), and `cd` under
+  pipelines or control flow (the directory is a set of candidates; a commit is
+  checked against every one). The guard now fails closed: a commit whose
+  repository it cannot tell (a variable or glob in the path, `cd` to an
+  unresolved dir, a literal path that is not a repository, unbalanced quotes)
+  is refused with the reason instead of let through.
 - `chirat-watch --dry-run` writes nothing, as the README promised: it no
   longer recovers a stale lock for real (it prints `would set … pending` /
-  `would remove lock …` and what would run next), and it creates no `runs/`,
+  `would remove lock …` and what would run next), it creates no `runs/`,
   lock, `LATEST`, `watch.log` or `*.seen` line, state dir or
-  `watcher.pid` / `watcher.flags`.
+  `watcher.pid` / `watcher.flags`, and it previews the same prompt a real
+  pass would run: the prompts a recovery would re-queue compete with the
+  pending ones in queue order (`chirat-prompt next --as-pending <file>…`,
+  no writes) instead of being shown only when nothing else is pending.
 - Stopping the watcher (signal, `restart --force`) waits for `claude`'s whole
   process group, not just `claude`: a child that outlives `claude` is sent
   KILL after the grace period, and only when nothing of the group is left is

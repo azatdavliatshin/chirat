@@ -31,8 +31,12 @@
 #                 or *.seen line (the log line is printed only), no
 #                 watcher.pid / watcher.flags, no state dir; a stale lock is
 #                 reported as `recover --dry-run` would (`would set … pending`,
-#                 `would remove lock …`), left in place, and the prompt it
-#                 would re-queue is the one shown as `would run`
+#                 `would remove lock …`) and left in place; the prompt shown
+#                 as `would run` is the one a real pass would run — picked by
+#                 `chirat-prompt next --as-pending <recovered…>`, which counts
+#                 the prompts a recovery would re-queue as pending for that
+#                 one call (no writes), so the preview and the real pass use
+#                 the same queue and the same order
 #   --interval N  seconds between passes (default 60)
 #   --permission-mode M  claude permission mode, passed through verbatim;
 #                 default `auto`, or $CHIRAT_PERMISSION_MODE (flag wins)
@@ -788,8 +792,8 @@ in_progress() {
 # recover_stale <ws>: heal a lock left by a dead watcher/claude (rules in the
 # header). Returns 1 when the workspace is in progress and must be skipped.
 # With recover_dry=1 it only prints what it would do and sets dry_recovered=1
-# and dry_recovered_file (the prompt it would put back to pending, if any).
-recover_dry=0 dry_recovered=0 dry_recovered_file="" select_warn=""
+# and dry_recovered_files (the prompts it would put back to pending, if any).
+recover_dry=0 dry_recovered=0 dry_recovered_files=() select_warn=""
 recover_stale() {
   local ws=$1 runs lock cpid rel run started p f status state pd
   local err="" stem now secs=0 t model="-" first="-" word prompts=()
@@ -824,7 +828,7 @@ recover_stale() {
     if [ "$status" = running ]; then
       if [ "$recover_dry" = 1 ]; then
         echo "would set ${p#"$ws"/} pending"
-        [ -n "$dry_recovered_file" ] || dry_recovered_file=$p
+        dry_recovered_files+=("$p")
       else
         "$chirat_prompt" set "$p" status pending
       fi
@@ -915,14 +919,21 @@ pass() {
       echo "chirat-watch: not a workspace (no $pd): $ws" >&2
       continue
     fi
-    recover_dry=$dry_run dry_recovered=0 dry_recovered_file=""
+    recover_dry=$dry_run dry_recovered=0 dry_recovered_files=()
     if ! recover_stale "$ws"; then
       note_misnamed "$ws"
       continue
     fi
-    # Under --dry-run a stale lock is still there: the prompt it would
-    # re-queue is what would run next, unless the queue has one before it.
-    if file=$("$chirat_prompt" next "$ws" 2>/dev/null) || { [ -n "$dry_recovered_file" ] && file=$dry_recovered_file; }; then
+    # Under --dry-run the prompts a recovery would re-queue are still
+    # `running` on disk; `next --as-pending` counts them as pending for this
+    # one call, so the preview picks from the same queue, in the same order,
+    # as the real pass does after recovering them.
+    if [ "$dry_run" = 1 ] && [ ${#dry_recovered_files[@]} -gt 0 ]; then
+      file=$("$chirat_prompt" next "$ws" --as-pending "${dry_recovered_files[@]}" 2>/dev/null)
+    else
+      file=$("$chirat_prompt" next "$ws" 2>/dev/null)
+    fi
+    if [ -n "$file" ]; then
       # `next` is quiet; the chosen prompt's own warning (`after_mode: done`
       # let it through) must be seen: printed here, kept in the run's .err.
       select_warn=$("$chirat_prompt" check "$ws" "$file" 2>&1 >/dev/null) || select_warn=""
