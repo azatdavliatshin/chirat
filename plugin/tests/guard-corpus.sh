@@ -19,8 +19,9 @@
 # skipped. <cwd> is one of outer mid inner clean dirty cleansp dirtysp home
 # fx; <expect> is `-`, `allow` or `harm`; in <command>, `<NL>` is a newline
 # and @OUTER@ @MID@ @INNER@ @CLEAN@ @DIRTY@ @CLEANSP@ @DIRTYSP@ @HOME@ @FX@
-# @GIT@ are the fixture paths (`@GIT@` is the shim). Commands must be safe to
-# run with the shim: no network, nothing written outside TMPDIR.
+# @GIT@ are the fixture paths (`@GIT@` is the shim; `@FX@/>clean` and
+# `@FX@/>dirty` are repos whose names start with `>`). Commands must be safe
+# to run with the shim: no network, nothing written outside TMPDIR.
 #
 # Usage: plugin/tests/guard-corpus.sh [corpus-file]; runs under the bash that
 # invokes it (Bash 3.2 included), which is also the bash the lines run in.
@@ -41,7 +42,8 @@ ko() { fail=$((fail + 1)); echo "FAIL corpus: $1"; [ $# -gt 1 ] && echo "     $2
 
 # --- fixture ------------------------------------------------------------------
 # Three nested repos (outer dirty, mid and inner clean), a clean and a dirty
-# repo, the same two at paths with spaces, a dirty HOME, a dir that is no repo.
+# repo, the same two at paths with spaces and at paths that start with `>`,
+# a dirty HOME, a dir that is no repo.
 
 mkrepo() { # mkrepo <path> <clean|dirty>
   git init -q -b main "$1"
@@ -66,12 +68,14 @@ mkrepo "$dirty" dirty
 mkrepo "$cleansp" clean
 mkrepo "$dirtysp" dirty
 mkrepo "$home" dirty
+mkrepo "$fx/>clean" clean
+mkrepo "$fx/>dirty" dirty
 mkdir -p "$fx/tmp" "$fx/plain"
 printf 'cd "%s"\n' "$dirty" >"$fx/cd-dirty.sh"
 
 # The git dirs that count as dirty, resolved the same way the records are.
 gitdir_of() { git -C "$1" rev-parse --absolute-git-dir 2>/dev/null; }
-dirty_dirs=$(gitdir_of "$outer")$'\n'$(gitdir_of "$dirty")$'\n'$(gitdir_of "$dirtysp")$'\n'$(gitdir_of "$home")
+dirty_dirs=$(gitdir_of "$outer")$'\n'$(gitdir_of "$dirty")$'\n'$(gitdir_of "$dirtysp")$'\n'$(gitdir_of "$home")$'\n'$(gitdir_of "$fx/>dirty")
 
 # --- shims ----------------------------------------------------------------------
 shim=$fx/shim

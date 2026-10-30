@@ -233,3 +233,98 @@ dirty - cd "@CLEAN@" "@DIRTY@"; git commit -m t
 dirty harm shopt -s expand_aliases<NL>alias cd=true<NL>cd "@CLEAN@"; git commit -m t
 dirty harm enable -n cd; cd "@CLEAN@"; git commit -m t
 clean harm shopt -s expand_aliases<NL>alias git='git -C "@DIRTY@"'<NL>git commit -m t
+
+# --- independent review of 3b26da2 ---
+clean harm export GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@"; git -C "@CLEAN@" commit -m t
+clean harm printf 'export GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@"\n' > "$TMPDIR/review-env.sh"; source "$TMPDIR/review-env.sh"; git -C "@CLEAN@" commit -m t
+fx harm ln -s "@DIRTY@" '@FX@/>review-dirty'; git -C '>review-dirty' commit -m t
+dirty harm cd "@CLEAN@" & wait; git commit -m t
+inner harm for n in 1 2; do cd ..; done; git commit -m t
+
+# --- round 4: exported git environment, redirections, shells fed from stdin ------
+# The exported git environment is carried; anything the hook cannot carry
+# leaves the shell unknown and refuses every later git, -C or not.
+dirty allow export GIT_DIR="@CLEAN@/.git"; git commit -m t
+dirty allow export GIT_DIR="@CLEAN@/.git" GIT_WORK_TREE="@CLEAN@"; git commit -m t
+dirty allow declare -x GIT_DIR="@CLEAN@/.git"; git commit -m t
+dirty allow export GIT_DIR="@CLEAN@/.git" && git commit -m t
+dirty allow { export GIT_DIR="@CLEAN@/.git"; }; git commit -m t
+clean allow (export GIT_DIR="@DIRTY@/.git"); git -C "@CLEAN@" commit -m t
+clean allow export GIT_DIR="@DIRTY@/.git" | cat; git commit -m t
+clean allow export GIT_DIR="@DIRTY@/.git" & wait; git commit -m t
+clean allow bash -c 'export GIT_DIR="@DIRTY@/.git"'; git commit -m t
+clean allow bash -c 'source "@FX@/cd-dirty.sh"'; git -C "@CLEAN@" commit -m t
+clean allow source "@FX@/cd-dirty.sh" | cat; git commit -m t
+clean allow (source "@FX@/cd-dirty.sh"); git commit -m t
+clean allow f() { source "@FX@/cd-dirty.sh"; }; git -C "@CLEAN@" commit -m t
+clean allow export FOO="$BAR" PATH="$HOME/bin:$PATH"; git commit -m t
+clean allow GIT_PAGER=cat git log
+clean harm export GIT_DIR="@DIRTY@/.git"; git commit -m t
+clean harm export GIT_WORK_TREE="@DIRTY@" GIT_DIR="@DIRTY@/.git"; bash -c 'git commit -m t'
+clean harm export GIT_DIR="@DIRTY@/.git"; git -C "@CLEAN@" status; git commit -m t
+clean harm eval 'export GIT_DIR="@DIRTY@/.git"'; git -C "@CLEAN@" commit -m t
+clean harm f() { git -C "@CLEAN@" commit -m t; }; export GIT_DIR="@DIRTY@/.git"; f
+clean harm f() { export GIT_DIR="@DIRTY@/.git"; }; f; git -C "@CLEAN@" commit -m t
+clean harm f() { source "@FX@/cd-dirty.sh"; }; f; git commit -m t
+clean - trap 'export GIT_DIR="@DIRTY@/.git"' DEBUG; git -C "@CLEAN@" commit -m t
+clean - export GIT_DIR="$X"; git commit -m t
+clean - export GIT_INDEX_FILE="$TMPDIR/i"; git -C "@CLEAN@" commit -m t
+clean - GIT_INDEX_FILE="$TMPDIR/i" git commit -m t
+dirty harm export GIT_DIR="@CLEAN@/.git"; unset GIT_DIR; git commit -m t
+dirty harm export GIT_DIR="@CLEAN@/.git"; export -n GIT_DIR; git commit -m t
+dirty harm GIT_DIR="@CLEAN@/.git"; git commit -m t
+dirty harm if false; then export GIT_DIR="@CLEAN@/.git"; fi; git commit -m t
+dirty harm false && export GIT_DIR="@CLEAN@/.git"; git commit -m t
+dirty - export GIT_DIR="@CLEAN@/.git" && false; git commit -m t
+dirty harm for n in; do export GIT_DIR="@CLEAN@/.git"; done; git commit -m t
+dirty harm case x in y) export GIT_DIR="@CLEAN@/.git";; esac; git commit -m t
+dirty - export GIT_DIR="@CLEAN@/.git" || true; git commit -m t
+clean - shopt -s lastpipe; cd "@DIRTY@" | cat; git commit -m t
+# Redirections are lexed with their quotes: `'>dir'` is a path.
+fx allow git -C '>clean' commit -m t
+fx allow git -C ">clean" commit -m t
+fx harm git -C '>dirty' commit -m t
+fx harm git -C ">dirty" commit -m t
+fx harm git -C \>dirty commit -m t
+fx harm git -C "@FX@/>dirty" commit -m t
+fx harm cd '>dirty' && git commit -m t
+dirty harm git commit -m '>not a redirect'
+dirty harm git commit -m t 2>&1 | cat
+dirty harm git commit -m t >"$TMPDIR/o" 2>&1
+dirty harm 2>&1 git commit -m t
+dirty harm echo '>' > "$TMPDIR/f"; git commit -m t
+clean allow echo '>' > "$TMPDIR/f"; git commit -m t
+clean allow echo foo>"$TMPDIR/bar"; git commit -m t
+dirty harm exec 3>&1; git commit -m t
+dirty harm git commit -m t <<<msg
+clean harm cat <(git push)
+# Shells fed from a pipe, heredoc or stdin are refused; a script file is not read.
+clean harm echo 'git push' | bash
+clean harm echo 'git push' | sh
+clean harm echo 'git push' | bash -
+clean harm bash -s <<<'git push'
+clean harm sh -s <<<'git push'
+clean harm bash <<EOF<NL>git push<NL>EOF
+clean harm sh <<'EOF'<NL>git push<NL>EOF
+clean harm printf 'git push\n' > "$TMPDIR/s.sh"; bash < "$TMPDIR/s.sh"
+clean harm echo 'git push' | sudo bash
+clean harm echo 'git push' | env bash
+clean harm echo 'git push' | timeout 5 bash
+clean harm echo 'git push' | { bash; }
+clean harm echo 'git push' | (bash)
+clean harm { bash; } <<<'git push'
+clean harm (bash) <<<'git push'
+clean harm if true; then bash; fi <<<'git push'
+clean harm f() { bash; }; f <<<'git push'
+clean harm f() { bash; }; echo 'git push' | f
+clean harm echo 'git push' | bash -c 'bash'
+clean harm exec <<<'git push'; bash
+clean harm printf '%s\n' -c "'git push'" | xargs bash
+clean allow bash "@FX@/cd-dirty.sh"; git commit -m t
+clean allow bash "@FX@/cd-dirty.sh" <<<'git push'; git commit -m t
+clean allow echo x | bash "@FX@/cd-dirty.sh"; git commit -m t
+clean allow bash -c 'echo hi' <<<'git push'
+clean allow echo 'git push' | bash -c 'cat'
+clean allow cat "@FX@/cd-dirty.sh" | grep cd
+clean allow bash --version
+clean allow { bash; } >"$TMPDIR/o"

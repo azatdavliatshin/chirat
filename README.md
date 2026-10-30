@@ -67,10 +67,15 @@ checks the setup. The plugin brings `/chirat:next` (run one prompt file),
 - Refused in every mode, by a plugin hook: `git push` and `npm`/`pnpm`/`yarn`
   `publish`, however the command is wrapped (`git -C`, chains, `$(…)`,
   `bash -c`, `env`, …); and commits that include workspace planning files or
-  `.claude/` ([Commit guard](#commit-guard)). The hook reads command text; it
-  is not a sandbox. It does not cover plumbing such as `git send-pack`, `gh`
-  commands that push (`gh pr create`, `gh repo sync`) or user-defined git
-  aliases.
+  `.claude/` ([Commit guard](#commit-guard)). The hook reads the **text** of
+  each Bash command, not the contents of the files it runs: a script file
+  (`bash run.sh`), a Python or Node program, an `npm` script, a Makefile
+  target can do anything, including push. For the same reason a shell fed
+  from a pipe, heredoc or stdin (`… | sh`, `bash <<EOF`) is refused — its
+  code is not in the command text — while a shell given a script file is not.
+  It is not a sandbox. It does not cover plumbing such as `git send-pack`,
+  `gh` commands that push (`gh pr create`, `gh repo sync`) or user-defined
+  git aliases.
 - Not sandboxed: anything else a run decides to do, in the workspace and
   beyond — installing packages, network access, deleting files. For
   repositories you do not fully trust, or on a machine with sensitive data,
@@ -288,14 +293,15 @@ the human is the only one who pushes.
 It reads every simple command in the call with a small shell-word lexer:
 `"…"`, `'…'`, `\x`, `$'…'`, comments and here-documents are understood, so a
 quoted path with spaces or `&`/`;` is one word and `git commit -m "a; git
-push"` is a commit, not a push. Commands are split on `&&`, `||`, `;`, `|`,
-`&` and newlines, including the insides of `$( … )`, backticks, `${x:-$(…)}`,
-subshells, `bash -c '…'` / `eval` bodies and unquoted heredoc bodies — after
-stripping `VAR=value` and wrappers such as `env`, `command`, `sudo`, `nohup`
-and `time` — and git's global options (`-C`, `-c`, `--git-dir`,
-`--work-tree`, `--no-pager`, …) are walked to find the subcommand. Nothing is
-expanded or executed: a variable, substitution, glob or `~user` leaves a word
-*unresolved*.
+push"` is a commit, not a push; redirections (`>`, `2>&1`, `<<<`, `<<`) are
+recognised only unquoted, so `git -C '>dir' commit` is a commit in `>dir`.
+Commands are split on `&&`, `||`, `;`, `|`, `&` and newlines, including the
+insides of `$( … )`, backticks, `${x:-$(…)}`, subshells, `bash -c '…'` /
+`eval` bodies and unquoted heredoc bodies — after stripping `VAR=value` and
+wrappers such as `env`, `command`, `sudo`, `nohup` and `time` — and git's
+global options (`-C`, `-c`, `--git-dir`, `--work-tree`, `--no-pager`, …) are
+walked to find the subcommand. Nothing is expanded or executed: a variable,
+substitution, glob or `~user` leaves a word *unresolved*.
 
 **Fail closed.** When the guard cannot tell which repository a commit targets
 — an unresolved `-C` / `--git-dir` / `--work-tree` value, a `cd` to an
@@ -305,9 +311,24 @@ cannot tell what a git command does (`git $SUB`), or cannot parse the command
 (`chirat: cannot tell which repository this commits to; run git from the
 repository directory`). A false refusal costs a retry; a false pass would
 break the promise. The same holds for any `cd` the hook cannot follow — in a
-loop, a function, a `source`d file, a `trap`, an unresolved `eval` — the
-commit's target is unknown and the command is refused; `git -C <repo>
-commit` is the form that always works.
+loop, a function, a `trap` — the commit's target is unknown and the command
+is refused.
+
+**Two things are tracked, not one.** `-C` resolves an unknown *directory*:
+after a `cd` the hook lost, `git -C <repo> commit` is checked against
+`<repo>` and passes if it is clean. It does not resolve an unknown *shell*:
+after code the hook could not read has run in the same shell — `source` /
+`.`, `eval` of a variable, a function it could not follow, `shopt -s
+expand_aliases`, an `export` / `unset` of a `GIT_*` variable it could not
+carry — functions, aliases and the environment may all have changed, and
+**every** later `git`, `npm`, `pnpm` or `yarn` command in that shell is
+refused, with or without `-C`. Start a fresh command. A subshell, a pipeline
+member, a background job or a `bash -c` body keeps its unknown state to
+itself. `export GIT_DIR=<repo>/.git` (or `GIT_WORK_TREE`) with a literal
+value is carried like `GIT_DIR=… git commit`, so the commit is checked where
+it really goes; `GIT_INDEX_FILE` and other `GIT_*` variables, which move
+git's layout or the very index the guard inspects, refuse a commit as a
+prefix and make the shell unknown when exported.
 
 - **Push and publish, in any form:** `git push`, `git -C repos/x push`,
   `cd repos/x && git push`, `git status; git push`, `echo $(git push)`,
@@ -316,8 +337,13 @@ commit` is the form that always works.
   `git log --grep push`, `echo git push` and `npm run publish-docs` pass.
 - **Every `git commit`** in the call is checked against the repo it would
   commit to — the dir from `git -C`, `--git-dir` / `--work-tree` (also
-  `GIT_DIR` / `GIT_WORK_TREE`), an earlier `cd` / `pushd` / `env -C` in the
-  chain, or the session's cwd.
+  `GIT_DIR` / `GIT_WORK_TREE`, as a prefix or exported), an earlier `cd` /
+  `pushd` / `env -C` in the chain, or the session's cwd.
+- **Shells fed from a pipe, heredoc or stdin** are refused: `… | sh`,
+  `… | bash -`, `bash -s`, `bash <<EOF`, `sh <<<"$X"`, `bash < file`, also
+  behind `sudo`, `env`, `timeout`, `xargs` or inside `bash -c`. They run code
+  the hook cannot see. A shell given a script file (`bash tests/run.sh`) is
+  allowed, and the file is not read — see [Safety](#safety).
 - **Without `jq` or `python3`** the command cannot be read: the commit check
   is skipped, but any text that looks like `git … push` or `npm … publish`
   is refused (false positives are possible, and the message says so).

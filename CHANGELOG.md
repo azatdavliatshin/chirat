@@ -24,10 +24,17 @@ All notable changes are listed here, in the
   The guard now fails closed: a commit whose repository it cannot tell (a
   variable or glob in the path, `cd` to an unresolved dir, a literal path
   that is not a repository, unbalanced quotes) is refused with the reason
-  instead of let through. A differential test (`plugin/tests/guard-corpus.sh`)
-  runs every corpus line through the guard and through a real bash with
-  `git` shimmed, and fails if anything the real run would commit in a dirty
-  repository got past the guard.
+  instead of let through. The shell state is tracked apart from the
+  directory: after `source`, an unresolved `eval`, a function the hook could
+  not follow or a `GIT_*` variable it could not carry, every later `git` /
+  `npm` command in that shell is refused, `-C` or not; an exported git
+  environment (`export GIT_DIR=…`) is followed like a prefix assignment;
+  shells fed from pipes or heredocs (`… | sh`, `bash <<EOF`, `bash -s`) are
+  refused, a shell given a script file is not; redirections are lexed with
+  their quotes, so `git -C '>dir' commit` is a commit. A differential test
+  (`plugin/tests/guard-corpus.sh`) runs every corpus line through the guard
+  and through a real bash with `git` shimmed, and fails if anything the real
+  run would commit in a dirty repository got past the guard.
 - `chirat-watch --dry-run` writes nothing, as the README promised: it no
   longer recovers a stale lock for real (it prints `would set … pending` /
   `would remove lock …` and what would run next), it creates no `runs/`,

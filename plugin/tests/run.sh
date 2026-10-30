@@ -810,11 +810,11 @@ eq "fn: a=(); cd clean; git commit from dirty is allowed (an array, not a functi
 
 # 4. source, eval, trap, builtin, pushd, cd operands, shopt.
 eq "src: source x.sh; git commit from clean" 2 "$(jhook "$cl" "source x.sh; $gc")"
-reason "src: a sourced file may do anything" "$unres_msg"
+reason "src: a sourced file may do anything" "after source the shell is unknown"
 eq "src: . ./env.sh && git commit from clean" 2 "$(jhook "$cl" ". ./env.sh && $gc")"
 eq "src: source x.sh alone is allowed" 0 "$(jhook "$cl" "source x.sh")"
 eq "eval: eval \"\$CMD\"; git commit from clean" 2 "$(jhook "$cl" "eval \"\$CMD\"; $gc")"
-reason "eval: an unresolved string is unknown" "$unres_msg"
+reason "eval: an unresolved string is unknown" "after eval of a string that is not literal the shell is unknown"
 eq "eval: eval 'cd clean'; git commit from dirty is allowed" 0 "$(jhook "$dr" "eval 'cd $cl'; $gc")"
 eq "eval: eval \"\$CMD\" alone is allowed" 0 "$(jhook "$cl" "eval \"\$CMD\"")"
 eq "trap: trap 'cd clean' EXIT; git commit from dirty" 2 "$(jhook "$dr" "trap 'cd $cl' EXIT; $gc")"
@@ -836,13 +836,139 @@ eq "cd: cd -P clean && git commit from dirty is allowed" 0 "$(jhook "$dr" "cd -P
 eq "cd: cd -x clean; git commit from dirty" 2 "$(jhook "$dr" "cd -x $cl; $gc")"
 eq "cd: cd -- clean && git commit from dirty is allowed" 0 "$(jhook "$dr" "cd -- $cl && $gc")"
 eq "shopt: shopt -s expand_aliases; alias cd=true; cd clean; git commit from dirty" 2 "$(jhook "$dr" "shopt -s expand_aliases; alias cd=true; cd $cl; $gc")"
-reason "shopt: alias expansion is unknown" "$unres_msg"
+reason "shopt: alias expansion is unknown" "after shopt the shell is unknown"
 eq "shopt: shopt -s nullglob; cd clean; git commit from dirty is allowed" 0 "$(jhook "$dr" "shopt -s nullglob; cd $cl; $gc")"
 guard_shell=(env CDPATH=/x bash)
 eq "cd: with CDPATH a relative cd is unknown" 2 "$(jhook "$tmp" "cd clean; $gc")"
 reason "cd: CDPATH reason" "$unres_msg"
 eq "cd: with CDPATH ./clean is still followed" 0 "$(jhook "$tmp" "cd ./clean; $gc")"
 guard_shell=(bash)
+
+# --- guard: shell state apart from the directory --------------------------------
+# Two dimensions (hook header): `-C` cures an unknown directory, never an
+# unknown shell; an exported GIT_DIR / GIT_WORK_TREE is carried like a prefix.
+
+shell_unknown="the shell is unknown"
+opaque_msg="chirat: a shell fed from a pipe, heredoc or stdin runs code the hook cannot see; put it in a script file"
+eq "env: export GIT_DIR=clean; git commit from dirty is allowed" 0 "$(jhook "$dr" "export GIT_DIR=$cl/.git; $gc")"
+eq "env: export GIT_DIR=clean GIT_WORK_TREE=clean; git commit from dirty is allowed" 0 "$(jhook "$dr" "export GIT_DIR=$cl/.git GIT_WORK_TREE=$cl; $gc")"
+eq "env: declare -x GIT_DIR=clean; git commit from dirty is allowed" 0 "$(jhook "$dr" "declare -x GIT_DIR=$cl/.git; $gc")"
+eq "env: export GIT_DIR=dirty GIT_WORK_TREE=dirty; git -C clean commit (the reviewer's line)" 2 "$(jhook "$cl" "export GIT_DIR=\"$dr/.git\" GIT_WORK_TREE=\"$dr\"; git -C \"$cl\" commit -m t")"
+reason "env: the exported repo is the one checked" "settings.local.json"
+eq "env: export GIT_DIR=\"\$X\"; git commit is refused" 2 "$(jhook "$cl" "export GIT_DIR=\"\$X\"; $gc")"
+reason "env: an unresolved export leaves the shell unknown" "after export GIT_DIR $shell_unknown"
+eq "env: export GIT_INDEX_FILE=/tmp/i; git -C clean commit is refused" 2 "$(jhook "$cl" "export GIT_INDEX_FILE=/tmp/i; git -C $cl commit -m t")"
+reason "env: another GIT_* variable leaves the shell unknown" "after export GIT_INDEX_FILE $shell_unknown"
+eq "env: export GIT_DIR=clean; unset GIT_DIR; git commit from dirty is refused" 2 "$(jhook "$dr" "export GIT_DIR=$cl/.git; unset GIT_DIR; $gc")"
+reason "env: unset leaves the shell unknown" "after unset GIT_DIR $shell_unknown"
+eq "env: export -n GIT_DIR; git commit from clean is refused" 2 "$(jhook "$cl" "export -n GIT_DIR; $gc")"
+eq "env: export GIT_DIR (no value); git commit from clean is refused" 2 "$(jhook "$cl" "export GIT_DIR; $gc")"
+eq "env: GIT_DIR=clean; git commit from dirty (a standalone assignment) is refused" 2 "$(jhook "$dr" "GIT_DIR=$cl/.git; $gc")"
+reason "env: a standalone GIT_* assignment leaves the shell unknown" "after a standalone GIT_* assignment $shell_unknown"
+eq "env: (export GIT_DIR=dirty); git -C clean commit is allowed (scoped)" 0 "$(jhook "$cl" "(export GIT_DIR=$dr/.git); git -C $cl commit -m t")"
+eq "env: export GIT_DIR=dirty | cat; git commit from clean is allowed" 0 "$(jhook "$cl" "export GIT_DIR=$dr/.git | cat; $gc")"
+eq "env: export GIT_DIR=dirty & wait; git commit from clean is allowed" 0 "$(jhook "$cl" "export GIT_DIR=$dr/.git & wait; $gc")"
+eq "env: bash -c 'export GIT_DIR=dirty'; git commit from clean is allowed" 0 "$(jhook "$cl" "bash -c 'export GIT_DIR=$dr/.git'; $gc")"
+eq "env: export GIT_DIR=dirty; git -C clean status is allowed (carried, no commit)" 0 "$(jhook "$cl" "export GIT_DIR=$dr/.git; git -C $cl status")"
+eq "env: export GIT_DIR=\"\$X\"; git -C clean status is refused (unknown shell, every git)" 2 "$(jhook "$cl" "export GIT_DIR=\"\$X\"; git -C $cl status")"
+eq "env: export GIT_DIR=clean && git commit from dirty is allowed (the chain sees it)" 0 "$(jhook "$dr" "export GIT_DIR=$cl/.git && $gc")"
+eq "env: export GIT_DIR=clean && true; git commit from dirty is refused (after the chain)" 2 "$(jhook "$dr" "export GIT_DIR=$cl/.git && true; $gc")"
+eq "env: if true; then export GIT_DIR=clean; fi; git commit from dirty is refused" 2 "$(jhook "$dr" "if true; then export GIT_DIR=$cl/.git; fi; $gc")"
+eq "env: for n in 1; do export GIT_DIR=clean; done; git commit from dirty is refused" 2 "$(jhook "$dr" "for n in 1; do export GIT_DIR=$cl/.git; done; $gc")"
+eq "env: { export GIT_DIR=clean; }; git commit from dirty is allowed" 0 "$(jhook "$dr" "{ export GIT_DIR=$cl/.git; }; $gc")"
+eq "env: eval 'export GIT_DIR=dirty'; git -C clean commit is refused" 2 "$(jhook "$cl" "eval 'export GIT_DIR=$dr/.git'; git -C $cl commit -m t")"
+eq "env: trap 'export GIT_DIR=dirty' DEBUG; git -C clean commit is refused" 2 "$(jhook "$cl" "trap 'export GIT_DIR=$dr/.git' DEBUG; git -C $cl commit -m t")"
+eq "env: f() { git -C clean commit; }; export GIT_DIR=dirty; f is refused" 2 "$(jhook "$cl" "f() { git -C $cl commit -m t; }; export GIT_DIR=$dr/.git; f")"
+reason "env: the function's commit was read without the export" "f commits and is called with an exported git environment"
+eq "env: f() { echo hi; }; export GIT_DIR=clean; f; git commit from dirty is allowed" 0 "$(jhook "$dr" "f() { echo hi; }; export GIT_DIR=$cl/.git; f; $gc")"
+eq "env: f() { export GIT_DIR=dirty; }; f; git -C clean commit is refused" 2 "$(jhook "$cl" "f() { export GIT_DIR=$dr/.git; }; f; git -C $cl commit -m t")"
+eq "env: export FOO=\"\$BAR\"; git commit from clean is allowed (not GIT_*)" 0 "$(jhook "$cl" "export FOO=\"\$BAR\" PATH=\"\$HOME/bin:\$PATH\"; $gc")"
+eq "env: GIT_INDEX_FILE=/tmp/i git commit from clean is refused" 2 "$(jhook "$cl" "GIT_INDEX_FILE=/tmp/i $gc")"
+reason "env: the prefix variable is named" "GIT_INDEX_FILE in the environment changes where this commit goes"
+eq "env: env GIT_OBJECT_DIRECTORY=/tmp/o git commit from clean is refused" 2 "$(jhook "$cl" "env GIT_OBJECT_DIRECTORY=/tmp/o $gc")"
+eq "env: GIT_PAGER=cat git log is allowed (not a commit)" 0 "$(jhook "$cl" "GIT_PAGER=cat git log")"
+eq "env: GIT_INDEX_FILE=/tmp/i bash -c 'git commit' from clean is refused" 2 "$(jhook "$cl" "GIT_INDEX_FILE=/tmp/i bash -c '$gc'")"
+eq "shell: source x; git -C clean commit is refused (-C does not cure the shell)" 2 "$(jhook "$dr" "source x; git -C $cl commit -m t")"
+reason "shell: the reason names the shell, not the directory" "after source $shell_unknown"
+eq "shell: bash -c 'source x'; git -C clean commit is allowed (scoped)" 0 "$(jhook "$dr" "bash -c 'source x'; git -C $cl commit -m t")"
+eq "shell: source x; git status is refused (every git)" 2 "$(jhook "$cl" "source x; git status")"
+eq "shell: source x; npm test is refused" 2 "$(jhook "$cl" "source x; npm test")"
+reason "shell: the npm reason names the shell" "this npm command cannot be checked"
+eq "shell: source x | cat; git commit from clean is allowed" 0 "$(jhook "$cl" "source x | cat; $gc")"
+eq "shell: source x & git commit from clean is allowed" 0 "$(jhook "$cl" "source x & $gc")"
+eq "shell: (source x); git commit from clean is allowed" 0 "$(jhook "$cl" "(source x); $gc")"
+eq "shell: f() { source x; }; f; git -C clean commit is refused" 2 "$(jhook "$dr" "f() { source x; }; f; git -C $cl commit -m t")"
+reason "shell: the call is named" "after a call of f, whose body changes the shell"
+eq "shell: f() { source x; }; git -C clean commit is allowed (defining runs nothing)" 0 "$(jhook "$dr" "f() { source x; }; git -C $cl commit -m t")"
+eq "shell: eval \"\$CMD\"; git -C clean commit is refused" 2 "$(jhook "$dr" "eval \"\$CMD\"; git -C $cl commit -m t")"
+eq "shell: trap \"\$T\" EXIT; git -C clean commit is refused" 2 "$(jhook "$dr" "trap \"\$T\" EXIT; git -C $cl commit -m t")"
+eq "shell: shopt -s lastpipe; cd clean | cat; git commit from dirty is refused" 2 "$(jhook "$dr" "shopt -s lastpipe; cd $cl | cat; $gc")"
+eq "shell: shopt -s expand_aliases; alias git=…; git -C clean commit is refused" 2 "$(jhook "$dr" "shopt -s expand_aliases; alias git='git -C $dr'; git -C $cl commit -m t")"
+eq "shell: source x; cd clean; git commit is refused" 2 "$(jhook "$dr" "source x; cd $cl; $gc")"
+eq "shell: source x alone is still allowed" 0 "$(jhook "$cl" "source x; ls")"
+
+# --- guard: redirections are lexer tokens ----------------------------------------
+# A quoted `>` is text; an unquoted one, with its target, is never an operand.
+
+rx="$tmp/>x"
+git init -q -b main "$rx"
+echo "code" >"$rx/main.sh"
+git -C "$rx" add main.sh
+git -C "$rx" -c user.name=t -c user.email=t@t commit -q -m init
+echo "more" >>"$rx/main.sh"
+git -C "$rx" add main.sh
+eq "redir: git -C '>x' commit, clean, is a commit in >x" 0 "$(jhook "$tmp" "git -C '>x' commit -m t")"
+eq "redir: git -C \">x\" commit, clean, is a commit in >x" 0 "$(jhook "$tmp" "git -C \">x\" commit -m t")"
+mkdir -p "$rx/.claude"
+echo "{}" >"$rx/.claude/settings.local.json"
+git -C "$rx" add -f .claude/settings.local.json
+eq "redir: git -C '>x' commit, dirty, is checked" 2 "$(jhook "$tmp" "git -C '>x' commit -m t")"
+reason "redir: the quoted path was not taken for a redirection" "settings.local.json"
+eq "redir: git -C \">x\" commit, dirty, is checked" 2 "$(jhook "$tmp" "git -C \">x\" commit -m t")"
+eq "redir: git -C \\>x commit, dirty, is checked" 2 "$(jhook "$tmp" "git -C \\>x commit -m t")"
+eq "redir: cd '>x' && git commit, dirty, is checked" 2 "$(jhook "$tmp" "cd '>x' && $gc")"
+eq "redir: git -C '>missing' commit is refused (no such repo)" 2 "$(jhook "$tmp" "git -C '>missing' commit -m t")"
+reason "redir: …with the unresolved reason" "$unres_msg"
+eq "redir: git commit -m '>not a redirect' from dirty is a commit" 2 "$(jhook "$dr" "git commit -m '>not a redirect'")"
+reason "redir: …checked for the leaked file" "settings.local.json"
+eq "redir: cd clean >/dev/null && git commit from dirty is allowed" 0 "$(jhook "$dr" "cd $cl >/dev/null && $gc")"
+eq "redir: cd clean > /dev/null 2>&1 && git commit from dirty is allowed" 0 "$(jhook "$dr" "cd $cl > /dev/null 2>&1 && $gc")"
+eq "redir: git commit 2>&1 | tee log from dirty is checked" 2 "$(jhook "$dr" "$gc 2>&1 | tee log")"
+eq "redir: git commit >out 2>err from dirty is checked" 2 "$(jhook "$dr" "$gc >out 2>err")"
+eq "redir: 2>&1 git commit from dirty is checked" 2 "$(jhook "$dr" "2>&1 $gc")"
+eq "redir: echo '>' > file; git commit from dirty is checked" 2 "$(jhook "$dr" "echo '>' > file; $gc")"
+eq "redir: echo '>' > file; git commit from clean is allowed" 0 "$(jhook "$cl" "echo '>' > file; $gc")"
+eq "redir: echo foo>bar; git commit from clean is allowed" 0 "$(jhook "$cl" "echo foo>bar; $gc")"
+eq "redir: exec 3>&1; git commit from clean is allowed" 0 "$(jhook "$cl" "exec 3>&1; $gc")"
+eq "redir: exec {fd}>out; git commit from clean is allowed" 0 "$(jhook "$cl" "exec {fd}>out; $gc")"
+eq "redir: git commit <<<msg from dirty is checked" 2 "$(jhook "$dr" "$gc <<<msg")"
+eq "redir: cat <(git push) is a push" 2 "$(jhook "$cl" "cat <(git push)")"
+eq "redir: a push in a redirection target is seen" 2 "$(jhook "$cl" "echo x >\$(git push)")"
+
+# --- guard: shells fed from a pipe, heredoc or stdin -----------------------------
+
+o="echo 'git push'"
+for c in "$o | bash" "$o | sh" "$o | bash -" "$o | zsh" "$o | /bin/bash" "bash -s <<<'git push'" "sh -s" \
+  "bash <<EOF
+git push
+EOF" "sh <<'EOF'
+git push
+EOF" "bash <<<\"\$X\"" "bash < script.sh" "bash 0<script.sh" "$o | sudo bash" "$o | env bash" "$o | nice bash" \
+  "$o | timeout 5 bash" "$o | exec bash" "$o | { bash; }" "$o | (bash)" "{ bash; } <<<'git push'" "(bash) <script.sh" \
+  "if true; then bash; fi <script.sh" "f() { bash; }; f <<<'git push'" "f() { bash; }; $o | f" "$o | bash -c 'bash'" \
+  "exec <<<'git push'; bash" "exec <script.sh; bash" "echo -c 'git push' | xargs bash" "echo x | xargs sh -c" "bash -\$X"; do
+  eq "opaque: $c" 2 "$(jhook "$cl" "$c")"
+done
+reason "opaque: the reason" "$opaque_msg"
+for c in "bash tests/run.sh" "bash repos/x/tests/run.sh --fast" "bash -c 'echo hi'" "sh -ec 'ls'" "cat x | grep y" \
+  "python3 - <<EOF
+print(1)
+EOF" "bash --version" "sh --help" "bash \"\$f\"" "bash -x \"\$f\"" "bash script.sh <input" "echo x | bash script.sh" \
+  "$o | bash -c 'cat'" "bash -c 'echo hi' <<<'git push'" "bash" "sudo bash -c 'ls'" "{ bash; } >out" "(bash) 2>&1"; do
+  eq "opaque: allowed: $c" 0 "$(jhook "$cl" "$c")"
+done
+eq "opaque: a -c body is still walked" 2 "$(jhook "$cl" "$o | bash -c 'git push'")"
+reason "opaque: …as a push" "$push_msg"
 
 # --- guard: differential corpus (guard vs. a real shell) ---------------------
 
