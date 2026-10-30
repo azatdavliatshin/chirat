@@ -162,8 +162,9 @@ plugin is enabled): `chirat-prompt get <file> <key>`,
    say so in the status file. A worktree run leaves its worktree as is.
    Then, if the workspace root is a git repository (`git -C <ws>
    rev-parse --git-dir` succeeds), record the run there:
-   `git -C <ws> add <plans_dir> <status_dir>` (the status file and the
-   prompt file's status flip) and then
+   `git -C <ws> add <file> <status_dir>/YYYY-MM-DD-<topic>.md` — only this
+   prompt file (its status flip) and its status file, never the whole
+   `<plans_dir>` (a draft of another prompt may be sitting there) — and then
    `git -C <ws> commit -m "docs: <topic> <final>"`.
    Never stage `.chirat/` (chirat-watch commits the run log once this process
    has exited); ignore a failure of this commit (for example nothing

@@ -340,7 +340,13 @@ case $l_ts in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[
 eq "status.log: file relative to the workspace" docs/plans/log.prompt-1.md "$l_file"
 eq "status.log: old and new" "pending running" "$l_old $l_new"
 case $l_pid$l_ppid in *[!0-9]* | '') ko "status.log: pid and ppid are numbers" "$l_pid $l_ppid" ;; *) ok "status.log: pid and ppid are numbers" ;; esac
-case $l_parent in '' | -) ko "status.log: parent command named" "$l_parent" ;; *) ok "status.log: parent command named" ;; esac
+# The parent's name comes from `ps -o comm= -p <ppid>`; a sandbox that denies
+# looking at other processes leaves it empty — skipped there, not failed.
+if ps -o comm= -p "$$" >/dev/null 2>&1; then
+  case $l_parent in '' | -) ko "status.log: parent command named" "$l_parent" ;; *) ok "status.log: parent command named" ;; esac
+else
+  echo "skip status.log: parent command named (ps -o comm= -p is denied in this sandbox)"
+fi
 "$rp" set "$lf" status running
 eq "status.log: same value twice adds nothing" 1 "$(wc -l <"$slog" | tr -d ' ')"
 "$rp" set "$lf" worktree plugin
@@ -593,6 +599,94 @@ eq "git-dir: nonexistent --git-dir is refused" 2 "$(jhook "$tmp" "git --git-dir=
 eq "git-dir: clean repo through --git-dir is allowed" 0 "$(jhook "$tmp" "git --git-dir=\"$mc/.git\" --work-tree=\"$mc\" commit -m x")"
 git -C "$sp" rm -q --cached .claude/settings.local.json
 eq "spaces: clean again → allowed" 0 "$(jhook "$tmp" "git -C \"$sp\" commit -m x")"
+
+# --- guard: substitutions in quotes, -c bodies, cd under control flow ---------
+
+# Two plain-path repos: `cl` is clean, `dr` has a workspace file staged.
+cl=$tmp/clean
+dr=$tmp/dirty
+for d in "$cl" "$dr"; do
+  git init -q -b main "$d"
+  echo "code" >"$d/main.sh"
+  git -C "$d" add main.sh
+  git -C "$d" -c user.name=t -c user.email=t@t commit -q -m init
+  echo "more" >>"$d/main.sh"
+  git -C "$d" add main.sh
+done
+mkdir -p "$dr/.claude"
+echo "{}" >"$dr/.claude/settings.local.json"
+git -C "$dr" add -f .claude/settings.local.json
+gc="git commit -m t"
+push_msg="chirat: git push is the human's step — commit on the branch and stop; the human reviews, merges and pushes."
+
+# 1. A double-quoted region inside ${…} is scanned like any other.
+eq "quotes in \${…}: \"\${x:-\"\$(git push)\"}\" is a push" 2 "$(jhook "$cl" "echo \"\${x:-\"\$($gp)\"}\"")"
+reason "quotes in \${…}: refused as a push" "$push_msg"
+eq "quotes in \${…}: \"\${x:-\"\$(git commit)\"}\" is a commit" 2 "$(jhook "$dr" "echo \"\${x:-\"\$($gc)\"}\"")"
+reason "quotes in \${…}: the commit is checked for the leaked file" "settings.local.json"
+eq "quotes in \${…}: the single-quoted twin is text" 0 "$(jhook "$cl" "echo '\${x:-\"\$($gp)\"}'")"
+eq "quotes in \${…}: two levels of \"\$(…)\"" 2 "$(jhook "$cl" "echo \"\${x:-\$(echo \"\$($gp)\")}\"")"
+eq "quotes in \${…}: \"\${x:-\"literal; git push\"}\" is text" 0 "$(jhook "$cl" "echo \"\${x:-\"literal; $gp\"}\"")"
+eq "quotes in \${…}: inside an unquoted heredoc body" 2 "$(jhook "$cl" "cat <<EOF
+\${x:-\"\$($gp)\"}
+EOF")"
+eq "quotes in \${…}: inside a bash -c body" 2 "$(jhook "$cl" "bash -c 'echo \"\${x:-\"\$($gp)\"}\"'")"
+eq "quotes in \${…}: \${x:+\"\`git push\`\"} backticks" 2 "$(jhook "$cl" "echo \"\${x:+\"\`$gp\`\"}\"")"
+eq "quotes in \${…}: nested \${y:-\"\$(git push)\"} inside \${x:-…}" 2 "$(jhook "$cl" "echo \"\${x:-\${y:-\"\$($gp)\"}}\"")"
+eq "quotes in \${…}: an unbalanced quote inside is a parse error" 2 "$(jhook "$cl" "echo \"\${x:-\"abc}\"")"
+reason "quotes in \${…}: parse error reason" "cannot parse this command"
+
+# 2. A -c body / eval inherits the caller's repository context.
+eq "context: GIT_DIR=dirty bash -c 'git commit' from clean" 2 "$(jhook "$cl" "GIT_DIR=\"$dr/.git\" bash -c '$gc'")"
+reason "context: the dirty repo is the one checked" "settings.local.json"
+eq "context: env -C dirty bash -c 'git commit' from clean" 2 "$(jhook "$cl" "env -C $dr bash -c '$gc'")"
+eq "context: cd dirty && bash -c 'git commit' from clean" 2 "$(jhook "$cl" "cd $dr && bash -c '$gc'")"
+eq "context: env GIT_WORK_TREE=dirty sh -c 'git commit' from clean" 2 "$(jhook "$cl" "env GIT_WORK_TREE=$dr GIT_DIR=$dr/.git sh -c '$gc'")"
+eq "context: GIT_DIR=dirty eval 'git commit' from clean" 2 "$(jhook "$cl" "GIT_DIR=$dr/.git eval '$gc'")"
+eq "context: GIT_DIR=clean bash -c 'git commit' from dirty is allowed" 0 "$(jhook "$dr" "GIT_DIR=$cl/.git bash -c '$gc'")"
+eq "context: env -C clean bash -c 'git commit' from dirty is allowed" 0 "$(jhook "$dr" "env -C $cl bash -c '$gc'")"
+eq "context: bash -c 'cd dirty && git commit' from clean" 2 "$(jhook "$cl" "bash -c 'cd $dr && $gc'")"
+eq "context: bash -c 'cd dirty'; git commit from clean is allowed" 0 "$(jhook "$cl" "bash -c 'cd $dr' ; $gc")"
+eq "context: GIT_DIR=\$X bash -c 'git commit' is refused" 2 "$(jhook "$cl" "GIT_DIR=\$X bash -c '$gc'")"
+reason "context: unresolved GIT_DIR reason" "$unres_msg"
+eq "context: cd \$D && bash -c 'git commit' is refused" 2 "$(jhook "$cl" "cd \$D && bash -c '$gc'")"
+eq "context: GIT_DIR=dirty bash -c 'ls' is allowed" 0 "$(jhook "$cl" "GIT_DIR=$dr/.git bash -c 'ls'")"
+eq "context: GIT_DIR=dirty bash -c 'git commit'; git commit from clean" 2 "$(jhook "$cl" "GIT_DIR=$dr/.git bash -c '$gc'; $gc")"
+eq "context: GIT_DIR=dirty true; git commit from clean is allowed" 0 "$(jhook "$cl" "GIT_DIR=$dr/.git true; $gc")"
+eq "context: sudo bash -c 'git push' is a push" 2 "$(jhook "$cl" "sudo bash -c '$gp'")"
+eq "context: env -C dirty sh -lc 'git commit' from clean" 2 "$(jhook "$cl" "env -C $dr sh -lc '$gc'")"
+
+# 3. The directory is a set of candidates: a commit is checked against every one.
+eq "flow: cd clean | cat; git commit from dirty" 2 "$(jhook "$dr" "cd \"$cl\" | cat; $gc")"
+reason "flow: the pipeline cd changed nothing" "settings.local.json"
+eq "flow: if false; then cd clean; fi; git commit from dirty" 2 "$(jhook "$dr" "if false; then cd $cl; fi; $gc")"
+eq "flow: cd clean && git commit from dirty is allowed" 0 "$(jhook "$dr" "cd $cl && $gc")"
+eq "flow: cd clean && true; git commit from dirty (after the chain: {dirty, clean})" 2 "$(jhook "$dr" "cd $cl && true; $gc")"
+eq "flow: cd clean && git add .; git commit from dirty" 2 "$(jhook "$dr" "cd $cl && git add .; $gc")"
+eq "flow: cd clean; git add . && git commit from dirty is allowed" 0 "$(jhook "$dr" "cd $cl; git add . && $gc")"
+eq "flow: false && cd clean; git commit from dirty" 2 "$(jhook "$dr" "false && cd $cl; $gc")"
+eq "flow: (cd dirty); git commit from clean is allowed" 0 "$(jhook "$cl" "(cd $dr); $gc")"
+eq "flow: cd dirty || true; git commit from clean" 2 "$(jhook "$cl" "cd $dr || true; $gc")"
+eq "flow: while false; do cd clean; done; git commit from dirty" 2 "$(jhook "$dr" "while false; do cd $cl; done; $gc")"
+eq "flow: until true; do cd clean; done; git commit from dirty" 2 "$(jhook "$dr" "until true; do cd $cl; done; $gc")"
+eq "flow: for d in x; do cd dirty; done; git commit from clean" 2 "$(jhook "$cl" "for d in x; do cd $dr; done; $gc")"
+eq "flow: case … esac with a cd inside; git commit from clean" 2 "$(jhook "$cl" "case x in y) cd $dr;; *) true;; esac; $gc")"
+eq "flow: if cd clean; then git commit; fi from dirty is allowed" 0 "$(jhook "$dr" "if cd $cl; then $gc; fi")"
+eq "flow: if cd clean; then :; fi; git commit from dirty" 2 "$(jhook "$dr" "if cd $cl; then :; fi; $gc")"
+eq "flow: cd dirty; cd clean; git commit from dirty is allowed" 0 "$(jhook "$dr" "cd $dr; cd $cl; $gc")"
+eq "flow: cd clean && cd dirty && git commit from clean" 2 "$(jhook "$cl" "cd $cl && cd $dr && $gc")"
+eq "flow: cd clean || cd dirty; git commit from dirty" 2 "$(jhook "$dr" "cd $cl || cd $dr; $gc")"
+eq "flow: cd clean && git commit | cat from dirty is allowed" 0 "$(jhook "$dr" "cd $cl && $gc | cat")"
+eq "flow: { cd clean; }; git commit from dirty is allowed" 0 "$(jhook "$dr" "{ cd $cl; }; $gc")"
+eq "flow: cd clean &&<newline>git commit from dirty is allowed" 0 "$(jhook "$dr" "cd $cl &&
+$gc")"
+eq "flow: cd clean; git commit; cd dirty from dirty is allowed" 0 "$(jhook "$dr" "cd $cl; $gc; cd $dr")"
+eq "flow: git -C relative after a conditional cd" 2 "$(jhook "$tmp" "false && cd $tmp; git -C dirty commit -m t")"
+eq "flow: for x in \$(git push); do :; done is a push" 2 "$(jhook "$cl" "for x in \$($gp); do :; done")"
+eq "flow: case \$(git push) in … esac is a push" 2 "$(jhook "$cl" "case \$($gp) in x) :;; esac")"
+eq "flow: cd - inside if; git commit from clean is refused" 2 "$(jhook "$cl" "if true; then cd -; fi; $gc")"
+reason "flow: unknown candidate reason" "$unres_msg"
+eq "flow: cd \$D | cat; git commit from clean is allowed" 0 "$(jhook "$cl" "cd \$D | cat; $gc")"
 
 # --- summary -------------------------------------------------------------
 

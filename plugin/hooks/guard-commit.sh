@@ -20,13 +20,29 @@
 # push"` is a commit, not a push. Operators (`&&`, `||`, `;`, `|`, `&`,
 # newlines, `(`, `)`) separate simple commands; `$(…)`, backticks, `${x:-$(…)}`,
 # `bash -c '…'` / `eval '…'` bodies and the bodies of here-documents with an
-# unquoted delimiter are scanned too, in their own scope. Nothing is ever
+# unquoted delimiter are scanned too, each as its own command scope. Every
+# double-quoted region, wherever it appears (a word, the value in `${…}`, a
+# heredoc body, a `-c` body), is scanned for `$(…)`, backticks and `${…}`
+# — `"${x:-"$(git push)"}"` is a push; only `'…'` is literal. Nothing is ever
 # expanded, evaluated or executed: `$VAR`, `${…}`, `$(…)`, backticks, globs
 # and `~user` leave a word *unresolved*. Each simple command loses leading
 # `VAR=value` assignments and the wrappers `command`, `env`, `exec`, `sudo`,
 # `nohup`, `time`, `nice`, `timeout`, `xargs`; for `git`, global options are
 # walked to find the subcommand, so `git stash push` and `git log --grep push`
 # pass.
+#
+# The current directory is a SET of candidates, not one value — do not "fix"
+# this back to a single cwd. A top-level `cd X` makes the set {X}; a `cd` in a
+# pipeline, in `( … )` or in a `-c` body changes nothing outside; a `cd` under
+# if/while/until/for/case or behind `&&`/`||` ADDS X to the set, except that
+# `cd X && git commit` sees exactly {X}; `cd -`, `popd`, `cd "$VAR"` make the
+# set unknown. A commit is checked against every candidate; one dirty or
+# unknown candidate refuses it.
+#
+# A `bash -c` / `sh -c` / `eval` body inherits the context in force at the
+# call: the directory set (from `cd`, `env -C`) and `GIT_DIR` /
+# `GIT_WORK_TREE` from prefix assignments or `env VAR=…`. A `cd` inside a
+# `-c` body stays in the body; inside `eval` it reaches the caller.
 #
 # Fail closed: when the hook cannot tell which repository a commit targets —
 # an unresolved `-C` / `--git-dir` / `--work-tree` value, a `cd` to an
@@ -100,19 +116,10 @@ print(d if isinstance(d, str) else "")
 command=$(json_field .tool_input.command)
 cur=$(json_field .cwd)
 [ -n "$cur" ] || cur=$PWD
-cur_known=1 # 0 once a `cd` went somewhere the hook cannot name
 
 refuse() { # refuse <message>
   echo "$1" >&2
   exit 2
-}
-
-# resolve <base> <dir>: print <dir> made absolute against <base>.
-resolve() {
-  local d=$2
-  # shellcheck disable=SC2088 # a literal ~ to expand by hand
-  case $d in "~") d=$HOME ;; "~/"*) d=$HOME/${d#"~/"} ;; esac
-  case $d in /*) printf '%s' "$d" ;; *) printf '%s' "$1/$d" ;; esac
 }
 
 # --- lexer -------------------------------------------------------------------
@@ -174,11 +181,18 @@ lex_until() {
       ')')
         if [ -n "$stop" ] && [ "$depth" -eq 0 ]; then pos=$((pos + 1)); emit_word; return 0; fi
         emit_op ')'; [ "$depth" -gt 0 ] && depth=$((depth - 1)); pos=$((pos + 1)) ;;
-      ';') emit_op ';'; pos=$((pos + 1)); [ "${s:pos:1}" = ';' ] && pos=$((pos + 1)) ;;
-      '|') emit_op ';'; pos=$((pos + 1)); case ${s:pos:1} in '|' | '&') pos=$((pos + 1)) ;; esac ;;
+      ';')
+        case ${s:pos+1:1} in
+          ';') pos=$((pos + 2)); [ "${s:pos:1}" = '&' ] && pos=$((pos + 1)); emit_op ';;' ;;
+          '&') pos=$((pos + 2)); emit_op ';;' ;;
+          *) emit_op ';'; pos=$((pos + 1)) ;;
+        esac ;;
+      '|')
+        if [ "${s:pos+1:1}" = '|' ]; then emit_op '||'; pos=$((pos + 2))
+        else emit_op '|'; pos=$((pos + 1)); [ "${s:pos:1}" = '&' ] && pos=$((pos + 1)); fi ;;
       '&')
         nx=${s:pos+1:1}
-        if [ "$nx" = '&' ]; then emit_op ';'; pos=$((pos + 2))
+        if [ "$nx" = '&' ]; then emit_op '&&'; pos=$((pos + 2))
         elif [ "$nx" = '>' ]; then word=$word\&; pos=$((pos + 1)); inword=1
         else
           case $inword$word in 1*'>' | 1*'<') word=$word\&; pos=$((pos + 1)) ;; *) emit_op ';'; pos=$((pos + 1)) ;; esac
@@ -264,8 +278,10 @@ lex_sub() {
   word=$sw'$(…)' wu=1 inword=1
 }
 
-# lex_brace: `${` was consumed; skip to the matching `}`, scanning any `$(…)`
-# or backticks inside (`${x:-$(git push)}`).
+# lex_brace: `${` was consumed; skip to the matching `}`, scanning any `$(…)`,
+# backticks or nested `${…}` inside (`${x:-$(git push)}`). A double-quoted
+# region in the value (`${x:-"$(git push)"}`) is scanned the same way, through
+# lex_dollar: quotes never make a substitution opaque, only `'…'` does.
 lex_brace() {
   local depth=1 c
   while [ "$pos" -lt "$n" ] && [ "$depth" -gt 0 ]; do
@@ -277,6 +293,7 @@ lex_brace() {
       '$')
         case ${s:pos+1:1} in
           '(') pos=$((pos + 2)); lex_sub ')' || return 1 ;;
+          '{') pos=$((pos + 2)); lex_brace || return 1 ;;
           *) pos=$((pos + 1)) ;;
         esac ;;
       '`') lex_backtick || return 1 ;;
@@ -284,9 +301,15 @@ lex_brace() {
         pos=$((pos + 1))
         while [ "$pos" -lt "$n" ]; do
           c=${s:pos:1}
-          case $c in '"') break ;; '\') pos=$((pos + 2)); continue ;; esac
-          pos=$((pos + 1))
+          case $c in
+            '"') break ;;
+            '\') pos=$((pos + 2)) ;;
+            '$') lex_dollar d || return 1 ;;
+            '`') lex_backtick || return 1 ;;
+            *) pos=$((pos + 1)) ;;
+          esac
         done
+        if [ "$pos" -ge "$n" ]; then lex_err="unbalanced double quote"; return 1; fi
         pos=$((pos + 1)) ;;
       *) pos=$((pos + 1)) ;;
     esac
@@ -453,52 +476,86 @@ lex_text() {
   return "$rc"
 }
 
-# --- walking the simple commands ---------------------------------------------
+# --- walking the commands -----------------------------------------------------
+# The current directory is a *set* of candidates (the header's rule), kept in
+# `cur` as absolute paths separated by newlines; `?` is the unknown candidate.
+# The walker is a small parser over TOK/TYP: sequences of `&&`/`||` chains of
+# pipelines of commands; `if`, `while`/`until`, `for`, `case`, `( )` and
+# `{ }` are followed. A command that moves the directory leaves the new set
+# in CD_SET for the chain it is in.
 
-commit_dir=() commit_gitdir=() commit_wt=() commit_ok=()
-cur_stack=()
-W=() WU=()
-
-# dir_apply <known> <base> <value> <unresolved>: sets R_KNOWN and R_DIR to
-# <value> taken against <base>
-dir_apply() {
-  if [ "$4" = 1 ]; then R_KNOWN=0 R_DIR=""
-  elif [ "$1" = 1 ]; then R_KNOWN=1 R_DIR=$(resolve "$2" "$3")
-  else case $3 in /*) R_KNOWN=1 R_DIR=$3 ;; *) R_KNOWN=0 R_DIR="" ;; esac
-  fi
+set_has() { # set_has <set> <member>
+  case $'\n'$1$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; esac
+  return 1
 }
 
-# scan_text <text> <inline|scoped>: lex <text> and walk it; scoped (a child
-# shell) cannot change the caller's directory, inline (eval) can
+set_union() { # set_union <a> <b>: R_SET = a ∪ b, in order
+  local out=$1 m IFS=$'\n'
+  for m in $2; do set_has "$out" "$m" || out=$out${out:+$'\n'}$m; done
+  R_SET=$out
+}
+
+# dir_apply <set> <value> <unresolved>: R_SET = <set> moved to <value>
+dir_apply() {
+  local d=$2 m out="" IFS=$'\n'
+  if [ "$3" = 1 ]; then R_SET='?'; return 0; fi
+  # shellcheck disable=SC2088 # a literal ~ to expand by hand
+  case $d in "~") d=$HOME ;; "~/"*) d=$HOME/${d#"~/"} ;; esac
+  case $d in /*) R_SET=$d; return 0 ;; esac
+  for m in $1; do
+    if [ "$m" = '?' ]; then out=$out${out:+$'\n'}'?'; else out=$out${out:+$'\n'}$m/$d; fi
+  done
+  R_SET=$out
+}
+
+# tilde <value>: a leading ~ or ~/ expanded (what the shell does unquoted)
+tilde() {
+  # shellcheck disable=SC2088
+  case $1 in "~") printf '%s' "$HOME" ;; "~/"*) printf '%s' "$HOME/${1#"~/"}" ;; *) printf '%s' "$1" ;; esac
+}
+
+commit_dir=() commit_gitdir=() commit_wt=() commit_ok=()
+W=() WU=()
+pi=0 pend=0 CD_SET="" R_SET=""
+ctx_gitdir="" ctx_wt="" ctx_gu=0 # GIT_DIR / GIT_WORK_TREE a `-c` body inherits
+
+# scan_text <text> <inline|scoped> <set> <gitdir> <work-tree> <unresolved>:
+# lex <text> and walk it with that context. A scoped body (a child shell)
+# cannot change the caller's directory; an inline one (eval) can — its
+# effect goes to CD_SET like a `cd`.
 scan_text() {
-  local start end sc sk
+  local start end sc=$cur sg=$ctx_gitdir sw=$ctx_wt su=$ctx_gu
   start=${#TOK[@]}
   lex_text "$1" || refuse "chirat: cannot parse this command ($lex_err); fix the quoting or split it."
   end=${#TOK[@]}
-  sc=$cur sk=$cur_known
-  walk "$start" "$end"
-  [ "$2" = inline ] || { cur=$sc; cur_known=$sk; }
+  cur=$3 ctx_gitdir=$4 ctx_wt=$5 ctx_gu=$6
+  walk_top "$start" "$end"
+  CD_SET=""
+  if [ "$2" = inline ] && [ "$cur" != "$3" ]; then CD_SET=$cur; fi
+  cur=$sc ctx_gitdir=$sg ctx_wt=$sw ctx_gu=$su
 }
 
-# simple: one simple command, words in W, unresolved flags in WU
+# simple: one simple command, words in W, unresolved flags in WU. Sets
+# CD_SET when it moves the directory; records every `git commit`.
 simple() {
   local -a words=(${W[@]+"${W[@]}"}) unres=(${WU[@]+"${WU[@]}"})
-  local nw=${#words[@]} i=0 w0 argv0 v u sub subu dir known gitdir worktree gu prev body
-  local scur=$cur sknown=$cur_known env_gitdir="" env_wt="" envu=0
+  local nw=${#words[@]} i=0 w0 argv0 v u sub subu dir gitdir worktree gu prev body
+  local scur=$cur env_gitdir=$ctx_gitdir env_wt=$ctx_wt envu=$ctx_gu
+  CD_SET=""
 
   # Drop assignments, redirections, shell keywords and wrappers.
   while [ "$i" -lt "$nw" ]; do
     w0=${words[i]}
     case $w0 in
-      GIT_DIR=*) env_gitdir=${w0#*=}; [ "${unres[i]}" = 0 ] || envu=1; i=$((i + 1)) ;;
-      GIT_WORK_TREE=*) env_wt=${w0#*=}; [ "${unres[i]}" = 0 ] || envu=1; i=$((i + 1)) ;;
+      GIT_DIR=*) env_gitdir=$(tilde "${w0#*=}"); [ "${unres[i]}" = 0 ] || envu=1; i=$((i + 1)) ;;
+      GIT_WORK_TREE=*) env_wt=$(tilde "${w0#*=}"); [ "${unres[i]}" = 0 ] || envu=1; i=$((i + 1)) ;;
       [A-Za-z_]*=* | [0-9]\>* | [0-9]\<* | \>* | \<* | \{ | \} | \! | if | then | else | elif | do | while | until)
         i=$((i + 1)) ;;
       eval)
         body=""
         i=$((i + 1))
         while [ "$i" -lt "$nw" ]; do body="$body${body:+ }${words[i]}"; i=$((i + 1)); done
-        [ -z "$body" ] || scan_text "$body" inline
+        [ -z "$body" ] || scan_text "$body" inline "$scur" "$env_gitdir" "$env_wt" "$envu"
         return 0 ;;
       command | exec | nohup | time | xargs | nice | env | sudo | timeout | sh | bash | zsh | dash | */sh | */bash | */zsh)
         i=$((i + 1))
@@ -507,13 +564,13 @@ simple() {
           case "$w0 $v" in
             "env -C" | "env --chdir")
               if [ $((i + 1)) -lt "$nw" ]; then
-                dir_apply "$sknown" "$scur" "${words[i + 1]}" "${unres[i + 1]}"
-                sknown=$R_KNOWN scur=$R_DIR
+                dir_apply "$scur" "${words[i + 1]}" "${unres[i + 1]}"
+                scur=$R_SET
               fi
               i=$((i + 2)) ;;
             "env --chdir="*)
-              dir_apply "$sknown" "$scur" "${v#*=}" "$u"
-              sknown=$R_KNOWN scur=$R_DIR
+              dir_apply "$scur" "${v#*=}" "$u"
+              scur=$R_SET
               i=$((i + 1)) ;;
             # Wrapper options that take a value.
             "env -u" | "env -P" | "nice -n" | "timeout -s" | "timeout -k" | \
@@ -521,16 +578,17 @@ simple() {
               "sudo -p" | "sudo -r" | "sudo -t" | "sudo -T" | "xargs -I" | "xargs -L" | \
               "xargs -n" | "xargs -P" | "xargs -s" | "xargs -d" | "xargs -E" | "xargs -a")
               i=$((i + 2)) ;;
-            # `sh -c <body>`, also `-lc`, `-ec`: the body is a script of its own.
+            # `sh -c <body>`, also `-lc`, `-ec`: the body is a script of its
+            # own, run with the context in force here.
             *"sh -"[!-]*)
               case $v in
                 *c*)
-                  [ $((i + 1)) -lt "$nw" ] && scan_text "${words[i + 1]}" scoped
+                  [ $((i + 1)) -lt "$nw" ] && scan_text "${words[i + 1]}" scoped "$scur" "$env_gitdir" "$env_wt" "$envu"
                   return 0 ;;
               esac
               i=$((i + 1)) ;;
-            "env GIT_DIR="*) env_gitdir=${v#*=}; [ "$u" = 0 ] || envu=1; i=$((i + 1)) ;;
-            "env GIT_WORK_TREE="*) env_wt=${v#*=}; [ "$u" = 0 ] || envu=1; i=$((i + 1)) ;;
+            "env GIT_DIR="*) env_gitdir=$(tilde "${v#*=}"); [ "$u" = 0 ] || envu=1; i=$((i + 1)) ;;
+            "env GIT_WORK_TREE="*) env_wt=$(tilde "${v#*=}"); [ "$u" = 0 ] || envu=1; i=$((i + 1)) ;;
             *" -"* | *" "[A-Za-z_]*=*) i=$((i + 1)) ;;
             *) break ;;
           esac
@@ -556,45 +614,40 @@ simple() {
       done
       if [ "$i" -lt "$nw" ]; then
         if [ "${words[i]}" = - ]; then
-          cur_known=0
+          CD_SET='?'
         else
-          dir_apply "$cur_known" "$cur" "${words[i]}" "${unres[i]}"
-          cur_known=$R_KNOWN cur=$R_DIR
+          dir_apply "$cur" "${words[i]}" "${unres[i]}"
+          CD_SET=$R_SET
         fi
       else
-        cur=$HOME cur_known=1
+        CD_SET=$HOME
       fi ;;
-    popd) cur_known=0 ;;
+    popd) CD_SET='?' ;;
     git | */git)
-      dir=$scur known=$sknown gitdir=$env_gitdir worktree=$env_wt gu=$envu
+      dir=$scur gitdir=$env_gitdir worktree=$env_wt gu=$envu
       sub="" subu=0
       while [ "$i" -lt "$nw" ]; do
         v=${words[i]} u=${unres[i]}
         case $v in
           -C)
             if [ $((i + 1)) -lt "$nw" ]; then
-              dir_apply "$known" "$dir" "${words[i + 1]}" "${unres[i + 1]}"
-              known=$R_KNOWN dir=$R_DIR
+              dir_apply "$dir" "${words[i + 1]}" "${unres[i + 1]}"
+              dir=$R_SET
             fi
             i=$((i + 2)) ;;
           -C?*)
-            dir_apply "$known" "$dir" "${v#-C}" "$u"
-            known=$R_KNOWN dir=$R_DIR
+            dir_apply "$dir" "${v#-C}" "$u"
+            dir=$R_SET
             i=$((i + 1)) ;;
-          --git-dir=*)
-            dir_apply "$known" "$dir" "${v#*=}" "$u"
-            [ "$R_KNOWN" = 1 ] && gitdir=$R_DIR || gu=1
-            i=$((i + 1)) ;;
-          --work-tree=*)
-            dir_apply "$known" "$dir" "${v#*=}" "$u"
-            [ "$R_KNOWN" = 1 ] && worktree=$R_DIR || gu=1
-            i=$((i + 1)) ;;
+          # --git-dir / --work-tree stay as written (git takes a relative one
+          # against the -C directory, so every candidate gets its own).
+          --git-dir=*) [ "$u" = 1 ] && gu=1 || gitdir=$(tilde "${v#*=}"); i=$((i + 1)) ;;
+          --work-tree=*) [ "$u" = 1 ] && gu=1 || worktree=$(tilde "${v#*=}"); i=$((i + 1)) ;;
           --git-dir | --work-tree)
             if [ $((i + 1)) -lt "$nw" ]; then
-              dir_apply "$known" "$dir" "${words[i + 1]}" "${unres[i + 1]}"
-              if [ "$R_KNOWN" = 1 ]; then
-                if [ "$v" = --git-dir ]; then gitdir=$R_DIR; else worktree=$R_DIR; fi
-              else gu=1; fi
+              if [ "${unres[i + 1]}" = 1 ]; then gu=1
+              elif [ "$v" = --git-dir ]; then gitdir=$(tilde "${words[i + 1]}")
+              else worktree=$(tilde "${words[i + 1]}"); fi
             fi
             i=$((i + 2)) ;;
           -c | --namespace | --config-env | --super-prefix) i=$((i + 2)) ;;
@@ -609,7 +662,7 @@ simple() {
         push) refuse "$push_msg" ;;
         commit)
           commit_dir+=("$dir"); commit_gitdir+=("$gitdir"); commit_wt+=("$worktree")
-          if [ "$known" = 1 ] && [ "$gu" = 0 ]; then commit_ok+=(1); else commit_ok+=(0); fi ;;
+          if [ "$gu" = 0 ] && ! set_has "$dir" '?'; then commit_ok+=(1); else commit_ok+=(0); fi ;;
       esac ;;
     npm | pnpm | yarn | */npm | */pnpm | */yarn)
       sub=""
@@ -631,49 +684,242 @@ simple() {
   return 0
 }
 
-# walk <start> <end>: the tokens in [start, end)
-walk() {
-  local i=$1 end=$2 t j depth sc sk top
-  local -a cw=() cwu=()
-  flush() {
-    [ ${#cw[@]} -gt 0 ] || return 0
-    W=("${cw[@]}") WU=("${cwu[@]}")
-    cw=() cwu=()
-    simple
-  }
-  while [ "$i" -lt "$end" ]; do
-    t=${TYP[i]}
-    case $t in
-      w) cw+=("${TOK[i]}"); cwu+=(0) ;;
-      u) cw+=("${TOK[i]}"); cwu+=(1) ;;
-      ';') flush ;;
-      '(') flush; cur_stack+=("$cur_known $cur") ;;
-      ')')
-        flush
-        if [ ${#cur_stack[@]} -gt 0 ]; then
-          top=${cur_stack[${#cur_stack[@]} - 1]}
-          unset 'cur_stack[${#cur_stack[@]}-1]'
-          cur_known=${top%% *} cur=${top#* }
-        fi ;;
-      '[')
-        j=$((i + 1)) depth=1
-        while [ "$j" -lt "$end" ] && [ "$depth" -gt 0 ]; do
-          case ${TYP[j]} in '[') depth=$((depth + 1)) ;; ']') depth=$((depth - 1)) ;; esac
-          j=$((j + 1))
-        done
-        sc=$cur sk=$cur_known
-        walk $((i + 1)) $((j - 1))
-        cur=$sc cur_known=$sk
-        i=$((j - 1)) ;;
-      ']') ;;
-    esac
-    i=$((i + 1))
+# --- the parser: pi is the next token, pend the end of the range ---------------
+
+# walk_top <start> <end>: the tokens in [start, end) as a script
+walk_top() {
+  local spi=$pi spend=$pend
+  pi=$1 pend=$2
+  while [ "$pi" -lt "$pend" ]; do
+    walk_seq
+    [ "$pi" -lt "$pend" ] && pi=$((pi + 1)) # a stray `)`, `;;` or keyword
   done
-  flush
+  pi=$spi pend=$spend
+}
+
+# seq_end <word>: a reserved word that ends the current sequence
+seq_end() {
+  case $1 in then | elif | else | fi | do | done | 'esac' | '}') return 0 ;; esac
+  return 1
+}
+
+# expect <word>: consume that reserved word if it is next
+expect() {
+  [ "$pi" -lt "$pend" ] && [ "${TYP[pi]}" = w ] && [ "${TOK[pi]}" = "$1" ] && pi=$((pi + 1))
+  return 0
+}
+
+# walk_seq: a `;`-sequence up to a token the enclosing construct owns.
+# cur flows through it: what the sequence leaves is what follows it sees.
+walk_seq() {
+  local before
+  while [ "$pi" -lt "$pend" ]; do
+    case ${TYP[pi]} in
+      ';') pi=$((pi + 1)); continue ;;
+      ')' | ';;') return 0 ;;
+      w) seq_end "${TOK[pi]}" && return 0 ;;
+    esac
+    before=$pi
+    walk_chain
+    [ "$pi" -gt "$before" ] || pi=$((pi + 1))
+  done
+  return 0
+}
+
+# walk_chain: `a && b || c`. `seen` is what the next member sees, `all`
+# everything any member may have seen. A member after `&&` in a chain of only
+# `&&` sees exactly the set a `cd` before it produced (`cd X && git commit`:
+# had the `cd` failed, the chain would have stopped); after a `||` every
+# `cd` only adds its target. What follows a chain of two or more members sees
+# the entry set plus every target (the chain may have stopped anywhere); a
+# lone command passes its own effect on.
+walk_chain() {
+  local entry=$cur seen=$cur all=$cur pure=1 chained=0 nxt
+  while :; do
+    cur=$seen
+    walk_pipeline
+    nxt=""
+    if [ "$pi" -lt "$pend" ]; then
+      case ${TYP[pi]} in
+        '&&' | '||')
+          nxt=${TYP[pi]}; pi=$((pi + 1)); chained=1
+          while [ "$pi" -lt "$pend" ] && [ "${TYP[pi]}" = ';' ]; do pi=$((pi + 1)); done ;;
+      esac
+    fi
+    if [ -n "$CD_SET" ]; then
+      if [ "$pure" = 1 ] && [ "$nxt" = '&&' ]; then seen=$CD_SET
+      else set_union "$seen" "$CD_SET"; seen=$R_SET; fi
+      set_union "$all" "$seen"; all=$R_SET
+    fi
+    if [ "$nxt" = '||' ]; then pure=0; seen=$all; fi
+    [ -n "$nxt" ] || break
+  done
+  if [ "$chained" = 1 ]; then cur=$all
+  elif [ -n "$CD_SET" ]; then cur=$CD_SET
+  else cur=$entry; fi
+  CD_SET=""
+}
+
+# walk_pipeline: `a | b`; every member of a real pipeline runs in a subshell
+walk_pipeline() {
+  local save=$cur nseg=0
+  walk_cmd
+  while [ "$pi" -lt "$pend" ] && [ "${TYP[pi]}" = '|' ]; do
+    pi=$((pi + 1)); nseg=$((nseg + 1))
+    while [ "$pi" -lt "$pend" ] && [ "${TYP[pi]}" = ';' ]; do pi=$((pi + 1)); done
+    cur=$save
+    walk_cmd
+  done
+  cur=$save
+  [ "$nseg" -eq 0 ] || CD_SET=""
+}
+
+# walk_cmd: a compound command or a simple one; CD_SET is its effect
+walk_cmd() {
+  local save
+  CD_SET=""
+  [ "$pi" -lt "$pend" ] || return 0
+  case ${TYP[pi]} in
+    '(')
+      save=$cur
+      pi=$((pi + 1))
+      walk_seq
+      [ "$pi" -lt "$pend" ] && [ "${TYP[pi]}" = ')' ] && pi=$((pi + 1))
+      cur=$save CD_SET=""
+      return 0 ;;
+    w)
+      case ${TOK[pi]} in
+        if) pi=$((pi + 1)); walk_if; return 0 ;;
+        while | until) pi=$((pi + 1)); walk_loop; return 0 ;;
+        for | select) pi=$((pi + 1)); walk_for; return 0 ;;
+        case) pi=$((pi + 1)); walk_case; return 0 ;;
+        '{') pi=$((pi + 1)); walk_group; return 0 ;;
+      esac ;;
+  esac
+  walk_simple
+}
+
+# compound_done <entry> <exit>: cur back to <entry>; CD_SET = <exit> if it moved
+compound_done() {
+  cur=$1
+  if [ "$2" = "$1" ]; then CD_SET=""; else CD_SET=$2; fi
+}
+
+# skip_one: step over one token; a scanned sub-text (`[`…`]`) is walked, scoped
+skip_one() {
+  local j depth save
+  if [ "${TYP[pi]}" = '[' ]; then
+    j=$((pi + 1)) depth=1
+    while [ "$j" -lt "$pend" ] && [ "$depth" -gt 0 ]; do
+      case ${TYP[j]} in '[') depth=$((depth + 1)) ;; ']') depth=$((depth - 1)) ;; esac
+      j=$((j + 1))
+    done
+    save=$cur
+    walk_top $((pi + 1)) $((j - 1))
+    cur=$save
+    pi=$j
+  else
+    pi=$((pi + 1))
+  fi
+}
+
+# skip_to <word>: step over tokens up to that reserved word
+skip_to() {
+  while [ "$pi" -lt "$pend" ]; do
+    [ "${TYP[pi]}" = w ] && [ "${TOK[pi]}" = "$1" ] && return 0
+    skip_one
+  done
+}
+
+# walk_if: `if … then … [elif … then …] [else …] fi`; the exit set is the
+# union of the entry set and what every branch leaves
+walk_if() {
+  local entry=$cur acc=$cur
+  walk_seq
+  expect 'then'
+  walk_seq
+  set_union "$acc" "$cur"; acc=$R_SET
+  while [ "$pi" -lt "$pend" ]; do
+    case ${TYP[pi]}:${TOK[pi]} in
+      w:elif) pi=$((pi + 1)); cur=$entry; walk_seq; expect 'then'; walk_seq; set_union "$acc" "$cur"; acc=$R_SET ;;
+      w:else) pi=$((pi + 1)); cur=$entry; walk_seq; set_union "$acc" "$cur"; acc=$R_SET ;;
+      w:fi) pi=$((pi + 1)); break ;;
+      *) break ;;
+    esac
+  done
+  compound_done "$entry" "$acc"
+}
+
+# walk_loop: `while|until … do … done`
+walk_loop() {
+  local entry=$cur acc
+  walk_seq
+  expect 'do'
+  walk_seq
+  set_union "$entry" "$cur"; acc=$R_SET
+  expect 'done'
+  compound_done "$entry" "$acc"
+}
+
+# walk_for: `for x in … do … done`
+walk_for() {
+  local entry=$cur acc
+  skip_to 'do'
+  expect 'do'
+  walk_seq
+  set_union "$entry" "$cur"; acc=$R_SET
+  expect 'done'
+  compound_done "$entry" "$acc"
+}
+
+# walk_case: `case … in pat) … ;; … esac`
+walk_case() {
+  local entry=$cur acc=$cur
+  skip_to in
+  expect in
+  while [ "$pi" -lt "$pend" ]; do
+    case ${TYP[pi]} in
+      ';' | ';;') pi=$((pi + 1)); continue ;;
+      w) [ "${TOK[pi]}" = 'esac' ] && { pi=$((pi + 1)); break; } ;;
+    esac
+    while [ "$pi" -lt "$pend" ] && [ "${TYP[pi]}" != ')' ]; do skip_one; done
+    pi=$((pi + 1))
+    cur=$entry
+    walk_seq
+    set_union "$acc" "$cur"; acc=$R_SET
+  done
+  compound_done "$entry" "$acc"
+}
+
+# walk_group: `{ …; }` runs in this shell: what it leaves is what follows sees
+walk_group() {
+  local entry=$cur
+  walk_seq
+  expect '}'
+  compound_done "$entry" "$cur"
+}
+
+# walk_simple: collect the words of one simple command, walking any scanned
+# sub-text (`$(…)`, backticks, a heredoc body) in its own scope
+walk_simple() {
+  local -a cw=() cwu=()
+  while [ "$pi" -lt "$pend" ]; do
+    case ${TYP[pi]} in
+      w) cw+=("${TOK[pi]}"); cwu+=(0); pi=$((pi + 1)) ;;
+      u) cw+=("${TOK[pi]}"); cwu+=(1); pi=$((pi + 1)) ;;
+      '[') skip_one ;;
+      ']') pi=$((pi + 1)) ;;
+      *) break ;;
+    esac
+  done
+  CD_SET=""
+  [ ${#cw[@]} -gt 0 ] || return 0
+  W=("${cw[@]}") WU=("${cwu[@]}")
+  simple
 }
 
 lex_text "$command" || refuse "chirat: cannot parse this command ($lex_err); fix the quoting or split it."
-walk 0 ${#TOK[@]}
+walk_top 0 ${#TOK[@]}
 
 [ ${#commit_dir[@]} -gt 0 ] || exit 0
 
@@ -727,12 +973,17 @@ check_commit() {
   echo "Unstage them (git restore --staged <path>) and keep them out of the repo."
 }
 
+# Every commit is checked against every candidate directory; one refusal is
+# enough.
 refused=""
 k=0
 while [ "$k" -lt ${#commit_dir[@]} ]; do
   [ "${commit_ok[k]}" = 1 ] || refuse "$unres_msg (the target is not literal: a variable, substitution, glob or an unknown current directory)."
-  out=$(check_commit "${commit_dir[k]}" "${commit_gitdir[k]}" "${commit_wt[k]}")
-  case $refused in *"$out"*) ;; *) refused=$refused$out ;; esac
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    out=$(check_commit "$d" "${commit_gitdir[k]}" "${commit_wt[k]}")
+    case $refused in *"$out"*) ;; *) refused=$refused$out ;; esac
+  done <<<"${commit_dir[k]}"
   k=$((k + 1))
 done
 
