@@ -3,6 +3,7 @@
 # Usage: plugin/tests/run.sh
 
 set -uo pipefail
+unset CDPATH
 
 here=$(cd "$(dirname "$0")" && pwd)
 plugin=$(dirname "$here")
@@ -724,6 +725,132 @@ eq "flow: case \$(git push) in … esac is a push" 2 "$(jhook "$cl" "case \$($gp
 eq "flow: cd - inside if; git commit from clean is refused" 2 "$(jhook "$cl" "if true; then cd -; fi; $gc")"
 reason "flow: unknown candidate reason" "$unres_msg"
 eq "flow: cd \$D | cat; git commit from clean is allowed" 0 "$(jhook "$cl" "cd \$D | cat; $gc")"
+
+# --- guard: background jobs, loops, functions — the whitelist rule -----------
+
+# Three nested repos: `ne` (outer) is dirty, `nm` and `ni` (inner) are clean.
+ne=$tmp/nest/outer nm=$tmp/nest/outer/mid ni=$tmp/nest/outer/mid/inner
+for d in "$ne" "$nm" "$ni"; do
+  git init -q -b main "$d"
+  echo "code" >"$d/main.sh"
+  git -C "$d" add main.sh
+  git -C "$d" -c user.name=t -c user.email=t@t commit -q -m init
+  echo "more" >>"$d/main.sh"
+  git -C "$d" add main.sh
+done
+mkdir -p "$ne/.claude"
+echo "{}" >"$ne/.claude/settings.local.json"
+git -C "$ne" add -f .claude/settings.local.json
+
+# 1. A background job (`… &`, `coproc`) runs in its own shell.
+eq "bg: cd clean & wait; git commit from dirty" 2 "$(jhook "$dr" "cd \"$cl\" & wait; $gc")"
+reason "bg: the background cd changed nothing" "settings.local.json"
+eq "bg: cd dirty & wait; git commit from clean is allowed" 0 "$(jhook "$cl" "cd $dr & wait; $gc")"
+eq "bg: cd clean & git commit from dirty" 2 "$(jhook "$dr" "cd $cl & $gc")"
+eq "bg: (cd clean &); git commit from dirty" 2 "$(jhook "$dr" "(cd $cl &); $gc")"
+eq "bg: cd clean &<newline>git commit from dirty" 2 "$(jhook "$dr" "cd $cl &
+$gc")"
+eq "bg: cd clean && git commit & from dirty is allowed (the chain's own set)" 0 "$(jhook "$dr" "cd $cl && $gc &")"
+eq "bg: cd dirty && git commit & from clean" 2 "$(jhook "$cl" "cd $dr && $gc &")"
+eq "bg: { cd clean; } & git commit from dirty" 2 "$(jhook "$dr" "{ cd $cl; } & $gc")"
+eq "bg: coproc cd clean; git commit from dirty" 2 "$(jhook "$dr" "coproc cd $cl; $gc")"
+eq "bg: coproc { cd clean; }; git commit from dirty" 2 "$(jhook "$dr" "coproc { cd $cl; }; $gc")"
+eq "bg: coproc X { cd clean; }; git commit from dirty" 2 "$(jhook "$dr" "coproc X { cd $cl; }; $gc")"
+eq "bg: cd clean 2>&1 && git commit from dirty is allowed (a redirect, not a job)" 0 "$(jhook "$dr" "cd $cl 2>&1 && $gc")"
+eq "bg: git push & is a push" 2 "$(jhook "$cl" "$gp &")"
+
+# 2. A loop whose body or condition touches the directory leaves it unknown.
+eq "loop: for n in 1 2; do cd ..; done; git commit from inner" 2 "$(jhook "$ni" "for n in 1 2; do cd ..; done; $gc")"
+reason "loop: the set after the loop is unknown" "$unres_msg"
+eq "loop: for n in 1; do cd clean; done; git commit from dirty" 2 "$(jhook "$dr" "for n in 1; do cd $cl; done; $gc")"
+reason "loop: iterations are not counted" "$unres_msg"
+eq "loop: while false; do cd clean; done; git commit from dirty" 2 "$(jhook "$dr" "while false; do cd $cl; done; $gc")"
+eq "loop: until true; do cd clean; done; git commit from dirty" 2 "$(jhook "$dr" "until true; do cd $cl; done; $gc")"
+eq "loop: while cd ..; do :; done; git commit from inner (the condition moves)" 2 "$(jhook "$ni" "while cd ..; do :; done; $gc")"
+eq "loop: for n in 1; do cd clean; done && git commit from dirty" 2 "$(jhook "$dr" "for n in 1; do cd $cl; done && $gc")"
+eq "loop: for n in 1; do cd clean; git commit; done from dirty (a commit inside is unknown)" 2 "$(jhook "$dr" "for n in 1; do cd $cl; $gc; done")"
+reason "loop: the commit inside the moving loop is unknown" "$unres_msg"
+eq "loop: for f in a b; do echo \$f; done; git commit from clean is allowed (untouched)" 0 "$(jhook "$cl" "for f in a b; do echo \$f; done; $gc")"
+eq "loop: for n in 1; do git commit; done from clean is allowed" 0 "$(jhook "$cl" "for n in 1; do $gc; done")"
+eq "loop: for d in a b; do (cd \$d && make); done; git commit from clean is allowed" 0 "$(jhook "$cl" "for d in a b; do (cd \$d && make); done; $gc")"
+eq "loop: for x in \$(cd clean); do :; done; git commit from clean is allowed" 0 "$(jhook "$cl" "for x in \$(cd $cl); do :; done; $gc")"
+eq "loop: cd clean; for f in a; do echo; done; git commit from dirty is allowed" 0 "$(jhook "$dr" "cd $cl; for f in a; do echo; done; $gc")"
+eq "loop: cd dirty; for f in a; do echo; done; git commit from clean" 2 "$(jhook "$cl" "cd $dr; for f in a; do echo; done; $gc")"
+reason "loop: the cd before the loop still counts" "settings.local.json"
+eq "loop: while read -r d; do cd \"\$d\"; done; git commit from clean" 2 "$(jhook "$cl" "while read -r d; do cd \"\$d\"; done; $gc")"
+
+# 3. Functions: the body is walked as an unknown directory; a body that
+# touches the directory makes every later call unknown.
+eq "fn: f() { cd clean; }; f; git commit from dirty" 2 "$(jhook "$dr" "f() { cd $cl; }; f; $gc")"
+reason "fn: the call is unknown" "$unres_msg"
+eq "fn: f() { cd clean; }; git commit from dirty (defining moves nothing)" 2 "$(jhook "$dr" "f() { cd $cl; }; $gc")"
+reason "fn: still in the dirty repo" "settings.local.json"
+eq "fn: f() { cd dirty; }; git commit from clean is allowed" 0 "$(jhook "$cl" "f() { cd $dr; }; $gc")"
+eq "fn: function f { cd clean; }; f; git commit from dirty" 2 "$(jhook "$dr" "function f { cd $cl; }; f; $gc")"
+eq "fn: function f() { cd clean; }; f; git commit from dirty" 2 "$(jhook "$dr" "function f() { cd $cl; }; f; $gc")"
+eq "fn: f()<newline>{<newline>cd clean<newline>}<newline>git commit from dirty" 2 "$(jhook "$dr" "f()
+{
+  cd $cl
+}
+$gc")"
+reason "fn: the newline-form body is the function's, not the caller's" "settings.local.json"
+eq "fn: f() { echo hi; }; f; git commit from clean is allowed" 0 "$(jhook "$cl" "f() { echo hi; }; f; $gc")"
+eq "fn: f() { git commit; }; f from clean (a commit in a body is unknown)" 2 "$(jhook "$cl" "f() { $gc; }; f")"
+reason "fn: the body's commit is unknown" "$unres_msg"
+eq "fn: f() { git -C <abs clean> commit; }; f from dirty is allowed" 0 "$(jhook "$dr" "f() { git -C $cl commit -m t; }; f")"
+eq "fn: f() { git -C <abs dirty> commit; }; f from clean" 2 "$(jhook "$cl" "f() { git -C $dr commit -m t; }; f")"
+eq "fn: f() { git push; } is a push" 2 "$(jhook "$cl" "f() { $gp; }")"
+eq "fn: cd() { :; }; cd clean; git commit from dirty" 2 "$(jhook "$dr" "cd() { :; }; cd $cl; $gc")"
+reason "fn: a shadowed cd is unknown" "$unres_msg"
+eq "fn: git() { command git \"\$@\"; }; git push is refused" 2 "$(jhook "$cl" "git() { command git \"\$@\"; }; $gp")"
+eq "fn: f() { cd clean; }; for n in 1; do f; done; git commit from dirty" 2 "$(jhook "$dr" "f() { cd $cl; }; for n in 1; do f; done; $gc")"
+eq "fn: for n in 1; do f; f() { cd clean; }; done; git commit from dirty" 2 "$(jhook "$dr" "for n in 1; do f; f() { cd $cl; }; done; $gc")"
+eq "fn: f() ( cd clean ); f; git commit from dirty" 2 "$(jhook "$dr" "f() ( cd $cl ); f; $gc")"
+eq "fn: a=(); cd clean; git commit from dirty is allowed (an array, not a function)" 0 "$(jhook "$dr" "a=(); cd $cl; $gc")"
+
+# 4. source, eval, trap, builtin, pushd, cd operands, shopt.
+eq "src: source x.sh; git commit from clean" 2 "$(jhook "$cl" "source x.sh; $gc")"
+reason "src: a sourced file may do anything" "$unres_msg"
+eq "src: . ./env.sh && git commit from clean" 2 "$(jhook "$cl" ". ./env.sh && $gc")"
+eq "src: source x.sh alone is allowed" 0 "$(jhook "$cl" "source x.sh")"
+eq "eval: eval \"\$CMD\"; git commit from clean" 2 "$(jhook "$cl" "eval \"\$CMD\"; $gc")"
+reason "eval: an unresolved string is unknown" "$unres_msg"
+eq "eval: eval 'cd clean'; git commit from dirty is allowed" 0 "$(jhook "$dr" "eval 'cd $cl'; $gc")"
+eq "eval: eval \"\$CMD\" alone is allowed" 0 "$(jhook "$cl" "eval \"\$CMD\"")"
+eq "trap: trap 'cd clean' EXIT; git commit from dirty" 2 "$(jhook "$dr" "trap 'cd $cl' EXIT; $gc")"
+reason "trap: a trap body that moves is unknown" "$unres_msg"
+eq "trap: trap 'echo bye' EXIT; git commit from clean is allowed" 0 "$(jhook "$cl" "trap 'echo bye' EXIT; $gc")"
+eq "trap: trap 'git push' EXIT is a push" 2 "$(jhook "$cl" "trap '$gp' EXIT")"
+eq "trap: trap \"\$T\" EXIT; git commit from clean" 2 "$(jhook "$cl" "trap \"\$T\" EXIT; $gc")"
+eq "trap: trap - EXIT; git commit from clean is allowed" 0 "$(jhook "$cl" "trap - EXIT; $gc")"
+eq "builtin: builtin cd clean; git commit from dirty is allowed" 0 "$(jhook "$dr" "builtin cd $cl; $gc")"
+eq "builtin: builtin cd dirty; git commit from clean" 2 "$(jhook "$cl" "builtin cd $dr; $gc")"
+eq "pushd: pushd -n clean; git commit from dirty" 2 "$(jhook "$dr" "pushd -n $cl; $gc")"
+reason "pushd: an option is unknown" "$unres_msg"
+eq "pushd: pushd; git commit from clean" 2 "$(jhook "$cl" "pushd; $gc")"
+eq "pushd: pushd +1; git commit from clean" 2 "$(jhook "$cl" "pushd +1; $gc")"
+eq "pushd: pushd clean && git commit from dirty is allowed" 0 "$(jhook "$dr" "pushd $cl && $gc")"
+eq "cd: cd clean dirty; git commit from dirty" 2 "$(jhook "$dr" "cd $cl $dr; $gc")"
+reason "cd: two operands are unknown" "$unres_msg"
+eq "cd: cd -P clean && git commit from dirty is allowed" 0 "$(jhook "$dr" "cd -P $cl && $gc")"
+eq "cd: cd -x clean; git commit from dirty" 2 "$(jhook "$dr" "cd -x $cl; $gc")"
+eq "cd: cd -- clean && git commit from dirty is allowed" 0 "$(jhook "$dr" "cd -- $cl && $gc")"
+eq "shopt: shopt -s expand_aliases; alias cd=true; cd clean; git commit from dirty" 2 "$(jhook "$dr" "shopt -s expand_aliases; alias cd=true; cd $cl; $gc")"
+reason "shopt: alias expansion is unknown" "$unres_msg"
+eq "shopt: shopt -s nullglob; cd clean; git commit from dirty is allowed" 0 "$(jhook "$dr" "shopt -s nullglob; cd $cl; $gc")"
+guard_shell=(env CDPATH=/x bash)
+eq "cd: with CDPATH a relative cd is unknown" 2 "$(jhook "$tmp" "cd clean; $gc")"
+reason "cd: CDPATH reason" "$unres_msg"
+eq "cd: with CDPATH ./clean is still followed" 0 "$(jhook "$tmp" "cd ./clean; $gc")"
+guard_shell=(bash)
+
+# --- guard: differential corpus (guard vs. a real shell) ---------------------
+
+if "$BASH" "$here/guard-corpus.sh"; then
+  ok "guard corpus: nothing dirty passes"
+else
+  ko "guard corpus: see the lines above"
+fi
 
 # --- summary -------------------------------------------------------------
 

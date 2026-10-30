@@ -16,10 +16,18 @@ All notable changes are listed here, in the
   (`"${x:-"$(git push)"}"`), `-c` bodies with the caller's repository context
   (`GIT_DIR=… bash -c 'git commit'`, `env -C … sh -c`), and `cd` under
   pipelines or control flow (the directory is a set of candidates; a commit is
-  checked against every one). The guard now fails closed: a commit whose
-  repository it cannot tell (a variable or glob in the path, `cd` to an
-  unresolved dir, a literal path that is not a repository, unbalanced quotes)
-  is refused with the reason instead of let through.
+  checked against every one), background jobs, loops and functions: a `cd`
+  behind `&` or in `coproc` changes nothing outside, a `cd` in a loop body,
+  in a function, in `source`, in a `trap` or in an unresolved `eval` makes
+  the directory unknown. The rule is a whitelist — only a top-level `cd`, the
+  same `&&` chain and `if`/`case` branches move the set to a known place.
+  The guard now fails closed: a commit whose repository it cannot tell (a
+  variable or glob in the path, `cd` to an unresolved dir, a literal path
+  that is not a repository, unbalanced quotes) is refused with the reason
+  instead of let through. A differential test (`plugin/tests/guard-corpus.sh`)
+  runs every corpus line through the guard and through a real bash with
+  `git` shimmed, and fails if anything the real run would commit in a dirty
+  repository got past the guard.
 - `chirat-watch --dry-run` writes nothing, as the README promised: it no
   longer recovers a stale lock for real (it prints `would set … pending` /
   `would remove lock …` and what would run next), it creates no `runs/`,

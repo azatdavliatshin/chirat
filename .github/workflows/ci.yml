@@ -23,7 +23,7 @@ jobs:
         run: |
           shellcheck --version
           shellcheck bin/chirat-watch bin/chirat-init plugin/bin/chirat-prompt \
-            plugin/hooks/guard-commit.sh tests/*.sh plugin/tests/run.sh
+            plugin/hooks/guard-commit.sh tests/*.sh plugin/tests/*.sh
 
       - name: Test chirat-watch
         run: bash tests/chirat-watch.sh

@@ -304,7 +304,10 @@ cannot tell what a git command does (`git $SUB`), or cannot parse the command
 (unbalanced quotes, unterminated `$(`), it refuses with a one-line reason
 (`chirat: cannot tell which repository this commits to; run git from the
 repository directory`). A false refusal costs a retry; a false pass would
-break the promise.
+break the promise. The same holds for any `cd` the hook cannot follow — in a
+loop, a function, a `source`d file, a `trap`, an unresolved `eval` — the
+commit's target is unknown and the command is refused; `git -C <repo>
+commit` is the form that always works.
 
 - **Push and publish, in any form:** `git push`, `git -C repos/x push`,
   `cd repos/x && git push`, `git status; git push`, `echo $(git push)`,
@@ -374,7 +377,7 @@ A commit is refused while these workspace files are staged:
 ```bash
 bash tests/chirat-watch.sh && bash tests/chirat-init.sh && bash plugin/tests/run.sh
 shellcheck bin/chirat-watch bin/chirat-init plugin/bin/chirat-prompt \
-  plugin/hooks/guard-commit.sh tests/*.sh plugin/tests/run.sh
+  plugin/hooks/guard-commit.sh tests/*.sh plugin/tests/*.sh
 claude plugin validate plugin
 ```
 

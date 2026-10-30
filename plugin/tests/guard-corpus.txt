@@ -1,0 +1,235 @@
+# Corpus for guard-corpus.sh: `<cwd> <expect> <command>`.
+# cwd: outer (dirty) > mid (clean) > inner (clean) are nested; clean, dirty,
+# cleansp ("clean dir"), dirtysp ("dirty dir"), home (dirty), fx (no repo).
+# expect: `-` soundness only; `allow` the guard must pass it; `harm` the real
+# run must hit a dirty repo / push / publish (and so the guard must refuse).
+# `<NL>` is a newline. Every command runs for real with git shimmed.
+
+# --- push and publish, in every form (review rounds 1-3) ----------------------
+clean harm git push
+clean harm git push origin main
+clean harm git push --help
+clean harm git -C "@CLEAN@" push
+clean harm git -C a -C b push
+clean harm cd "@CLEAN@" && git push
+clean harm git status; git push
+clean - true || git push
+clean harm echo $(git push)
+clean harm echo `git push`
+clean harm FOO=1 git push
+clean harm env A=1 git push
+clean harm command git push
+clean harm @GIT@ push
+clean harm git -c http.x=y push --force
+clean harm git --no-pager push
+clean harm (cd "@CLEAN@"; git push)
+clean harm bash -c 'git push'
+clean harm sudo -u me git push
+clean harm nice -n 5 git push
+clean harm timeout 5 git push
+clean harm git status<NL>git push
+clean harm npm publish
+clean harm pnpm publish
+clean harm yarn publish
+clean harm yarn npm publish
+clean harm npm --tag next publish
+clean harm git push &
+clean harm f() { git push; }; f
+clean harm trap 'git push' EXIT
+clean harm eval 'git push'
+clean harm for x in $(git push); do :; done
+clean harm case $(git push) in x) :;; esac
+clean harm echo "${x:-"$(git push)"}"
+clean - echo "${x:+"`git push`"}"
+clean harm cat <<EOF<NL>line $(git push)<NL>EOF
+clean harm bash -c 'echo "${x:-"$(git push)"}"'
+clean harm sudo bash -c 'git push'
+clean harm echo push | xargs git
+clean harm exec git push
+
+# --- the allow-list: not a push, not a commit, or a commit in a clean repo ----
+clean allow git stash push
+clean allow git log --grep push
+clean allow echo git push
+clean allow grep -r "git push" docs/
+clean allow git remote -v
+clean allow git -C "@CLEAN@" status
+clean allow npm run publish-docs
+clean allow npx publish
+clean allow git status 2>&1 | head
+clean allow echo 'git push; cd x && git -C y push'
+clean allow cat <<'EOF'<NL>it's $(git push) and "unbalanced<NL>EOF<NL>echo done
+clean allow cat <<-EOF<NL>	don't<NL>	EOF<NL>echo ok
+clean allow grep x <<<"it's"
+clean allow ls # don't
+clean allow git log $REF
+clean allow bash -c "$CMD"
+clean allow git commit -m "push later"
+dirty allow git -C "@CLEAN@" commit -m x
+dirty allow cd "@CLEAN@" && git commit -m t
+dirty allow cd "@CLEAN@"; git add . && git commit -m t
+dirty allow if cd "@CLEAN@"; then git commit -m t; fi
+dirty allow cd "@DIRTY@"; cd "@CLEAN@"; git commit -m t
+dirty allow cd "@CLEAN@" && git commit -m t | cat
+dirty allow { cd "@CLEAN@"; }; git commit -m t
+dirty allow cd "@CLEAN@" &&<NL>git commit -m t
+dirty allow cd "@CLEAN@"; git commit -m t; cd "@DIRTY@"
+clean allow (cd "@DIRTY@"); git commit -m t
+clean allow bash -c 'cd "@DIRTY@"'; git commit -m t
+dirty allow GIT_DIR="@CLEAN@/.git" GIT_WORK_TREE="@CLEAN@" bash -c 'git commit -m t'
+clean allow GIT_DIR="@DIRTY@/.git" true; git commit -m t
+clean allow GIT_DIR="@DIRTY@/.git" bash -c 'ls'
+clean allow cd $D | cat; git commit -m t
+clean allow cd "$D" && ls
+dirty allow cd "@CLEANSP@" && git commit -m t
+fx allow git -C "@CLEANSP@" commit -m t
+fx allow git -C 'clean dir' commit -m t
+fx allow git --git-dir="@CLEANSP@/.git" --work-tree="@CLEANSP@" commit -m t
+fx allow git -C "@FX@" --git-dir='clean dir/.git' --work-tree='clean dir' commit -m t
+clean allow cd "@DIRTY@" & wait; git commit -m t
+dirty allow cd "@CLEAN@" && git commit -m t &
+clean allow for f in a b; do echo $f; done; git commit -m t
+clean allow for n in 1; do git commit -m t; done
+clean allow for d in a b; do (cd $d && true); done; git commit -m t
+dirty allow cd "@CLEAN@"; for f in a; do echo; done; git commit -m t
+clean allow f() { echo hi; }; f; git commit -m t
+clean allow f() { cd "@DIRTY@"; }; git commit -m t
+dirty allow f() { git -C "@CLEAN@" commit -m t; }; f
+dirty allow eval 'cd "@CLEAN@"'; git commit -m t
+clean allow eval "$CMD"
+clean allow trap 'echo bye' EXIT; git commit -m t
+clean allow trap - EXIT; git commit -m t
+dirty allow builtin cd "@CLEAN@"; git commit -m t
+dirty allow pushd "@CLEAN@" && git commit -m t
+dirty allow cd -P "@CLEAN@" && git commit -m t
+dirty allow cd -- "@CLEAN@" && git commit -m t
+dirty allow cd "@CLEAN@" 2>&1 && git commit -m t
+dirty allow cd "@CLEAN@" >/dev/null && git commit -m t
+dirty allow cd "@CLEAN@" > /dev/null 2>&1 && git commit -m t
+dirty allow shopt -s nullglob; cd "@CLEAN@"; git commit -m t
+dirty allow a=(); cd "@CLEAN@"; git commit -m t
+dirty allow time cd "@CLEAN@"; git commit -m t
+dirty allow ! cd "@CLEAN@"; git commit -m t
+clean allow source "@FX@/cd-dirty.sh"
+clean allow git -C "@CLEAN@" commit -m "a; git push"
+
+# --- commits that land in a dirty repo (rounds 1-2) ---------------------------
+dirty harm git commit -m test
+clean harm git -C "@DIRTY@" commit -m x
+fx harm git -C "@DIRTYSP@" commit -m x
+fx harm git -C '@DIRTYSP@' commit -m x
+fx harm git -C 'dirty dir' commit -m x
+fx harm git -C dirty\ dir commit -m x
+fx - git -C"@DIRTYSP@" commit -m x
+fx harm cd "dirty dir" && git commit -m x
+fx harm cd dirty\ dir; git commit -m x
+fx harm git status && git -C "@DIRTYSP@" commit -m x
+fx harm git -C "@FX@"/dirty\ dir commit -m x
+fx harm git -C $'@DIRTYSP@' commit -m x
+fx harm bash -c 'git -C "@DIRTYSP@" commit -m x'
+fx harm eval "git -C '@DIRTYSP@' commit -m x"
+fx - env -C "@DIRTYSP@" git commit -m x
+fx harm pushd 'dirty dir' && git commit -m x
+dirty harm git commit -m "a; git push"
+clean harm git status && git -C "@DIRTY@" commit -m x
+fx harm git status; cd nest && git -C outer commit -m x
+fx harm cd nest/outer; git add -A; git commit -m x
+clean harm git -C "@CLEAN@" commit -m a; git -C "@DIRTY@" commit -m b
+dirty harm git commit -m "$(cat <<'EOF'<NL>Subject<NL><NL>Body with 'quotes' and "double" and a ) paren.<NL>EOF<NL>)"
+clean harm echo "${x:-"$(git -C "@DIRTY@" commit -m t)"}"
+dirty harm git -C "$X" commit -m x
+dirty - git -C $X commit -m x
+dirty - cd "$D" && git commit -m x
+dirty - cd - && git commit -m x
+clean - cd - && git commit -m x
+fx harm git -C "@FX@/nest/out"* commit -m x
+fx harm git --git-dir="@DIRTYSP@/.git" --work-tree="@DIRTYSP@" commit -m x
+fx harm git --git-dir "@DIRTYSP@/.git" commit -m x
+fx - git --work-tree="@DIRTYSP@" commit -m x
+fx harm GIT_DIR="@DIRTYSP@/.git" git commit -m x
+fx harm env GIT_WORK_TREE="@DIRTYSP@" GIT_DIR="@DIRTYSP@/.git" git commit -m x
+fx harm git -C "@FX@" --git-dir='dirty dir/.git' --work-tree='dirty dir' commit -m x
+clean harm GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@" bash -c 'git commit -m t'
+clean - env -C "@DIRTY@" bash -c 'git commit -m t'
+clean harm cd "@DIRTY@" && bash -c 'git commit -m t'
+clean harm env GIT_WORK_TREE="@DIRTY@" GIT_DIR="@DIRTY@/.git" sh -c 'git commit -m t'
+clean harm GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@" eval 'git commit -m t'
+clean harm bash -c 'cd "@DIRTY@" && git commit -m t'
+clean harm GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@" bash -c 'git commit -m t'; git commit -m t
+clean harm env GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@" sh -ec 'git commit -m t'
+clean harm git -C ~ commit -m x
+clean harm cd ~ && git commit -m t
+clean harm cd && git commit -m t
+clean harm cd ~/ ; git commit -m t
+clean - cd ~nobody/x && git commit -m t
+dirty harm git commit -m t <<'EOF'<NL>msg<NL>EOF
+clean harm cd "@DIRTY@"<NL>git commit -m t
+clean harm cd "@DIRTY@" # comment<NL>git commit -m t
+clean harm cd \<NL>"@DIRTY@"; git commit -m t
+dirty harm exec 2>/dev/null; git commit -m t
+clean harm exec bash -c 'cd "@DIRTY@" && git commit -m t'
+
+# --- cd under control flow (round 2) --------------------------------------------
+dirty harm cd "@CLEAN@" | cat; git commit -m t
+dirty harm { cd "@CLEAN@"; } | cat; git commit -m t
+dirty harm time cd "@CLEAN@" | cat; git commit -m t
+dirty harm if false; then cd "@CLEAN@"; fi; git commit -m t
+dirty - cd "@CLEAN@" && true; git commit -m t
+dirty - cd "@CLEAN@" && git add .; git commit -m t
+dirty harm false && cd "@CLEAN@"; git commit -m t
+clean harm cd "@DIRTY@" || true; git commit -m t
+dirty harm while false; do cd "@CLEAN@"; done; git commit -m t
+dirty harm until true; do cd "@CLEAN@"; done; git commit -m t
+clean harm for d in x; do cd "@DIRTY@"; done; git commit -m t
+clean harm case x in x) cd "@DIRTY@";; *) true;; esac; git commit -m t
+dirty - case x in y) cd "@CLEAN@";; *) true;; esac; git commit -m t
+dirty - if cd "@CLEAN@"; then :; fi; git commit -m t
+clean harm cd "@CLEAN@" && cd "@DIRTY@" && git commit -m t
+dirty - cd "@CLEAN@" || cd "@DIRTY@"; git commit -m t
+fx harm false && cd "@FX@"; git -C dirty commit -m t
+clean - if true; then cd -; fi; git commit -m t
+
+# --- round 3: background jobs, loops, functions, source, eval, trap ---------------
+dirty harm cd "@CLEAN@" & wait; git commit -m test
+dirty harm cd "@CLEAN@" & git commit -m test
+dirty harm (cd "@CLEAN@" &); git commit -m test
+dirty harm { cd "@CLEAN@"; } & git commit -m t
+dirty harm coproc cd "@CLEAN@"; git commit -m t
+dirty - coproc { cd "@CLEAN@"; }; git commit -m t
+dirty harm cd "@CLEAN@" &<NL>git commit -m t
+dirty harm cd "@CLEAN@" &> /dev/null & git commit -m t
+dirty harm cd "@CLEAN@" | cat & git commit -m t
+clean harm cd "@DIRTY@" && git commit -m t &
+dirty harm for ((i=0;i<1;i++)); do cd "@CLEAN@" & done; git commit -m t
+inner harm for n in 1 2; do cd ..; done; git commit -m test
+inner harm until [ "$PWD" = "@OUTER@" ]; do cd ..; done; git commit -m t
+inner harm n=0; while [ $n -lt 2 ]; do cd ..; n=$((n+1)); done; git commit -m t
+dirty - for n in 1; do cd "@CLEAN@"; done; git commit -m t
+inner - for n in 1; do cd ..; git commit -m t; done
+inner harm for n in 1 2; do cd ..; git commit -m t; done
+dirty harm select x in a; do cd "@CLEAN@"; done; git commit -m t
+dirty harm f() { cd "@CLEAN@"; }; git commit -m t
+dirty - f() { cd "@CLEAN@"; }; f; git commit -m t
+clean harm f() { cd "@DIRTY@"; }; f; git commit -m t
+dirty harm f()<NL>{<NL>cd "@CLEAN@"<NL>}<NL>git commit -m t
+clean harm function f { cd "@DIRTY@"; }; f; git commit -m t
+clean harm function f() { cd "@DIRTY@"; }; f; git commit -m t
+clean harm g() { cd "@DIRTY@"; }; f() { g; }; f; git commit -m t
+clean harm f() { git commit -m t; }; cd "@DIRTY@"; f
+clean harm f() { git -C "@DIRTY@" commit -m t; }; f
+dirty harm cd() { :; }; cd "@CLEAN@"; git commit -m t
+clean harm git() { command git -C "@DIRTY@" "$@"; }; git commit -m t
+clean harm for n in 1 2; do f; f() { cd "@DIRTY@"; }; done; git commit -m t
+clean harm source "@FX@/cd-dirty.sh"; git commit -m t
+clean harm . "@FX@/cd-dirty.sh" && git commit -m t
+clean harm CMD='cd "@DIRTY@"'; eval "$CMD"; git commit -m t
+clean - eval "$CMD"; git commit -m t
+dirty harm trap 'cd "@CLEAN@"' EXIT; git commit -m t
+clean harm trap 'cd "@DIRTY@"' DEBUG; git commit -m t
+clean harm builtin cd "@DIRTY@"; git commit -m t
+dirty harm pushd -n "@CLEAN@"; git commit -m t
+dirty harm pushd; git commit -m t
+dirty - cd "@CLEAN@" "@DIRTY@"; git commit -m t
+dirty harm shopt -s expand_aliases<NL>alias cd=true<NL>cd "@CLEAN@"; git commit -m t
+dirty harm enable -n cd; cd "@CLEAN@"; git commit -m t
+clean harm shopt -s expand_aliases<NL>alias git='git -C "@DIRTY@"'<NL>git commit -m t
