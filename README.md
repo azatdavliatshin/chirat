@@ -1,515 +1,104 @@
 # chirat
 
-*chirat* (*chi-RAHT*) is Tatar for "queue; one's turn".
-
 [![CI](https://github.com/azatdavliatshin/chirat/actions/workflows/ci.yml/badge.svg)](https://github.com/azatdavliatshin/chirat/actions/workflows/ci.yml)
 
-chirat lets you stay in the planning chat (Cowork or a Claude Project) as long
-as possible and leave it only for what the chat cannot reach: merge and push.
-Prompts are files, so the chat can write them; status notes and diffs come
-back as files, so the chat can show them. The watcher that runs prompts with
-Claude Code lives on your machine and uses your `claude` login: no API key, no
-cloud component.
+chirat is a task queue between a planning chat (Cowork or a Claude Project)
+and Claude Code: the chat writes a prompt as a file, a watcher on your
+machine runs it with Claude Code on a branch, and the result comes back as a
+status file and a diff for you to review.
 
-The loop: the chat writes `docs/plans/<topic>.prompt-N.md` → the watcher runs
-it with Claude Code on a branch → `docs/status/<date>-<stem>.md` comes back →
-you review in the chat and merge on your machine.
+*chirat* (*chi-RAHT*) is Tatar for "queue; one's turn".
 
-## Who it is for, and the layout it expects
+## How it works
 
-chirat expects a *workspace folder*: `docs/plans/`, `docs/status/`, `.chirat/`,
-and the code in `repos/<repo>/` (its own git clone). `chirat-init` creates
-one. The workspace sits beside the repository rather than inside it so the
-repository stays free of plans, prompts, run logs and anything that names an
-AI, which matters when the repository is not yours or will be public. A
-single-repo mode (plans inside the code repository) is planned but not built.
-An existing project with its own layout needs only the plugin.
+1. Discuss a task in the planning chat and have it save a prompt file in the
+   workspace (`docs/plans/<topic>.prompt-N.md`).
+2. The watcher, running locally, notices the pending prompt and runs Claude
+   Code on a branch of your repository.
+3. Claude Code commits at the checkpoints the prompt defines and writes a
+   status report (`docs/status/`).
+4. You read the report and the diff, in the chat or on your machine.
+5. Review and iterate with a follow-up prompt until you are satisfied.
+6. Merge and push yourself. chirat never does.
 
-A new workspace gets a `CLAUDE.md` (`CLAUDE.md.in` in the template, so it is
-not loaded while you work on chirat itself), a private `docs/WORKFLOW.md` for
-the planning side, an empty `repos/`, and `.claude/settings.local.json` for
-headless runs. It is a private git repository with routine `docs:` commits;
-in `repos/*`, Claude Code commits only at a prompt's checkpoints, on its
-branch, never on `main`. Pushes, in both, are yours.
+## Why I built this
+
+After trying different ways of working with AI agents, I settled on a
+workspace structure: `docs/` holds project documents, including plans and
+decisions, SoWs (statements of work), analyses, emails, inputs, and other
+related materials, while `repos/` holds the code repositories.
+
+I use Cowork to discuss ideas, compare approaches and prepare prompts for
+Claude Code. Claude Code implements the task; I inspect the result and the
+diff, then bring them back to Cowork for another review. We iterate on the
+implementation—and on the workflow itself—until I'm comfortable shipping it.
+
+The repeated handoff became tedious: moving prompts into execution, checking
+whether the work had finished, and bringing the results back into the
+planning conversation.
+
+I built chirat to automate that handoff while keeping planning, review and
+release decisions with me. More in [docs/workflow.md](docs/workflow.md).
+
+## Before you start
+
+chirat fits you if you already plan with Claude in a chat and run Claude Code
+on your own repositories, and want the handoff between them automated.
+
+It requires a separate *workspace folder* beside your repositories:
+`docs/plans/`, `docs/status/`, `.chirat/`, and each repository cloned into
+`repos/<repo>/`. `chirat-init` creates one. Using it inside a single
+repository, with plans next to the code, is not supported yet; the plugin
+alone does not lift that requirement.
+
+You need macOS or Linux, Bash 3.2+, `git`, and `claude` installed and logged
+in. The planning session must be able to read and write the workspace files;
+not every Claude Project has access to a local folder, so check yours.
+
+## Safety
+
+Read this before your first run. Runs happen on your machine, with your
+`claude` login and whatever credentials are available there. The default
+permission mode is `auto`: a classifier, not you, approves each action. A
+plugin hook refuses `git push`, `npm publish` and commits of workspace files,
+but it is defense in depth against accidents, not a sandbox. `git push` and
+`npm publish` are also denied in the workspace settings, and you do the
+merging. The watcher needs no server of its own; Claude Code still uses its
+service. Details: [docs/safety.md](docs/safety.md#what-it-is-for).
 
 ## Install
 
-Prerequisites (macOS and Linux): Bash 3.2 or newer, `git`, and `claude`
-logged in. Optional: `tmux` (for `--tmux`), `jq` (the commit guard and
-`chirat-watch tail` fall back to `python3`), `terminal-notifier` (see "Hearing
-back"), and `shellcheck` for development.
+In your terminal:
 
 ```bash
 git clone https://github.com/azatdavliatshin/chirat ~/code/chirat-src
 ~/code/chirat-src/bin/chirat-watch install   # chirat-watch, chirat-prompt → ~/.local/bin
 ```
 
-Inside a Claude Code session, add the marketplace — a local clone path or
-`azatdavliatshin/chirat` — and install the plugin; `chirat-watch doctor` then
-checks the setup. The plugin brings `/chirat:next` (run one prompt file),
-`/chirat:handover` (a status note for an interactive session), `/chirat:poll`
-(the planning-side check-in rule), a read-only `reviewer` agent pinned to
-`opus`, and the commit guard.
+Make sure `~/.local/bin` is on your `PATH` (`install` says if not). Then,
+typed inside a Claude Code session:
 
 ```
-/plugin marketplace add ~/code/chirat-src      # local clone
-# or, from GitHub:
-/plugin marketplace add azatdavliatshin/chirat
+/plugin marketplace add ~/code/chirat-src
 /plugin install chirat@chirat
 ```
 
-## Safety
+Next, [docs/getting-started.md](docs/getting-started.md) walks through
+creating a workspace and running your first task.
 
-- The watcher runs `claude -p` on **your** machine, with **your** `claude`
-  login and your git credentials. The default `--permission-mode auto` means
-  a classifier, not you, approves each action; with `--permission-prompts
-  none` whatever it would ask about is denied and the run ends `blocked`.
-- Refused in every mode, by a plugin hook: `git push` and `npm`/`pnpm`/`yarn`
-  `publish`, however the command is wrapped (`git -C`, chains, `$(…)`,
-  `bash -c`, `env`, …); and commits that include workspace planning files or
-  `.claude/` ([Commit guard](#commit-guard)). The hook reads the **text** of
-  each Bash command; it is not a sandbox. What it is for and what it does
-  not see: [What it is for](#what-it-is-for).
-- Not sandboxed: anything else a run decides to do, in the workspace and
-  beyond — installing packages, network access, deleting files. For
-  repositories you do not fully trust, or on a machine with sensitive data,
-  run with `--permission-mode acceptEdits` and an explicit allow list in
-  `.claude/settings.local.json` ([The watcher](#the-watcher), Permissions).
-- Never use `--dangerously-skip-permissions`.
+## Documentation
 
-## Quick start
-
-```bash
-~/code/chirat-src/bin/chirat-init demo --name "Your Name" --email you@example.com
-git clone <your repo> ~/code/demo/repos/app
-mkdir -p ~/.config/chirat && echo ~/code/demo >> ~/.config/chirat/workspaces
-cat > ~/code/demo/docs/plans/app.prompt-1.md <<'EOF'   # normally the chat writes this
----
-model: sonnet
-status: pending
-repo: app
-branch: feat/hello
----
-Add a hello target to the Makefile. One checkpoint: commit when the tests pass.
-EOF
-# `chirat-watch install` (see Install) put chirat-watch on PATH;
-# otherwise use ~/code/chirat-src/bin/chirat-watch
-chirat-watch --once --dry-run    # print the claude command it would run
-chirat-watch --tmux              # start the watcher; `tmux attach -t chirat` to look
-```
-
-`chirat-init <name> [dir] --name <git name> --email <git email> [--ssh-key <path>] [--description <text>]`
-copies the template to `<dir>/<name>` (default `~/code/<name>`), writes a
-workspace `.gitconfig` and runs `git init -b main`; add the `includeIf` block
-it prints to `~/.gitconfig` once, so headless commits under `repos/` have an
-identity.
-
-When the run ends a notification says `app.prompt-1 done → review
-docs/status/<date>-app.prompt-1.md, merge feat/hello`. Read the status file
-(or say "check" in the planning chat), then
-`git -C ~/code/demo/repos/app merge --no-edit feat/hello`.
-
-## Prompt files
-
-A prompt file is `<plans_dir>/<topic>.prompt-<N><suffix>.md`: `N` is digits,
-`suffix` is empty, lowercase letters (`5b`) or a dash and `[a-z0-9-]`
-(`5-fix`); nothing else is picked up. Order: `N` numerically, plain `N`
-first, suffixes in byte order, then oldest file — `5`, `5-fix`, `5b`, `6` —
-which is how a prompt is inserted between two existing ones.
-
-| Key | Values | Meaning |
-|---|---|---|
-| `model` | `sonnet` \| `opus` \| `fable` | model the watcher passes to `claude` (`sonnet` if absent) |
-| `status` | `pending` \| `running` \| `blocked` \| `done` \| `failed` | queue state; only `pending` is picked up |
-| `repo` | folder under `repos/` | required |
-| `branch` | branch name | required |
-| `worktree` | suffix | optional; work in `repos/<repo>-<suffix>` |
-| `after` | branch name | optional; wait until that branch is merged into `default_branch` of `repos/<repo>` (see below). A dependent prompt is enqueued `pending` with `after:`, never parked as `blocked`; `/chirat:next <file>` with an unmet `after:` ends `blocked`, so an explicit path cannot bypass it |
-| `after_mode` | `merged` (default) \| `done` | optional; `done` means "satisfied as soon as the prompt that built `after`'s branch is `done`" — for squash merges and prompts from before `commit:` existed; `chirat-prompt check` / `waiting` and the watcher warn that this proves no merge. Any other value: unmet |
-| `commit` | full sha | written when a run ends `done`, `blocked` or `failed`: the head of `branch` in `repos/<repo>` (`/chirat:next` records it before the final status; the watcher fills or corrects it, and removes it when the branch is gone). `after:` reads it once the branch is deleted |
-
-Statuses go `pending` → `running` → `done` | `blocked` | `failed`. A `done`
-prompt is a branch waiting for your review and merge; nothing lands on `main`
-by itself, and the next `after:` prompt waits for that merge. `blocked`: a
-human decision is needed (the question tops the status file); set `pending` to
-re-queue. `failed`: the run could not do the work. `draft` is inert, for
-prompts under review (`template/docs/WORKFLOW.md` §4).
-
-**`after:` and merges.** While the branch exists, `git merge-base
---is-ancestor` decides. Once it is deleted, only the recorded result can: the
-prompt that built it (same `repo:` and `branch:`; the last in queue order if
-several) carries `commit:`, and that commit must be in `default_branch`.
-Without it the dependency stays unmet — `chirat-prompt waiting` says `branch
-X is gone and no result commit is recorded; merge it or set \`after_mode:
-done\``. A branch that no prompt built is a planning error (warning). Squash
-merges rewrite the commit, so the ancestry check cannot see them: set
-`after_mode: done` on the dependent prompt; it is then released by the
-`done` status alone (checked before the branch is looked at, so it also
-covers a squash-merged branch that still exists), with a warning on every
-check and on the run that it does not prove a merge.
-
-| `chirat-prompt` | Effect |
+| File | Read it when |
 |---|---|
-| `get <file> <key>` / `set <file> <key> <value>` / `unset <file> <key>` | read / write / remove one front-matter key; a `status` change is appended to `.chirat/status.log` (time, file, old, new, pid, parent pid, parent command), so an unexpected flip can be traced |
-| `next <ws>` | print the next pending prompt; exit 1 if none |
-| `waiting <ws>` | list pending prompts held back by `after:`, and why |
-| `check <ws> <file>` | exit 0 if the file's `after:` is satisfied (the reason on stdout when not; the `after_mode: done` warning on stderr when it is) |
-| `lint <ws>` | list `pending`/`running` files whose name does not match the pattern, as `<file>\t<reason>`; exit 1 if any; renaming the file is enough |
-
-## The watcher
-
-`chirat-watch` polls the workspaces in `~/.config/chirat/workspaces` (or under
-`$XDG_CONFIG_HOME`; one absolute path per line, `#` comments, `~` expanded).
-Each pass takes, per workspace, the next pending prompt and runs from the
-workspace root:
-
-```
-claude -p "/chirat:next docs/plans/<topic>.prompt-N.md" --model <model> \
-  --permission-mode auto --permission-prompts none --output-format json
-```
-
-**Permissions** (what this means for you: [Safety](#safety)). The default is
-`auto`, because `acceptEdits` prefix rules cannot match compound commands
-(`a && b`, `… | tail`) and deny them. `--permission-prompts none` stays in
-every mode, so an unwatched run ends `blocked` or `failed` instead of hanging.
-To fall back, pass `--permission-mode acceptEdits` (or set
-`CHIRAT_PERMISSION_MODE`; the flag wins) and allow every command a run needs
-in the workspace's `.claude/settings.local.json`; the template allows `git`,
-`npm test`, `shellcheck` and more, and denies `git push` and `npm publish`.
-
-**Outputs.** `.chirat/runs/<topic>.prompt-N.<YYYYMMDD-HHMMSS>.json` holds the
-result and metadata (not a transcript), the matching `.err` holds stderr; the
-watcher commits both as `docs: run log <stem>`. A prompt still `running`
-(the run died) or `pending` (plugin missing, login expired) after `claude`
-exits is set to `failed` with a note in the `.err`; set `pending` to retry.
-Each run adds a line to `~/.local/state/chirat/watch.log` (or under
-`$XDG_STATE_HOME`) and stdout, as do `waiting` (at most every 10 minutes) and
-`misnamed` (once per file) prompts; the formats are in the script header.
-
-| Flag / subcommand | Effect |
-|---|---|
-| `--once` | one pass over all workspaces, then exit 0 (also when nothing ran) |
-| `--dry-run` | print the `claude` command instead of running it; writes nothing, including stale-lock recovery (reported as `would set … pending` / `would remove lock …`, lock left in place) and the log line (printed only) |
-| `--interval N` | seconds between passes (default 60) |
-| `--permission-mode M` | `claude` permission mode, passed through (default `auto`) |
-| `--tmux` | start the watcher in a detached tmux session `chirat`; refuses if it exists |
-| `--version` | print the version |
-| `status [ws…]` | read-only: watcher, tmux session, log, and per workspace the queue, lock, last run and a `next:` line; exit 1 when something is `STALE` (a `running` prompt without a lock, as an interactive `/chirat:next` leaves, is only `warn:`). Reads `watcher.pid` and `watcher.flags`, which a running watcher keeps next to `watch.log` |
-| `recover [--dry-run] [ws…]` | stale-lock recovery on demand; refuses a workspace whose lock is live |
-| `logs [-n N] [-f] [ws…]` | the last N (default 20) lines of `watch.log`; `-f` follows |
-| `tail [-f] [ws]` | the run in progress: assistant text and tool calls, one line each, from Claude Code's transcripts under `~/.claude/projects/`; no tool output; times in UTC |
-| `doctor [--online]` | one `ok` / `warn` / `FAIL` line per setup check; `--online` also makes a real `claude -p` call, where an expired login shows up; exit 1 on any `FAIL` |
-| `restart [--force]` | stop the watcher and start `--tmux` again with the same flags; refused while `claude` runs unless `--force` (the prompt goes back to `pending`) |
-| `install [dir]` | symlink `chirat-watch` and `chirat-prompt` into `dir` (default `~/.local/bin`); replaces symlinks, refuses anything else, hints at `PATH` |
-| `[ws…]` | workspace paths, or a bare name: `demo` selects the configured path ending in `/demo` |
-
-**Locks and stopping.** Run with `--tmux`, not one Ctrl-C away from an
-interrupted run. `.chirat/lock` keeps two watchers off one workspace and
-records both PIDs (`claude.pid` is also the id of `claude`'s process group);
-a lock is live while the watcher, `claude` or anything in `claude`'s group
-runs — or while the group cannot be inspected — and is recovered on the next
-pass only once all of that is dead (a `running` prompt goes back to
-`pending`). On SIGINT, SIGTERM or SIGHUP (`tmux kill-session`) the watcher
-sends TERM to `claude`'s whole process group, waits for the *group* (up to
-`CHIRAT_STOP_GRACE` seconds, default 15), sends KILL and waits again; only
-when nothing of the group is left does it set the prompt back to `pending`,
-release the lock and log `interrupted`. If anything survives, or the group
-cannot be inspected, prompt and lock stay as they are and the log says
-`interrupted-alive`. The exact rules are in the header of `bin/chirat-watch`.
-
-## Hearing back
-
-**Notifications.** When a run ends, the watcher posts a desktop notification
-titled `chirat: done`, `chirat: blocked` or `chirat: failed` that says what to
-do next, so no chat has to poll. macOS only; `CHIRAT_NOTIFY=0` turns it off.
-`terminal-notifier` 3.x (`brew install terminal-notifier`) is preferred: one
-notification per workspace, and it needs its own notification permission,
-granted once by launching the bundle and clicking Allow (until then every
-notification is dropped; `chirat-watch doctor --online` checks):
-`open "$(brew --prefix)/Cellar/terminal-notifier/<version>/terminal-notifier.app"`.
-A click does one of three things: with `CHIRAT_NOTIFY_OPEN=1` it opens the
-status file (and `notify_open`, if set); else it opens what `notify_open`
-names; else it activates Claude Desktop (`CHIRAT_NOTIFY_ACTIVATE` overrides the
-bundle id; empty means no click action). Anything `terminal-notifier` prints
-or a non-zero exit goes to the run's `.err`. The `osascript` fallback shows as
-"Script Editor" and ignores clicks (`CHIRAT_NOTIFY_OPEN=1` opens the status
-file at once); with neither, nothing is sent.
-
-**`.chirat/LATEST`.** Each finished run appends a tab-separated line — time,
-stem, final status, branch, short commit of that branch in `repos/<repo>`,
-exit code or `interrupted`, seconds — committed with the run log. The chat
-reads it on "check" or right after enqueueing a prompt; for the away case,
-`/chirat:poll` gives it an adaptive fingerprint check instead of a fixed timer
-([template/docs/WORKFLOW.md §6](template/docs/WORKFLOW.md)).
-
-**`## Next for the human`.** Every status file ends with this section; for
-`done` it lists review, merge, the landing steps and the prompts the merge
-releases. Landing steps come from a `## Landing` section in the workspace
-`CLAUDE.md`, one `- <glob or path prefix> → <command>` bullet each, printed
-when any touched path matches:
-
-```
-## Landing
-- plugin/ → claude plugin update chirat@chirat
-- bin/chirat-watch → chirat-watch restart
-```
-
-## Workspace config
-
-Everything chirat writes for itself is under `.chirat/`; everything a human
-reads stays under `docs/`. An optional `.chirat/config` has `key=value` lines,
-`#` comments, no quotes, paths relative to the workspace root; unknown keys
-are ignored and a line without `=` is a warning.
-
-| Key | Default | Meaning |
-|---|---|---|
-| `plans_dir` | `docs/plans` | where prompt files live |
-| `status_dir` | `docs/status` | where status files are written and looked up |
-| `default_branch` | `main` | what `after:` and the review/merge hints compare against |
-| `notify_open` | empty | URL or path opened when the notification is clicked (needs `terminal-notifier` 3.x): `claude://claude.ai/project/<uuid>` opens a Project, `claude://claude.ai/chat/<uuid>` a conversation (see [support.claude.com/en/articles/14729294](https://support.claude.com/en/articles/14729294)); a value containing `'` is refused |
-
-| Path | In the workspace repo | Content |
-|---|---|---|
-| `.chirat/config` | committed | the keys above |
-| `.chirat/runs/` | committed | `.json` result and `.err` per run |
-| `.chirat/LATEST` | committed | one line per finished run |
-| `<plans_dir>/<topic>.prompt-N.md` | committed | the prompt; its `status` flip and `commit:` are part of the run log commit |
-| `.chirat/status.log` | committed | every `status` change made by `chirat-prompt set` |
-| `.chirat/lock/` | ignored | the running watcher's lock |
-| `.chirat/review/` | ignored | diffs the planning chat renders for review |
-| `repos/`, `.claude/`, `.DS_Store` | ignored | clones, local settings |
-
-## Commit guard
-
-A `PreToolUse` hook on every Bash call. It also refuses push and publish:
-the human is the only one who pushes.
-
-### What it is for
-
-The guard catches the ordinary ways an agent's Bash command commits in a
-repository it did not mean to, or pushes or publishes — the command shapes
-runs actually produce — and refuses what it cannot read. It is defense in
-depth, not a sandbox: it does not stand up to a command written to get past
-it.
-
-What holds regardless of the hook: `git push` and `npm publish` are denied in
-the workspace's `.claude/settings.local.json` ([The watcher](#the-watcher),
-Permissions; the deny rules are listed below), and the human merges every
-branch.
-
-**Known limitations.** The hook reads the text of each Bash command, so it
-does not see:
-
-- the contents of script files and programs it runs — `bash run.sh`, a
-  Python or Node program, an `npm` script, a Makefile target can do
-  anything, including push (a shell fed from a pipe, heredoc or stdin is
-  refused instead, because its code is not in the command text);
-- git plumbing such as `git send-pack`, `gh` commands that push (`gh pr
-  create`, `gh repo sync`), and user-defined git aliases;
-- a function that commits, called through another function under a
-  different git environment (`f() { git commit …; }; g() { f; }; GIT_DIR=… g`);
-- a function run as a `trap` handler after the environment changed
-  (`trap f EXIT; export GIT_DIR=…`).
-
-`plugin/tests/guard-corpus.sh` runs every line of its corpus against a real
-shell and fails when the guard allows something harmful; documented gaps are
-the lines marked `known`.
-
-It reads every simple command in the call with a small shell-word lexer:
-`"…"`, `'…'`, `\x`, `$'…'`, comments and here-documents are understood, so a
-quoted path with spaces or `&`/`;` is one word and `git commit -m "a; git
-push"` is a commit, not a push; redirections (`>`, `2>&1`, `<<<`, `<<`) are
-recognized only unquoted, so `git -C '>dir' commit` is a commit in `>dir`.
-Commands are split on `&&`, `||`, `;`, `|`, `&` and newlines, including the
-insides of `$( … )`, backticks, `${x:-$(…)}`, subshells, `bash -c '…'` /
-`eval` bodies and unquoted heredoc bodies — after stripping `VAR=value` and
-wrappers such as `env`, `command`, `sudo`, `nohup` and `time` — and git's
-global options (`-C`, `-c`, `--git-dir`, `--work-tree`, `--no-pager`, …) are
-walked to find the subcommand. Nothing is expanded or executed: a variable,
-substitution, glob or `~user` leaves a word *unresolved*.
-
-**Fail closed.** When the guard cannot tell which repository a commit targets
-— an unresolved `-C` / `--git-dir` / `--work-tree` value, a `cd` to an
-unresolved dir (or `cd -`), a literal path that is not a git repository — or
-cannot tell what a git command does (`git $SUB`), or cannot parse the command
-(unbalanced quotes, unterminated `$(`), it refuses with a one-line reason
-(`chirat: cannot tell which repository this commits to; run git from the
-repository directory`). A false refusal costs a retry; a false pass would
-break the promise. The same holds for any `cd` the hook cannot follow — in a
-loop, a function, a `trap` — the commit's target is unknown and the command
-is refused.
-
-**Two things are tracked, not one.** `-C` resolves an unknown *directory*:
-after a `cd` the hook lost, `git -C <repo> commit` is checked against
-`<repo>` and passes if it is clean. It does not resolve an unknown *shell*:
-after code the hook could not read has run in the same shell — `source` /
-`.`, `eval` of a variable, a function it could not follow, `shopt -s
-expand_aliases`, an `export` / `unset` of a `GIT_*` variable it could not
-carry — functions, aliases and the environment may all have changed, and
-**every** later `git`, `npm`, `pnpm` or `yarn` command in that shell is
-refused, with or without `-C`. Start a fresh command. A subshell, a pipeline
-member, a background job or a `bash -c` body keeps its unknown state to
-itself. `export GIT_DIR=<repo>/.git` (or `GIT_WORK_TREE`) with a literal
-value is carried like `GIT_DIR=… git commit`, so the commit is checked where
-it really goes. Every other `GIT_*` variable is not supported by the commit
-check: as a prefix (`GIT_INDEX_FILE=x git commit`, also `GIT_AUTHOR_DATE=…`)
-it refuses that commit — the reason says so and points at git's own option
-(`--date`, `-m`) — and exported it makes the shell unknown. Some of these
-move git's layout or the very index the guard inspects; others are
-harmless, and a small allow-list of verified-harmless names may come later
-(an allow-list, not a deny-list). A function whose body commits, called
-directly under any git environment its body was read without — exported, a
-prefix (`GIT_DIR=… f`), an `env` argument, resolved or not — is refused too.
-A function is judged by all of its properties together — it moves, it
-commits, it changes the shell, it runs a bare shell — and by the call's
-environment; none of them hides another.
-
-- **Push and publish, in any form:** `git push`, `git -C repos/x push`,
-  `cd repos/x && git push`, `git status; git push`, `echo $(git push)`,
-  `git -c k=v push --force`, `/usr/bin/git push`, and `npm publish`,
-  `pnpm publish`, `yarn publish`, `yarn npm publish`. `git stash push`,
-  `git log --grep push`, `echo git push` and `npm run publish-docs` pass.
-- **Every `git commit`** in the call is checked against the repo it would
-  commit to — the dir from `git -C`, `--git-dir` / `--work-tree` (also
-  `GIT_DIR` / `GIT_WORK_TREE`, as a prefix or exported), an earlier `cd` /
-  `pushd` / `env -C` in the chain, or the session's cwd.
-- **Shells fed from a pipe, heredoc or stdin** are refused: `… | sh`,
-  `… | bash -`, `bash -s`, `bash <<EOF`, `sh <<<"$X"`, `bash < file`, also
-  behind `sudo`, `env`, `timeout`, `xargs` or inside `bash -c`. They run code
-  the hook cannot see. A shell given a script file (`bash tests/run.sh`) is
-  allowed, and the file is not read — see [Safety](#safety).
-- **Without `jq` or `python3`** the command cannot be read: the commit check
-  is skipped, but any text that looks like `git … push` or `npm … publish`
-  is refused (false positives are possible, and the message says so).
-
-The workspace template's deny rules (`Bash(git push)`, `Bash(git push *)`,
-`Bash(git -C * push*)`, `Bash(npm publish*)` in
-`.claude/settings.local.json`) are a second layer behind the hook. Workspaces
-created before this version should add the first and third rules by hand.
-
-A commit is refused while these workspace files are staged:
-
-| Staged path | Code repository | Workspace repository (`HEAD` has `docs/WORKFLOW.md`) |
-|---|---|---|
-| `.claude/`, `.planning/`, `*.local.md`, `settings.local.json`, `.DS_Store`, `.chirat/lock/` | refused | refused |
-| rest of `.chirat/` | refused | allowed (the run log) |
-| `docs/**/*.prompt-*.md`, `docs/WORKFLOW.md`, `docs/PARKED.md`, `docs/scope/BASELINE_*.md` | refused (other `docs/` files are fine) | allowed |
-
-## Upgrading
-
-- **From relay** (the earlier name; nothing is migrated automatically —
-  `chirat-watch status` and `doctor` print each command until it is done, and
-  the watcher skips a workspace that still has `.relay/`):
-  1. Stop the old watcher: `relay-watch status` must show no live run, then
-     `tmux kill-session -t relay`.
-  2. Merge or pull this version into your clone.
-  3. Remove the old symlinks (`rm ~/.local/bin/relay-watch
-     ~/.local/bin/relay-prompt`) and run `bin/chirat-watch install`.
-  4. Move the config: `mv ~/.config/relay ~/.config/chirat`; optionally the
-     state too: `mv ~/.local/state/relay ~/.local/state/chirat` (with
-     `$XDG_CONFIG_HOME` / `$XDG_STATE_HOME` instead of `~/.config` /
-     `~/.local/state` if you set them). Rename any `RELAY_*` variable to
-     `CHIRAT_*`; the old names are ignored.
-  5. Per workspace: `git mv .relay .chirat && sed -i.bak
-     's#^\.relay/#.chirat/#' .gitignore && rm .gitignore.bak`, and in
-     `.claude/settings.local.json` change `Bash(relay-prompt *)` to
-     `Bash(chirat-prompt *)`. If `.relay/lock/` exists, a run from the old
-     watcher may still be live: check it first, do not move.
-  6. Plugin, in Claude Code: `/plugin uninstall relay@relay`,
-     `/plugin marketplace remove relay`, add the marketplace again (see
-     Install), `/plugin install chirat@chirat`.
-  7. The GitHub repository was renamed too; old URLs redirect, but update
-     existing clones: `git remote set-url origin
-     https://github.com/azatdavliatshin/chirat` (or the ssh form), and if the
-     marketplace was added by GitHub name rather than a local path:
-     `claude plugin marketplace remove chirat && claude plugin marketplace
-     add azatdavliatshin/chirat`.
-  8. `chirat-watch doctor --online`, then start the watcher:
-     `chirat-watch --tmux`.
-- **From 0.x** (run log moved from `docs/status/` to `.chirat/`): per workspace,
-  `git mv docs/status/runs .chirat/runs && git mv docs/status/LATEST .chirat/LATEST`
-  (what exists; `status` and `doctor` warn until then), `chirat-watch restart`.
-- **The plugin** is a cache snapshot, not a link to the clone: after merging
-  a branch that touches `plugin/`, run `claude plugin update chirat@chirat`.
-
-## Development
-
-```bash
-bash tests/chirat-watch.sh && bash tests/chirat-init.sh && bash plugin/tests/run.sh
-shellcheck bin/chirat-watch bin/chirat-init plugin/bin/chirat-prompt \
-  plugin/hooks/guard-commit.sh tests/*.sh plugin/tests/*.sh
-claude plugin validate plugin
-```
-
-CI (`.github/workflows/ci.yml`): all of the above on `ubuntu-latest` and
-`macos-latest`, plus the suites under macOS's `/bin/bash` (3.2).
-
-Reports against the commit guard: a new bypass is first added to
-`plugin/tests/guard-corpus.txt`. It is fixed when the fix is local to one
-rule; otherwise the line is marked `known` and the shape is listed under
-[Known limitations](#what-it-is-for). The hook is not extended to model more
-of the shell in a patch release.
-
-## Troubleshooting
-
-### Notifications
-
-**No notification, nothing in `.err`, `doctor` says `ok terminal-notifier`.**
-terminal-notifier has no notification permission yet. macOS lists a
-command-line tool under System Settings → Notifications only after its app
-bundle has been launched once; by hand the error is `Could not request
-notification permission: Notifications are not allowed for this application`.
-Launch the bundle, click **Allow**, then check:
-`open "$(dirname "$(dirname "$(dirname "$(readlink -f "$(command -v terminal-notifier)")")")")"`
-(or `open "$(brew --prefix)/Cellar/terminal-notifier/<version>/terminal-notifier.app"`),
-then `chirat-watch doctor --online` → `ok … permission granted`. `doctor` derives
-the bundle path the same way and prints it when the permission is missing.
-
-**`[!] -sender is no longer supported` in `.err`.** terminal-notifier 3.x
-dropped `-sender`; chirat no longer sends it, so upgrade chirat if you see this.
-Conversely `-open` is unknown to 2.x: `brew upgrade terminal-notifier`.
-
-**The notification shows but the click does nothing.** With `notify_open`
-unset the click only activates Claude Desktop. Set
-`notify_open=claude://claude.ai/project/<uuid>` in `.chirat/config` (read per
-run, no restart). Test a URL by hand with `open "claude://…"`; a wrong chat id
-shows "That session is no longer available" in Claude Desktop. A `'` in the
-value is refused (`warn:` in `.err`).
-
-**Notifications come from "Script Editor".** The watcher did not find
-terminal-notifier, often because `brew install` ran after the tmux session
-started and its `PATH` is old: `chirat-watch restart`. `chirat-watch doctor`
-says which notifier it sees.
-
-**Nothing at all and `.err` is quiet.** Focus / Do Not Disturb, or the style
-for terminal-notifier is "None": System Settings → Notifications →
-terminal-notifier → Banners or Alerts. `CHIRAT_NOTIFY=0` in the watcher's
-environment silences everything too; `chirat-watch status` prints a `notify:`
-line per workspace with `CHIRAT_NOTIFY`, `CHIRAT_NOTIFY_OPEN` and `notify_open`
-as seen by the shell you ran it in, so run it from the watcher's environment.
-
-**Linux.** No desktop notifications; the loop still works through
-`.chirat/LATEST`, `chirat-watch status`, or `/chirat:poll` in the chat.
-
-### The run itself
-
-**A prompt stays `pending`.** The watcher is not running (`chirat-watch
-status`), the workspace is not in `~/.config/chirat/workspaces`, the file name
-does not match the pattern (`chirat-prompt lint <ws>`, or `misnamed` in the
-log), or an `after:` is unmet (`chirat-prompt waiting <ws>`).
-
-**A run ends `failed` within seconds.** The plugin is not installed for this
-user, or the `claude` login expired: `chirat-watch doctor --online`; the `.err`
-names which.
-
-**A run ends `blocked` on a permission.** `--permission-prompts none` denied
-something the classifier would have asked about; the top of the status file
-says what. Re-plan the prompt to avoid it, or (less safe) allow it in
-`.claude/settings.local.json` and run with `acceptEdits`.
-
-**`chirat-watch status` says `STALE`.** Run `chirat-watch recover --dry-run`
-first, then `chirat-watch recover`; the rules are in the header of
-`bin/chirat-watch`.
+| [getting-started.md](docs/getting-started.md) | you are setting up and running the first task |
+| [workflow.md](docs/workflow.md) | you want to know why the workspace is laid out this way and how to use it |
+| [prompts.md](docs/prompts.md) | you write prompt files: naming, front matter, `after:`, checkpoints |
+| [commands.md](docs/commands.md) | you need a `chirat-watch` / `chirat-prompt` command or flag |
+| [configuration.md](docs/configuration.md) | you change `.chirat/config`, environment variables or notifications |
+| [safety.md](docs/safety.md) | you want to know what runs can do and what the commit guard covers |
+| [troubleshooting.md](docs/troubleshooting.md) | a prompt is stuck, a run failed or a notification is missing |
+| [upgrading.md](docs/upgrading.md) | you update chirat or move over from *relay* |
+| [development.md](docs/development.md) | you run the tests or report a guard bypass |
 
 ## License
 

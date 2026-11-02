@@ -3,6 +3,12 @@
 All notable changes are listed here, in the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [Unreleased]
+
+### Documentation
+
+- README is a short introduction; the guide and reference moved to `docs/`.
+
 ## [0.2.1] — 2026-10-29
 
 ### Fixed
