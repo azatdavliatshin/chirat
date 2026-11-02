@@ -337,3 +337,7 @@ clean harm f() { cd "@CLEAN@"; git commit -m t; }; GIT_DIR="@DIRTY@/.git" GIT_WO
 clean harm f() { git -C "@CLEAN@" commit -m t; source "@FX@/cd-dirty.sh"; }; GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@" f
 clean harm f() { bash; git -C "@CLEAN@" commit -m t; }; GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@" f
 clean harm printf 'export GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@"\n' > "$TMPDIR/review-env.sh"; f() { cd "@CLEAN@"; git commit -m t; }; source "$TMPDIR/review-env.sh"; f
+
+# --- independent review of 0e74957: a known function reached indirectly ---
+clean known f() { git -C "@CLEAN@" commit -m t; }; g() { f; }; GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@" g
+clean known f() { git -C "@CLEAN@" commit -m t; }; trap f EXIT; export GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@"

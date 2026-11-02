@@ -68,14 +68,8 @@ checks the setup. The plugin brings `/chirat:next` (run one prompt file),
   `publish`, however the command is wrapped (`git -C`, chains, `$(…)`,
   `bash -c`, `env`, …); and commits that include workspace planning files or
   `.claude/` ([Commit guard](#commit-guard)). The hook reads the **text** of
-  each Bash command, not the contents of the files it runs: a script file
-  (`bash run.sh`), a Python or Node program, an `npm` script, a Makefile
-  target can do anything, including push. For the same reason a shell fed
-  from a pipe, heredoc or stdin (`… | sh`, `bash <<EOF`) is refused — its
-  code is not in the command text — while a shell given a script file is not.
-  It is not a sandbox. It does not cover plumbing such as `git send-pack`,
-  `gh` commands that push (`gh pr create`, `gh repo sync`) or user-defined
-  git aliases.
+  each Bash command; it is not a sandbox. What it is for and what it does
+  not see: [What it is for](#what-it-is-for).
 - Not sandboxed: anything else a run decides to do, in the workspace and
   beyond — installing packages, network access, deleting files. For
   repositories you do not fully trust, or on a machine with sensitive data,
@@ -290,11 +284,42 @@ are ignored and a line without `=` is a warning.
 A `PreToolUse` hook on every Bash call. It also refuses push and publish:
 the human is the only one who pushes.
 
+### What it is for
+
+The guard catches the ordinary ways an agent's Bash command commits in a
+repository it did not mean to, or pushes or publishes — the command shapes
+runs actually produce — and refuses what it cannot read. It is defense in
+depth, not a sandbox: it does not stand up to a command written to get past
+it.
+
+What holds regardless of the hook: `git push` and `npm publish` are denied in
+the workspace's `.claude/settings.local.json` ([The watcher](#the-watcher),
+Permissions; the deny rules are listed below), and the human merges every
+branch.
+
+**Known limitations.** The hook reads the text of each Bash command, so it
+does not see:
+
+- the contents of script files and programs it runs — `bash run.sh`, a
+  Python or Node program, an `npm` script, a Makefile target can do
+  anything, including push (a shell fed from a pipe, heredoc or stdin is
+  refused instead, because its code is not in the command text);
+- git plumbing such as `git send-pack`, `gh` commands that push (`gh pr
+  create`, `gh repo sync`), and user-defined git aliases;
+- a function that commits, called through another function under a
+  different git environment (`f() { git commit …; }; g() { f; }; GIT_DIR=… g`);
+- a function run as a `trap` handler after the environment changed
+  (`trap f EXIT; export GIT_DIR=…`).
+
+`plugin/tests/guard-corpus.sh` runs every line of its corpus against a real
+shell and fails when the guard allows something harmful; documented gaps are
+the lines marked `known`.
+
 It reads every simple command in the call with a small shell-word lexer:
 `"…"`, `'…'`, `\x`, `$'…'`, comments and here-documents are understood, so a
 quoted path with spaces or `&`/`;` is one word and `git commit -m "a; git
 push"` is a commit, not a push; redirections (`>`, `2>&1`, `<<<`, `<<`) are
-recognised only unquoted, so `git -C '>dir' commit` is a commit in `>dir`.
+recognized only unquoted, so `git -C '>dir' commit` is a commit in `>dir`.
 Commands are split on `&&`, `||`, `;`, `|`, `&` and newlines, including the
 insides of `$( … )`, backticks, `${x:-$(…)}`, subshells, `bash -c '…'` /
 `eval` bodies and unquoted heredoc bodies — after stripping `VAR=value` and
@@ -333,9 +358,9 @@ it refuses that commit — the reason says so and points at git's own option
 move git's layout or the very index the guard inspects; others are
 harmless, and a small allow-list of verified-harmless names may come later
 (an allow-list, not a deny-list). A function whose body commits, called
-under any git environment its body was read without — exported, a prefix
-(`GIT_DIR=… f`), an `env` argument, resolved or not — is refused too. A
-function is judged by all of its properties together — it moves, it
+directly under any git environment its body was read without — exported, a
+prefix (`GIT_DIR=… f`), an `env` argument, resolved or not — is refused too.
+A function is judged by all of its properties together — it moves, it
 commits, it changes the shell, it runs a bare shell — and by the call's
 environment; none of them hides another.
 
@@ -418,6 +443,12 @@ claude plugin validate plugin
 
 CI (`.github/workflows/ci.yml`): all of the above on `ubuntu-latest` and
 `macos-latest`, plus the suites under macOS's `/bin/bash` (3.2).
+
+Reports against the commit guard: a new bypass is first added to
+`plugin/tests/guard-corpus.txt`. It is fixed when the fix is local to one
+rule; otherwise the line is marked `known` and the shape is listed under
+[Known limitations](#what-it-is-for). The hook is not extended to model more
+of the shell in a patch release.
 
 ## Troubleshooting
 

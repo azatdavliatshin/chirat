@@ -15,11 +15,16 @@
 # must pass the guard (the explicit allow-list); lines marked `harm` must be
 # seen as harmful by the real run, lines marked `none` as harmless (both a
 # self-check of the fixture and of the line's own expectation — `none` says
-# nothing about the guard, a refusal of it is conservative).
+# nothing about the guard, a refusal of it is conservative). Lines marked
+# `known` are documented gaps (README "Commit guard", Known limitations): the
+# real run must be harmful and the guard is expected to allow it; each is
+# printed as "known gap", never failed, and a refusal of one fails with
+# "known gap closed" so the label is changed to `harm` once the gap is gone.
 #
 # Corpus line: `<cwd> <expect> <command>`; `#` comments and blank lines are
 # skipped. <cwd> is one of outer mid inner clean dirty cleansp dirtysp home
-# fx; <expect> is `-`, `allow`, `harm` or `none`; in <command>, `<NL>` is a
+# fx; <expect> is `-`, `allow`, `harm`, `none` or
+# `known`; in <command>, `<NL>` is a
 # newline and @OUTER@ @MID@ @INNER@ @CLEAN@ @DIRTY@ @CLEANSP@ @DIRTYSP@
 # @HOME@ @FX@ @GIT@ are the fixture paths (`@GIT@` is the shim; `@FX@/>clean`
 # and `@FX@/>dirty` are repos whose names start with `>`; `@FX@/cd-dirty.sh`
@@ -209,7 +214,7 @@ harm_of_log() {
 
 # --- the corpus -------------------------------------------------------------------
 
-lines=0 refused=0 allowed=0 harmful=0 conservative=0
+lines=0 refused=0 allowed=0 harmful=0 conservative=0 known=0
 while IFS= read -r line || [ -n "$line" ]; do
   case $line in '' | '#'*) continue ;; esac
   cwdname=${line%%[[:space:]]*}
@@ -223,7 +228,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     cleansp) cwd=$cleansp ;; dirtysp) cwd=$dirtysp ;; home) cwd=$home ;; fx) cwd=$fx ;;
     *) ko "unknown cwd '$cwdname' in: $line"; continue ;;
   esac
-  case $expect in - | allow | harm | none) ;; *) ko "unknown expectation '$expect' in: $line"; continue ;; esac
+  case $expect in - | allow | harm | none | known) ;; *) ko "unknown expectation '$expect' in: $line"; continue ;; esac
   cmd=${cmd//<NL>/$'\n'}
   cmd=${cmd//@OUTER@/$outer}; cmd=${cmd//@MID@/$mid}; cmd=${cmd//@INNER@/$inner}
   cmd=${cmd//@CLEAN@/$clean}; cmd=${cmd//@DIRTY@/$dirty}
@@ -245,6 +250,17 @@ while IFS= read -r line || [ -n "$line" ]; do
   fi
   harm=$(harm_of_log)
 
+  if [ "$expect" = known ]; then
+    if [ -z "$harm" ]; then
+      ko "expected harm on a known gap, the real run showed none (fixture or corpus bug): $show"
+    elif [ "$rc" = 2 ]; then
+      ko "known gap closed — relabel this line \`harm\`: $show"
+    else
+      known=$((known + 1))
+      echo "known gap: $show"
+    fi
+    continue
+  fi
   if [ -n "$harm" ]; then
     harmful=$((harmful + 1))
     if [ "$rc" != 2 ]; then
@@ -261,7 +277,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   esac
 done <"$corpus"
 
-echo "corpus: $lines lines, $refused refused, $allowed allowed; $harmful harmful (all refused), $conservative conservative; bash ${BASH_VERSION%%(*}"
+echo "corpus: $lines lines, $refused refused, $allowed allowed; $harmful harmful (all refused), $conservative conservative, $known known gaps; bash ${BASH_VERSION%%(*}"
 [ "$lines" -ge 80 ] || ko "corpus has $lines lines, fewer than 80"
 [ "$fail" -eq 0 ] || echo "corpus: $fail failures"
 [ "$fail" -eq 0 ]

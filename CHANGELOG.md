@@ -60,6 +60,16 @@ All notable changes are listed here, in the
   `default_branch` from `.chirat/config` instead of assuming `docs/plans`,
   `docs/status` and `main`.
 
+### Known limitations
+
+- Commit guard: a function that commits, called through another function
+  under a different git environment (`g() { f; }; GIT_DIR=… g`), is allowed.
+- Commit guard: a function run as a `trap` handler after the environment
+  changed (`trap f EXIT; export GIT_DIR=…`) is allowed.
+
+Both are marked `known` in the guard corpus; the full list is in README
+"Commit guard", What it is for.
+
 ## [0.2.0] — 2026-10-29
 
 First public release. chirat was called *relay* before; the 0.1.x versions
