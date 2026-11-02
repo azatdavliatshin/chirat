@@ -331,3 +331,9 @@ clean allow { bash; } >"$TMPDIR/o"
 
 # --- independent review of 5eb8f7b: function call prefix environment ---
 clean harm f() { git -C "@CLEAN@" commit -m t; }; GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@" f
+
+# --- independent review of 475109e: overlapping function properties ---
+clean harm f() { cd "@CLEAN@"; git commit -m t; }; GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@" f
+clean harm f() { git -C "@CLEAN@" commit -m t; source "@FX@/cd-dirty.sh"; }; GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@" f
+clean harm f() { bash; git -C "@CLEAN@" commit -m t; }; GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@" f
+clean harm printf 'export GIT_DIR="@DIRTY@/.git" GIT_WORK_TREE="@DIRTY@"\n' > "$TMPDIR/review-env.sh"; f() { cd "@CLEAN@"; git commit -m t; }; source "$TMPDIR/review-env.sh"; f

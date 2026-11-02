@@ -334,7 +334,10 @@ move git's layout or the very index the guard inspects; others are
 harmless, and a small allow-list of verified-harmless names may come later
 (an allow-list, not a deny-list). A function whose body commits, called
 under any git environment its body was read without — exported, a prefix
-(`GIT_DIR=… f`), an `env` argument, resolved or not — is refused too.
+(`GIT_DIR=… f`), an `env` argument, resolved or not — is refused too. A
+function is judged by all of its properties together — it moves, it
+commits, it changes the shell, it runs a bare shell — and by the call's
+environment; none of them hides another.
 
 - **Push and publish, in any form:** `git push`, `git -C repos/x push`,
   `cd repos/x && git push`, `git status; git push`, `echo $(git push)`,

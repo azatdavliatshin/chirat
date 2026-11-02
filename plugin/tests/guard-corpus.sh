@@ -13,15 +13,19 @@
 # have refused. A refusal of something the real run shows as harmless is
 # counted and printed as "conservative", never failed. Lines marked `allow`
 # must pass the guard (the explicit allow-list); lines marked `harm` must be
-# seen as harmful by the real run (a self-check of the fixture).
+# seen as harmful by the real run, lines marked `none` as harmless (both a
+# self-check of the fixture and of the line's own expectation — `none` says
+# nothing about the guard, a refusal of it is conservative).
 #
 # Corpus line: `<cwd> <expect> <command>`; `#` comments and blank lines are
 # skipped. <cwd> is one of outer mid inner clean dirty cleansp dirtysp home
-# fx; <expect> is `-`, `allow` or `harm`; in <command>, `<NL>` is a newline
-# and @OUTER@ @MID@ @INNER@ @CLEAN@ @DIRTY@ @CLEANSP@ @DIRTYSP@ @HOME@ @FX@
-# @GIT@ are the fixture paths (`@GIT@` is the shim; `@FX@/>clean` and
-# `@FX@/>dirty` are repos whose names start with `>`). Commands must be safe
-# to run with the shim: no network, nothing written outside TMPDIR.
+# fx; <expect> is `-`, `allow`, `harm` or `none`; in <command>, `<NL>` is a
+# newline and @OUTER@ @MID@ @INNER@ @CLEAN@ @DIRTY@ @CLEANSP@ @DIRTYSP@
+# @HOME@ @FX@ @GIT@ are the fixture paths (`@GIT@` is the shim; `@FX@/>clean`
+# and `@FX@/>dirty` are repos whose names start with `>`; `@FX@/cd-dirty.sh`
+# cds into the dirty repo, `@FX@/export-dirty.sh` exports its GIT_DIR /
+# GIT_WORK_TREE, `@FX@/noop.sh` does nothing). Commands must be safe to run
+# with the shim: no network, nothing written outside TMPDIR.
 #
 # Usage: plugin/tests/guard-corpus.sh [corpus-file]; runs under the bash that
 # invokes it (Bash 3.2 included), which is also the bash the lines run in.
@@ -72,6 +76,8 @@ mkrepo "$fx/>clean" clean
 mkrepo "$fx/>dirty" dirty
 mkdir -p "$fx/tmp" "$fx/plain"
 printf 'cd "%s"\n' "$dirty" >"$fx/cd-dirty.sh"
+printf 'export GIT_DIR="%s/.git" GIT_WORK_TREE="%s"\n' "$dirty" "$dirty" >"$fx/export-dirty.sh"
+printf ':\n' >"$fx/noop.sh"
 
 # The git dirs that count as dirty, resolved the same way the records are.
 gitdir_of() { git -C "$1" rev-parse --absolute-git-dir 2>/dev/null; }
@@ -217,7 +223,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     cleansp) cwd=$cleansp ;; dirtysp) cwd=$dirtysp ;; home) cwd=$home ;; fx) cwd=$fx ;;
     *) ko "unknown cwd '$cwdname' in: $line"; continue ;;
   esac
-  case $expect in - | allow | harm) ;; *) ko "unknown expectation '$expect' in: $line"; continue ;; esac
+  case $expect in - | allow | harm | none) ;; *) ko "unknown expectation '$expect' in: $line"; continue ;; esac
   cmd=${cmd//<NL>/$'\n'}
   cmd=${cmd//@OUTER@/$outer}; cmd=${cmd//@MID@/$mid}; cmd=${cmd//@INNER@/$inner}
   cmd=${cmd//@CLEAN@/$clean}; cmd=${cmd//@DIRTY@/$dirty}
@@ -251,6 +257,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   case $expect in
     allow) [ "$rc" = 0 ] || ko "false refusal on an allow-list line: $show" "$(cat "$fx/guard.err")" ;;
     harm) [ -n "$harm" ] || ko "expected harm, the real run showed none (fixture or corpus bug): $show" ;;
+    none) [ -z "$harm" ] || ko "expected no harm, the real run would ${harm//$'\n'/; } (fixture or corpus bug): $show" ;;
   esac
 done <"$corpus"
 

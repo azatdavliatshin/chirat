@@ -746,6 +746,7 @@ git_env() {
 simple() {
   local -a words=("${W[@]}") unres=("${WU[@]}")
   local nw=${#W[@]} i=0 w0 argv0 v u sub subu dir gitdir worktree gu prev body via_xargs=0 saw_exec=0 git_assign=0 xp
+  local in_shell in_moves in_bare in_commits call_shu call_env call_fed
   local scur=$cur env_gitdir=$ctx_gitdir env_wt=$ctx_wt envu=$ctx_gu env_genv=$ctx_genv cmd_fed=$fed
   [ "$W_STDIN" = 0 ] || cmd_fed=1
   CD_SET=""
@@ -814,24 +815,36 @@ simple() {
   argv0=${words[i]}
   [ "${unres[i]}" = 0 ] || return 0 # an unresolved command name: nothing to see
   i=$((i + 1))
-  # A call of a function whose body touches the directory (or that shadows
-  # a word this hook interprets) lands anywhere; one whose body changed the
-  # shell leaves the shell unknown; one whose body commits was read with the
-  # git environment of its definition — called under another one (exported,
-  # a prefix or an `env` argument, resolved or not) the commit would go
-  # elsewhere, and once the shell is unknown so may the body itself.
-  if set_has "$FN_SHELL" "$argv0"; then unknown_shell "a call of $argv0, whose body changes the shell"; return 0; fi
-  if set_has "$FN_MOVES" "$argv0"; then CD_SET='?'; return 0; fi
-  if set_has "$FN_BARE" "$argv0"; then
-    [ "$cmd_fed" = 0 ] || refuse "$opaque_msg"
-    bare_shells=$((bare_shells + 1))
-    return 0
-  fi
-  if set_has "$FN_COMMITS" "$argv0"; then
-    [ "$shu" = 0 ] || refuse "$(shell_msg "$argv0")"
-    if [ -n "$env_gitdir$env_wt$env_genv" ] || [ "$envu" = 1 ]; then
+  # A call of a known function is one decision over all of its properties:
+  # they are not exclusive (a body may move, commit, change the shell and
+  # run a bare shell at once) and none of them hides another. Every property
+  # of the function and of the call is gathered first, the refusals are
+  # decided next, in order, and only then every effect is applied. No early
+  # return above the decision; a new property joins it, never returns before it.
+  if set_has "$FN_SHELL"$'\n'"$FN_MOVES"$'\n'"$FN_BARE"$'\n'"$FN_COMMITS" "$argv0"; then
+    in_shell=0 in_moves=0 in_bare=0 in_commits=0 call_env=0
+    ! set_has "$FN_SHELL" "$argv0" || in_shell=1     # its body changed the shell
+    ! set_has "$FN_MOVES" "$argv0" || in_moves=1     # its body moved, or it shadows an interpreted word
+    ! set_has "$FN_BARE" "$argv0" || in_bare=1       # its body holds a shell that reads stdin
+    ! set_has "$FN_COMMITS" "$argv0" || in_commits=1 # its body commits, read with the environment of the definition
+    call_shu=$shu call_fed=$cmd_fed                  # the shell is unknown here; stdin carries something unseen
+    if [ -n "$env_gitdir$env_wt$env_genv" ] || [ "$envu" = 1 ]; then call_env=1; fi # a git environment the body was read without
+    # Refusals: once the shell is unknown so may the body itself be; a
+    # commit under another git environment (exported, a prefix or an `env`
+    # argument, resolved or not) would go elsewhere; a bare shell fed from a
+    # pipe runs what the hook cannot see.
+    if [ "$call_shu" = 1 ] && { [ "$in_commits" = 1 ] || [ "$in_bare" = 1 ] || [ "$in_shell" = 1 ]; }; then
+      refuse "$(shell_msg "$argv0")"
+    fi
+    if [ "$in_commits" = 1 ] && [ "$call_env" = 1 ]; then
       refuse "chirat: $argv0 commits and is called with a git environment (exported or a prefix) its body was read without; run git directly."
     fi
+    if [ "$in_bare" = 1 ] && [ "$call_fed" = 1 ]; then refuse "$opaque_msg"; fi
+    # Effects, all of them.
+    [ "$in_shell" = 0 ] || unknown_shell "a call of $argv0, whose body changes the shell"
+    [ "$in_moves" = 0 ] || CD_SET='?'
+    [ "$in_bare" = 0 ] || bare_shells=$((bare_shells + 1))
+    return 0
   fi
   if [ "$shu" = 1 ]; then case $argv0 in cd | pushd | popd) CD_SET='?'; return 0 ;; esac; fi
   case $argv0 in
