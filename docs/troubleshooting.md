@@ -42,7 +42,7 @@ bundle has been launched once; by hand the error is `Could not request
 notification permission: Notifications are not allowed for this application`.
 Launch the bundle, click **Allow**, then check:
 `open "$(dirname "$(dirname "$(dirname "$(readlink -f "$(command -v terminal-notifier)")")")")"`
-(or `open "$(brew --prefix)/Cellar/terminal-notifier/<version>/terminal-notifier.app"`),
+(or `open "$(brew --prefix)/Cellar/terminal-notifier/VERSION/terminal-notifier.app"`),
 then `chirat-watch doctor --online` → `ok … permission granted`. `doctor` derives
 the bundle path the same way and prints it when the permission is missing.
 

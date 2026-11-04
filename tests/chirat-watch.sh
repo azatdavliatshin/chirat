@@ -1067,6 +1067,137 @@ has "doctor --online line" "$tmp/doc.out" "ok   claude -p: answered"
 FAKE_LOGIN=1 doc --online
 eq "doctor --online login expired exits 1" 1 $?
 has "doctor --online first stderr line" "$tmp/doc.out" "FAIL claude -p: exit 1: Not logged in"
+
+# --- doctor <ws> -----------------------------------------------------------
+
+# Its own HOME with a real ~/.gitconfig and ~/.config/chirat/workspaces; an empty
+# XDG_CONFIG_HOME falls back to ~/.config, for chirat-watch and for git alike.
+dh=$(cd -P "$tmp" && pwd -P)/dochome
+dws=$dh/code/dw
+mkdir -p "$dws/.chirat" "$dws/docs/plans" "$dws/repos" "$dh/.config/chirat"
+git init -q -b main "$dws"
+git config -f "$dws/.gitconfig" user.name "Doc Tor"
+git config -f "$dws/.gitconfig" user.email doc@example.com
+printf 'notify_open=claude://claude.ai/project/x\n' >"$dws/.chirat/config"
+git init -q -b main "$tmp/docsrc"
+git -C "$tmp/docsrc" -c user.name=T -c user.email=t@example.com commit -q --allow-empty -m init
+git clone -q "$tmp/docsrc" "$dws/repos/app"
+printf '%s\n' "$dws" >"$dh/.config/chirat/workspaces"
+dgit() { HOME=$dh XDG_CONFIG_HOME="" git "$@"; }
+dinclude() { # dinclude <gitdir pattern> <path>: ~/.gitconfig holds just this include
+  rm -f "$dh/.gitconfig"
+  dgit config --global --add "includeIf.gitdir:$1.path" "$2"
+}
+dd() { HOME=$dh XDG_CONFIG_HOME="" PATH=$dpath "$watch" doctor "$@" >"$tmp/dd.out" 2>&1; return $?; }
+fixline="git config --global --add includeIf.\"gitdir:$dws/\".path \"$dws/.gitconfig\""
+
+dinclude "$dws/" "$dws/.gitconfig"
+dd "$dws"
+eq "doctor ws: all green exits 0" 0 $?
+has "doctor ws: machine checks run too" "$tmp/dd.out" "ok   claude: "
+has "doctor ws: includeIf ok" "$tmp/dd.out" "ok   includeIf: gitdir:$dws/"
+has "doctor ws: identity ok" "$tmp/dd.out" "ok   identity: doc@example.com"
+has "doctor ws: workspaces ok" "$tmp/dd.out" "ok   workspaces: registered in"
+has "doctor ws: repos ok" "$tmp/dd.out" "ok   repos: app"
+has "doctor ws: default_branch ok" "$tmp/dd.out" "ok   default_branch: main"
+has "doctor ws: notify_open ok" "$tmp/dd.out" "ok   notify_open: claude://claude.ai/project/x"
+if grep -q '^FAIL\|^warn [a-z_]*:.*dw' "$tmp/dd.out"; then ko "doctor ws: no FAIL, no warn about it" "$(cat "$tmp/dd.out")"; else ok "doctor ws: no FAIL, no warn about it"; fi
+# shellcheck disable=SC2088 # the literal ~ is the test
+dd "~/code/dw"
+eq "doctor ws: ~ allowed" 0 $?
+dd --online "$dws/"
+eq "doctor ws: --online and a trailing / " 0 $?
+
+rm -f "$dh/.gitconfig"
+dd "$dws"
+eq "doctor ws: no includeIf exits 1" 1 $?
+has "doctor ws: no includeIf FAIL" "$tmp/dd.out" "FAIL includeIf: no includeIf for it"
+has "doctor ws: the fix line" "$tmp/dd.out" "$fixline"
+has "doctor ws: identity FAIL without the include" "$tmp/dd.out" "FAIL identity: "
+(HOME=$dh XDG_CONFIG_HOME="" eval "$(grep 'git config --global --add' "$tmp/dd.out")")
+dd "$dws"
+eq "doctor ws: the printed fix line works" 0 $?
+
+dinclude "$dws" "$dws/.gitconfig"
+dd "$dws"
+eq "doctor ws: no trailing / exits 1" 1 $?
+has "doctor ws: no trailing / FAIL" "$tmp/dd.out" "has no trailing /"
+
+dinclude "$dws/" "$dh/other.gitconfig"
+dd "$dws"
+eq "doctor ws: wrong path exits 1" 1 $?
+has "doctor ws: wrong path FAIL" "$tmp/dd.out" "has path = $dh/other.gitconfig"
+
+printf '[includeIf "gitdir:%s/"]\n  path = %s/.gitconfig\n' "$dws" "$dws" >"$dh/extra.gitconfig"
+rm -f "$dh/.gitconfig"
+dgit config --global include.path "$dh/extra.gitconfig"
+dd "$dws"
+eq "doctor ws: include in an included file exits 0" 0 $?
+has "doctor ws: include in an included file ok" "$tmp/dd.out" "ok   includeIf: gitdir:$dws/"
+
+ln -s "$dws" "$dh/dwlink"
+dinclude "$dh/dwlink/" "$dws/.gitconfig"
+dd "$dws"
+has "doctor ws: symlink resolved for the comparison" "$tmp/dd.out" "ok   includeIf: gitdir:$dws/"
+has "doctor ws: identity shows git does not follow it" "$tmp/dd.out" "FAIL identity: "
+# shellcheck disable=SC2088 # the literal ~ is the test
+dinclude "~/code/dw/" "~/code/dw/.gitconfig"
+dd "$dws"
+eq "doctor ws: ~ in the include resolved" 0 $?
+
+dinclude "$dws/" "$dws/.gitconfig"
+: >"$dh/.config/chirat/workspaces"
+dd "$dws"
+eq "doctor ws: missing workspaces line exits 1" 1 $?
+has "doctor ws: workspaces FAIL" "$tmp/dd.out" "FAIL workspaces: not in"
+has "doctor ws: workspaces fix line" "$tmp/dd.out" "mkdir -p \"$dh/.config/chirat\" && echo \"$dws\" >> \"$dh/.config/chirat/workspaces\""
+printf '%s\n' "$dh/dwlink" >"$dh/.config/chirat/workspaces"
+dd "$dws"
+has "doctor ws: workspaces compared resolved" "$tmp/dd.out" "ok   workspaces: registered"
+printf '%s\n' "$dws" >"$dh/.config/chirat/workspaces"
+
+mv "$dws/repos/app" "$tmp/docapp"
+dd "$dws"
+eq "doctor ws: no clone exits 0" 0 $?
+has "doctor ws: no clone warn" "$tmp/dd.out" "warn repos: no clone"
+mv "$tmp/docapp" "$dws/repos/app"
+
+printf 'default_branch=mobile\nnotify_open=claude://claude.ai/project/x\n' >"$dws/.chirat/config"
+dd "$dws"
+eq "doctor ws: default_branch missing exits 0" 0 $?
+has "doctor ws: default_branch warn names the current branch" "$tmp/dd.out" "warn default_branch: no local branch mobile in repos/app, which is on main"
+printf '# notify_open=claude://claude.ai/project/<uuid>\n' >"$dws/.chirat/config"
+dd "$dws"
+eq "doctor ws: notify_open commented exits 0" 0 $?
+has "doctor ws: notify_open unset warn" "$tmp/dd.out" "warn notify_open: not set"
+printf 'notify_open=claude://claude.ai/project/<uuid>\n' >"$dws/.chirat/config"
+dd "$dws"
+has "doctor ws: notify_open placeholder warn" "$tmp/dd.out" "warn notify_open: placeholder left"
+printf 'notify_open=claude://claude.ai/project/x\n' >"$dws/.chirat/config"
+
+mkdir -p "$dh/plain"
+dd "$dh/plain"
+eq "doctor ws: not a workspace exits 1" 1 $?
+has "doctor ws: not a workspace FAIL" "$tmp/dd.out" "not a workspace (no .chirat/)"
+dd "$dh/nowhere"
+eq "doctor ws: no such path exits 1" 1 $?
+has "doctor ws: no such path FAIL" "$tmp/dd.out" "no such directory"
+dd "$dws" extra
+eq "doctor: two paths is a usage error" 64 $?
+
+# without an argument: one line per registered workspace, exit as before
+dws2=$dh/code/mvg
+mkdir -p "$dws2/.chirat" "$dws2/docs/plans" "$dws2/repos"
+git init -q -b main "$dws2"
+git config -f "$dws2/.gitconfig" user.email mvg@example.com
+printf '%s\n%s\n' "$dws" "$dws2" >"$dh/.config/chirat/workspaces"
+dd
+eq "doctor: a workspace FAIL does not change the exit code" 0 $?
+has "doctor: a green workspace in one line" "$tmp/dd.out" "dw: ok"
+has "doctor: a failing workspace in one line" "$tmp/dd.out" "mvg: includeIf FAIL, identity FAIL"
+eq "doctor: one line each" 2 "$(grep -cE '^(dw|mvg): ' "$tmp/dd.out")"
+if grep -q 'git config --global' "$tmp/dd.out"; then ko "doctor: no fix lines in the summary"; else ok "doctor: no fix lines in the summary"; fi
+
 mv "$tmp/bin/claude.run" "$tmp/bin/claude"
 
 # --once leaves nothing behind

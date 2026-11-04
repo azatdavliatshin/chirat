@@ -13,12 +13,26 @@ session), `/chirat:poll` (the planning-side check-in rule), plus a read-only
 
 ## `chirat-init`
 
-`chirat-init <name> [dir] --name <git name> --email <git email> [--ssh-key <path>] [--description <text>]`
+`chirat-init <name> [dir] --git-name <git name> --git-email <git email> [options]`
 copies the template to `<dir>/<name>` (default `~/code/<name>`), writes a
-workspace `.gitconfig` and runs `git init -b main`; add the `includeIf` block
-it prints to `~/.gitconfig` once, so headless commits under `repos/` have an
-identity. It never overwrites an existing directory and never edits
-`~/.gitconfig`.
+workspace `.gitconfig`, runs `git init -b main`, commits the template as
+`docs: workspace bootstrap` and prints the steps still to do, every command
+ready to paste. `<name>` is kept exactly as given; `<project>-workspace` is the
+recommended form. It never overwrites an existing directory, never edits
+`~/.gitconfig` and asks nothing; `-h` prints all of this.
+
+| Flag | Effect |
+|---|---|
+| `--git-name`, `--git-email` | required: the identity in the workspace `.gitconfig` and on the first commit (`--name`, `--email` still work as aliases) |
+| `--ssh-key <path>` | `core.sshCommand = ssh -i '<path>' -o IdentitiesOnly=yes` ([several GitHub accounts](configuration.md#several-github-accounts)) |
+| `--description <text>` | the paragraph at the top of the workspace `CLAUDE.md` |
+| `--no-commit` | leave the template uncommitted |
+| `--repo <url>` | clone into `repos/<basename without .git>`, after the first commit; repeatable. A failed clone warns, exit stays 0, and the manual `git clone` line is printed. A clone with its own `AGENTS.md` or `CLAUDE.md` gets a pointer under `## The code repository` in the workspace `CLAUDE.md` |
+| `--branch <name>` | with `--repo`: clone that branch and set `default_branch=<name>`. Applies to every `--repo` ([per workspace](configuration.md#workspace-config)) |
+| `--project <uuid-or-url>` | set `notify_open=claude://claude.ai/project/<uuid>`; takes the uuid or `https://claude.ai/project/<uuid>`; anything else is refused before anything is created |
+
+If the first commit fails (a global `commit.gpgsign=true` without a usable key,
+say) it warns, leaves the files staged, prints the command to retry and exits 0.
 
 ## `chirat-watch`
 
@@ -27,7 +41,7 @@ identity. It never overwrites an existing directory and never edits
 For a pending prompt it runs, from the workspace root:
 
 ```
-claude -p "/chirat:next docs/plans/<topic>.prompt-N.md" --model <model> \
+claude -p "/chirat:next docs/plans/TOPIC.prompt-N.md" --model MODEL \
   --permission-mode auto --permission-prompts none --output-format json
 ```
 
@@ -45,10 +59,29 @@ What the permission mode means for you: [safety](safety.md#permissions).
 | `recover [--dry-run] [ws…]` | stale-lock recovery on demand; refuses a workspace whose lock is live |
 | `logs [-n N] [-f] [ws…]` | the last N (default 20) lines of `watch.log`; `-f` follows |
 | `tail [-f] [ws]` | the run in progress: assistant text and tool calls, one line each, from Claude Code's transcripts under `~/.claude/projects/`; no tool output; times in UTC |
-| `doctor [--online]` | one `ok` / `warn` / `FAIL` line per setup check; `--online` also makes a real `claude -p` call, where an expired login shows up; exit 1 on any `FAIL` |
+| `doctor [--online] [ws]` | one `ok` / `warn` / `FAIL` line per setup check; `--online` also makes a real `claude -p` call, where an expired login shows up; exit 1 on any `FAIL`. Without `ws`, one more line per registered workspace naming its `FAIL`s (`mvg: includeIf FAIL, identity FAIL`), which does not change the exit code. With `ws`, [that workspace's setup](#doctor-ws) too |
 | `restart [--force]` | stop the watcher and start `--tmux` again with the same flags; refused while `claude` runs unless `--force` (the prompt goes back to `pending`) |
 | `install [dir]` | symlink `chirat-watch` and `chirat-prompt` into `dir` (default `~/.local/bin`); replaces symlinks, refuses anything else, hints at `PATH` |
 | `[ws…]` | workspace paths, or a bare name: `demo` selects the configured path ending in `/demo` |
+
+### `doctor <ws>`
+
+Runs the machine checks, then these for the workspace (`~` allowed; a path
+without `.chirat/` is a `FAIL`). A `FAIL` on `includeIf` or `workspaces` prints
+the command that fixes it.
+
+| Check | Result | Meaning |
+|---|---|---|
+| `includeIf` | `ok` / `FAIL` | `~/.gitconfig`, or a file it includes, has `includeIf "gitdir:<ws>/"` with `path = <ws>/.gitconfig`; `~` and symlinks resolved, trailing `/` required |
+| `identity` | `ok` / `FAIL` | `user.email` as git really sees it, in the workspace and in the first clone, is the one in `<ws>/.gitconfig`: the proof that the include works |
+| `workspaces` | `ok` / `FAIL` | the workspace is listed in `~/.config/chirat/workspaces` |
+| `repos` | `ok` / `warn` | at least one clone in `repos/`; a workspace may start without one |
+| `default_branch` | `ok` / `warn` | the configured branch exists locally in each clone; `warn` names the clone's current branch as the likely value |
+| `notify_open` | `ok` / `warn` | set, with no placeholder left |
+
+`includeIf` can be `ok` while `identity` is `FAIL`: git itself does not follow a
+symlink in the pattern, so use the physical path. `doctor` does not contact
+your remotes.
 
 ### How the watcher picks the next prompt
 

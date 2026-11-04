@@ -5,6 +5,31 @@ All notable changes are listed here, in the
 
 ## [Unreleased]
 
+### Added
+
+- `chirat-watch doctor <ws>` verifies one workspace's setup: includeIf, the
+  identity git really uses, registration with the watcher, clones,
+  `default_branch`, `notify_open`; a `FAIL` prints the command that fixes it.
+  `doctor` without an argument adds one line per registered workspace.
+- `chirat-init --repo` (repeatable), `--branch`, `--project`: clone the code
+  repositories, set `default_branch` and `notify_open`. A clone with its own
+  `AGENTS.md` or `CLAUDE.md` gets a pointer in the workspace `CLAUDE.md`.
+- `chirat-init --no-commit`, and `-h` prints the whole header.
+
+### Changed
+
+- `chirat-init --git-name` / `--git-email` are the documented flags; `--name` /
+  `--email` keep working.
+- `chirat-init --ssh-key` adds `-o IdentitiesOnly=yes`, so a push cannot go out
+  with another key the agent offers first.
+- `chirat-init` makes the first commit itself (`docs: workspace bootstrap`).
+- `chirat-init` prints Next steps that work when pasted: no `<…>` placeholders,
+  quoted paths, the `includeIf` command, `mkdir -p` before registering, only
+  the steps still to do, `doctor` last. The workspace path it prints is the
+  physical one, the only one includeIf matches.
+- Leaner template: a minimal allow list without chirat's own commands, no
+  chirat example under `## Landing`, `docs/scope/` marked optional.
+
 ### Documentation
 
 - README is a short introduction; the guide and reference moved to `docs/`.
@@ -73,8 +98,8 @@ All notable changes are listed here, in the
 - Commit guard: a function run as a `trap` handler after the environment
   changed (`trap f EXIT; export GIT_DIR=…`) is allowed.
 
-Both are marked `known` in the guard corpus; the full list is in README
-"Commit guard", What it is for.
+Both are marked `known` in the guard corpus; the full list is in
+[docs/safety.md](docs/safety.md#what-it-is-for).
 
 ## [0.2.0] — 2026-10-29
 

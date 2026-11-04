@@ -36,8 +36,9 @@ compound commands (`a && b`, `… | tail`) and deny them.
 `blocked` or `failed` instead of hanging. To fall back, pass
 `--permission-mode acceptEdits` (or set `CHIRAT_PERMISSION_MODE`; the flag
 wins) and allow every command a run needs in the workspace's
-`.claude/settings.local.json`; the template allows `git`, `npm test`,
-`shellcheck` and more, and denies `git push` and `npm publish`.
+`.claude/settings.local.json`; the template allows `git`, `npm test` and a
+few more ([the list](configuration.md#permissions-in-a-new-workspace)), and
+denies `git push` and `npm publish`.
 
 ## Commit guard
 

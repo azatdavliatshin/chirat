@@ -34,10 +34,38 @@ are ignored and a line without `=` is a warning.
 |---|---|---|
 | `plans_dir` | `docs/plans` | where prompt files live |
 | `status_dir` | `docs/status` | where status files are written and looked up |
-| `default_branch` | `main` | what `after:` and the review/merge hints compare against |
-| `notify_open` | empty | URL or path opened when the notification is clicked (needs `terminal-notifier` 3.x): `claude://claude.ai/project/<uuid>` opens a Project, `claude://claude.ai/chat/<uuid>` a conversation (see [support.claude.com/en/articles/14729294](https://support.claude.com/en/articles/14729294)); a value containing `'` is refused |
+| `default_branch` | `main` | what `after:` and the review/merge hints compare against; `chirat-init --branch` sets it |
+| `notify_open` | empty | URL or path opened when the notification is clicked (needs `terminal-notifier` 3.x): `claude://claude.ai/project/<uuid>` opens a Project, `claude://claude.ai/chat/<uuid>` a conversation (see [support.claude.com/en/articles/14729294](https://support.claude.com/en/articles/14729294)); a value containing `'` is refused; `chirat-init --project` sets the Project form |
 
 The config is read per run; no restart is needed.
+
+`default_branch` is per workspace, not per repository. Known limitation: every
+clone in a workspace has to share one integration branch, and `chirat-init
+--branch` applies to all its `--repo`s. For repositories with different
+branches, use one workspace each.
+
+## Several GitHub accounts
+
+An ssh agent offers its keys in order, so without more a push can go out as the
+wrong GitHub account. `chirat-init --ssh-key <path>` writes this into the
+workspace `.gitconfig`:
+
+```
+[core]
+    sshCommand = ssh -i '/Users/you/.ssh/id_work' -o IdentitiesOnly=yes
+```
+
+`IdentitiesOnly=yes` makes ssh offer that key and no other. It reaches git only
+through the includeIf in `~/.gitconfig` (`chirat-watch doctor <ws>` checks it),
+so add that before the first push.
+
+## Permissions in a new workspace
+
+`.claude/settings.local.json` starts from a minimal allow list: git,
+`node --version`, `npm --version`, `npm ci`, `npm install`, `npm test`,
+`npm run`, `bash repos/*` and `chirat-prompt`, plus the deny rules. Add your
+repository's build and test commands to `permissions.allow`; under the
+`acceptEdits` fallback anything not listed is denied.
 
 ## Environment variables
 
@@ -106,7 +134,7 @@ Linux nothing is sent; use `.chirat/LATEST`, `chirat-watch status`, or
 notification per workspace, and it needs its own notification permission,
 granted once by launching the bundle and clicking Allow (until then every
 notification is dropped; `chirat-watch doctor --online` checks):
-`open "$(brew --prefix)/Cellar/terminal-notifier/<version>/terminal-notifier.app"`.
+`open "$(brew --prefix)/Cellar/terminal-notifier/VERSION/terminal-notifier.app"`.
 
 A click does one of three things: with `CHIRAT_NOTIFY_OPEN=1` it opens the
 status file (and `notify_open`, if set); else it opens what `notify_open`

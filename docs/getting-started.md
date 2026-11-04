@@ -24,7 +24,7 @@ Project). Read [safety](safety.md) first: runs use your machine, your
 - A git repository of your own with at least one commit and a default
   branch. The examples call it `app`.
 - A planning session that can read and write the workspace folder. chirat
-  does not provide that; see step 5.
+  does not provide that; see step 6.
 
 ## 1. Install the commands (terminal)
 
@@ -41,27 +41,53 @@ use `~/code/chirat-src/bin/chirat-watch` by full path.
 ## 2. Create a workspace (terminal)
 
 ```bash
-~/code/chirat-src/bin/chirat-init demo --name "Your Name" --email you@example.com
+~/code/chirat-src/bin/chirat-init demo-workspace --git-name "Your Name" --git-email you@example.com
 ```
 
-This creates `~/code/demo` (a private git repository on `main`, nothing
-committed yet) with `CLAUDE.md`, `docs/`, `.chirat/`, an empty `repos/` and
-`.claude/settings.local.json`. The command prints a block to add to
-`~/.gitconfig`; do it once, so commits under `repos/` have an identity. It
-looks like this, with your own path:
+This creates `~/code/demo-workspace` (a private git repository on `main`, with
+the template committed as `docs: workspace bootstrap`) with `CLAUDE.md`,
+`docs/`, `.chirat/`, an empty `repos/` and `.claude/settings.local.json`. The
+name is yours to choose; `<project>-workspace` keeps it apart from the code
+repository. The command ends with the steps below, filled in with your real
+paths, so you can paste from its output instead.
 
-```
-[includeIf "gitdir:/Users/you/code/demo/"]
-    path = /Users/you/code/demo/.gitconfig
-```
-
-Then make the first commit in the workspace, as `chirat-init` suggests:
+`chirat-init` never edits `~/.gitconfig`, so give the workspace its git
+identity yourself, once; without it, commits under `repos/` have the wrong
+author and `--ssh-key` does not apply:
 
 ```bash
-git -C ~/code/demo add -A && git -C ~/code/demo commit -m "docs: workspace bootstrap"
+git config --global --add includeIf."gitdir:$HOME/code/demo-workspace/".path "$HOME/code/demo-workspace/.gitconfig"
 ```
 
-## 3. Install the plugin (Claude Code)
+If `~/code` is a symlink, use the line `chirat-init` printed: it has the
+physical path, the only one git matches.
+
+## 3. Add your repository (terminal)
+
+```bash
+git clone URL ~/code/demo-workspace/repos/app
+git -C ~/code/demo-workspace/repos/app log --oneline -1    # must show a commit
+git -C ~/code/demo-workspace/repos/app branch --show-current
+```
+
+Replace `URL` with your repository's. Clone one folder per repository: the
+clone must live at `repos/<repo>`, and the prompt's `repo:` is that folder
+name. If its default branch is not `main`, edit
+`~/code/demo-workspace/.chirat/config` (the template ships it with every key
+commented out) and set:
+
+```
+default_branch=master
+```
+
+`default_branch` is what a run branches from and what `after:` and the merge
+hints compare against ([configuration](configuration.md#workspace-config)).
+
+`chirat-init` can do all of this in step 2: `--repo URL` clones (repeat it for
+several), `--branch NAME` also sets `default_branch`
+([commands](commands.md#chirat-init)).
+
+## 4. Install the plugin (Claude Code)
 
 Inside a Claude Code session, add the marketplace — the local clone path —
 and install the plugin:
@@ -73,56 +99,67 @@ and install the plugin:
 
 (From GitHub instead of the clone: `/plugin marketplace add azatdavliatshin/chirat`.)
 The plugin brings `/chirat:next`, `/chirat:handover`, `/chirat:poll`, a
-read-only `reviewer` agent and the commit guard.
+read-only `reviewer` agent and the commit guard. Steps 1 and 4 are once per
+machine.
 
-## 4. Add your repository (terminal)
-
-```bash
-git clone <your repo> ~/code/demo/repos/app
-git -C ~/code/demo/repos/app log --oneline -1    # must show a commit
-git -C ~/code/demo/repos/app branch --show-current
-```
-
-The clone must live at `repos/<repo>`; the prompt's `repo:` is that folder
-name. If its default branch is not `main`, edit `~/code/demo/.chirat/config`
-(the template ships it with every key commented out) and set:
-
-```
-default_branch=master
-```
-
-`default_branch` is what a run branches from and what `after:` and the merge
-hints compare against ([configuration](configuration.md#workspace-config)).
-
-## 5. Connect the planning session (planning chat)
-
-The planning session needs to read and write `~/code/demo`: it writes prompt
-files into `docs/plans/` and reads status files from `docs/status/`. In the
-Claude desktop app, `chirat-init` suggests a Claude Project (or Cowork
-session) whose root folder is the workspace. If your setup differs, the
-requirement is the same: the planning session must be able to read and write
-this folder. The workflow instructions live in the workspace's `CLAUDE.md`
-and in `docs/WORKFLOW.md`; tell the session to read them first. For this
-walkthrough you can skip the planning chat and write the prompt yourself in
-step 7.
-
-## 6. Register the workspace and check the setup (terminal)
+## 5. Register the workspace with the watcher (terminal)
 
 ```bash
-mkdir -p ~/.config/chirat && echo ~/code/demo >> ~/.config/chirat/workspaces
-chirat-watch doctor
+mkdir -p ~/.config/chirat && echo ~/code/demo-workspace >> ~/.config/chirat/workspaces
 ```
 
-`doctor` prints one `ok` / `warn` / `FAIL` line per check (claude, the
-plugin, the workspace list, tmux, `PATH`) and exits 1 on any `FAIL`. Run it
-once the steps above exist, and fix every `FAIL`. `chirat-watch doctor
---online` additionally makes a real `claude -p` call (it uses your login)
-and shows an expired login; run it once before the first real run.
+Until it is listed there, the watcher never looks at the workspace and its
+prompts stay `pending`.
 
-## 7. Write a first prompt (planning chat or terminal)
+## 6. Connect the planning session (planning chat)
+
+The planning session needs to read and write `~/code/demo-workspace`: it writes
+prompt files into `docs/plans/` and reads status files from `docs/status/`. In
+the Claude desktop app, open the workspace as the root folder of a Claude
+Project (or Cowork session). If your setup differs, the requirement is the
+same: the planning session must be able to read and write this folder. The
+workflow instructions live in the workspace's `CLAUDE.md` and in
+`docs/WORKFLOW.md`; tell the session to read them first. To land notification
+clicks in that Project, set `notify_open=` in `.chirat/config`, or pass
+`--project` in step 2. For this walkthrough you can skip the planning chat and
+write the prompt yourself in step 8.
+
+## 7. Check the setup (terminal)
+
+```bash
+chirat-watch doctor ~/code/demo-workspace
+```
+
+`doctor` prints one `ok` / `warn` / `FAIL` line per check: the machine (claude,
+the plugin, the workspace list, tmux, `PATH`), then this workspace (the
+includeIf, the identity git really uses, the watcher's list, the clones,
+`default_branch`, `notify_open`). It exits 1 on any `FAIL` and prints the
+command that fixes it; fix every one. `chirat-watch doctor --online`
+additionally makes a real `claude -p` call (it uses your login) and shows an
+expired login; run it once before the first real run.
+
+### Optional: a private remote for the workspace
+
+The workspace is a repository of its own; pushing it is optional and always
+manual. Do it after step 2's includeIf: `--ssh-key` reaches git only through
+that include. `OWNER` is your GitHub user or organization. Create an empty
+private repository first (no README), then:
+
+```bash
+git -C ~/code/demo-workspace remote add origin git@github.com:OWNER/demo-workspace.git
+git -C ~/code/demo-workspace push -u origin main
+```
+
+Or with the GitHub CLI, in one step:
+
+```bash
+gh repo create OWNER/demo-workspace --private --source ~/code/demo-workspace --remote origin --push
+```
+
+## 8. Write a first prompt (planning chat or terminal)
 
 The planning session normally writes this. By hand, create
-`~/code/demo/docs/plans/app.prompt-1.md` with this content:
+`~/code/demo-workspace/docs/plans/app.prompt-1.md` with this content:
 
 ```
 ---
@@ -139,7 +176,7 @@ One checkpoint: commit it on this branch with the message "docs: add HELLO".
 `status: draft` waits until you set `pending`. The front matter keys are in
 [prompts](prompts.md).
 
-## 8. Preview, then run one pass (terminal)
+## 9. Preview, then run one pass (terminal)
 
 ```bash
 chirat-watch --once --dry-run    # prints the claude command it would run; writes nothing
@@ -151,7 +188,7 @@ Claude Code is doing. For daily use start the watcher in the background with
 `chirat-watch --tmux` (`tmux attach -t chirat` to look at it) and leave
 `--once` behind.
 
-## 9. Read the result and merge (terminal)
+## 10. Read the result and merge (terminal)
 
 When the run ends a notification (macOS) or `chirat-watch status` says what
 happened. The result:
@@ -184,15 +221,15 @@ feat/hello 1a2b3c4
 Review, then merge into the right base branch, naming it explicitly:
 
 ```bash
-git -C ~/code/demo/repos/app diff main..feat/hello
-git -C ~/code/demo/repos/app checkout main        # only if the clone is still on feat/hello
-git -C ~/code/demo/repos/app merge --no-edit feat/hello
+git -C ~/code/demo-workspace/repos/app diff main..feat/hello
+git -C ~/code/demo-workspace/repos/app checkout main        # only if the clone is still on feat/hello
+git -C ~/code/demo-workspace/repos/app merge --no-edit feat/hello
 ```
 
 Use your `default_branch` instead of `main` if it differs. A run returns the
 clone to the default branch only if the tree was clean; after a failed or
 dirty run it may still be on `feat/hello`, so check
-`git -C ~/code/demo/repos/app status` first. chirat never pushes; push
+`git -C ~/code/demo-workspace/repos/app status` first. chirat never pushes; push
 yourself when you are satisfied.
 
 ## Where next

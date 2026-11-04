@@ -3,7 +3,7 @@
 #
 #   chirat-watch [--once] [--dry-run] [--interval N] [--permission-mode M] [--tmux] [--version]
 #   chirat-watch install [dir] | status [ws…] | recover [--dry-run] [ws…] | restart [--force]
-#   chirat-watch logs [-n N] [-f] [ws…] | tail [-f] [ws] | doctor [--online]
+#   chirat-watch logs [-n N] [-f] [ws…] | tail [-f] [ws] | doctor [--online] [ws]
 #
 # Config: ~/.config/chirat/workspaces ($XDG_CONFIG_HOME honoured) — one absolute
 # workspace path per line, `#` comments, leading `~` expanded.
@@ -67,10 +67,21 @@
 #                 lock when omitted): assistant text and tool calls, one line
 #                 each, from the newest ~/.claude/projects/<ws, / as ->/*.jsonl
 #                 modified since the lock's start; no tool output; times are UTC
-#   doctor [--online]
+#   doctor [--online] [ws]
 #                 one ok / warn / FAIL line per check (claude, plugin, config,
 #                 tmux, PATH, state dir, watcher); exit 1 on any FAIL; --online
-#                 also asks claude for a reply (login expired shows up here)
+#                 also asks claude for a reply (login expired shows up here).
+#                 Without ws: one more line per registered workspace, naming
+#                 its FAILs (`mvg: includeIf FAIL, identity FAIL`, or `mvg: ok`);
+#                 these do not change the exit code. With ws (`~` allowed): that
+#                 workspace's setup too — FAIL includeIf (in ~/.gitconfig or a
+#                 file it includes; `gitdir:<ws>/`, path = <ws>/.gitconfig, ~
+#                 and symlinks resolved), FAIL identity (git's user.email in the
+#                 workspace and the first clone is the one in <ws>/.gitconfig),
+#                 FAIL workspaces (not in the watcher's list), warn repos (no
+#                 clone), warn default_branch (no such local branch in a clone),
+#                 warn notify_open (unset or a placeholder). A FAIL prints the
+#                 command that fixes it; a path without .chirat/ is a FAIL
 #
 # A running watcher records itself in the state dir (next to watch.log):
 # watcher.pid and watcher.flags (its flags, one per line). Both are removed
@@ -218,7 +229,7 @@ legacy_global() {
 }
 
 usage() { # usage [exit code]
-  sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '4,6p' "$0" | sed 's/^# \{0,1\}//' >&2
   echo "config: $config (one absolute workspace path per line, # comments)" >&2
   exit "${1:-64}"
 }
@@ -1401,10 +1412,118 @@ cmd_tail() {
   fi
 }
 
+# real_path <path>: `~` expanded, symlinks resolved, no trailing slash. A path
+# whose parent does not exist comes back as given.
+real_path() {
+  local p=${1/#\~/$HOME} d
+  p=${p%/}
+  if [ -d "$p" ]; then
+    (cd -P "$p" && pwd -P)
+  else
+    d=$(dirname "$p")
+    if [ -d "$d" ]; then
+      printf '%s/%s\n' "$(cd -P "$d" && pwd -P)" "$(basename "$p")"
+    else
+      printf '%s\n' "$p"
+    fi
+  fi
+}
+
+# doctor_workspace <ws>: the per-workspace checks, through cmd_doctor's ok / warn
+# / fail. <ws> is a resolved path that has .chirat/.
+doctor_workspace() {
+  local ws=$1 q nl=$'\n' rec key val dir found=0 why c first="" want got wrong="" clones="" b cur missing=0 no
+  q=$(printf '%s' "$ws" | sed 's/[\\"$`]/\\&/g')
+
+  # --includes: --global alone does not follow include.path. -z: a key can hold
+  # spaces, and git prints it with the subsection's case intact.
+  why="no includeIf for it in ~/.gitconfig"
+  while IFS= read -r -d '' rec; do
+    key=${rec%%"$nl"*}
+    val=${rec#*"$nl"}
+    case $key in includeif.gitdir:*.path) ;; *) continue ;; esac
+    dir=${key#includeif.gitdir:}
+    dir=${dir%.path}
+    [ "$(real_path "$dir")" = "$ws" ] || continue
+    case $dir in
+      */) ;;
+      *) why="includeIf \"gitdir:$dir\" has no trailing /"; continue ;;
+    esac
+    if [ "$(real_path "$val")" = "$ws/.gitconfig" ]; then found=1
+    else why="includeIf \"gitdir:$dir\" has path = $val, not $ws/.gitconfig"; fi
+  done < <(git config --global --includes -z --get-regexp '^includeif\.' 2>/dev/null)
+  if [ "$found" = 1 ]; then
+    ok "includeIf: gitdir:$ws/"
+  else
+    fail "includeIf: $why"
+    echo "     git config --global --add includeIf.\"gitdir:$q/\".path \"$q/.gitconfig\""
+  fi
+
+  for c in "$ws"/repos/*/; do
+    if [ -e "${c}.git" ]; then first=${c%/}; break; fi
+  done
+
+  want=$(git config -f "$ws/.gitconfig" user.email 2>/dev/null)
+  if [ -z "$want" ]; then
+    fail "identity: no user.email in $ws/.gitconfig"
+  else
+    for c in "$ws" ${first:+"$first"}; do
+      got=$(git -C "$c" config user.email 2>/dev/null)
+      [ "$got" = "$want" ] || wrong="$wrong $c gives [$got];"
+    done
+    if [ -z "$wrong" ]; then ok "identity: $want"
+    else fail "identity: $ws/.gitconfig has $want, but git in$wrong the include is not taking effect"; fi
+  fi
+
+  found=0
+  if [ -f "$config" ]; then
+    while IFS= read -r c; do
+      if [ "$(real_path "$c")" = "$ws" ]; then found=1; fi
+    done < <(workspaces)
+  fi
+  if [ "$found" = 1 ]; then
+    ok "workspaces: registered in $config"
+  else
+    fail "workspaces: not in $config, the watcher will never run its prompts"
+    echo "     mkdir -p \"$(dirname "$config")\" && echo \"$q\" >> \"$config\""
+  fi
+
+  if [ -z "$first" ]; then
+    warn "repos: no clone under $ws/repos yet"
+  else
+    b=$(chirat_config "$ws" default_branch main)
+    for c in "$ws"/repos/*/; do
+      [ -e "${c}.git" ] || continue
+      c=${c%/}
+      clones="$clones ${c##*/}"
+      if ! git -C "$c" show-ref --verify -q "refs/heads/$b"; then
+        missing=1
+        cur=$(git -C "$c" rev-parse --abbrev-ref HEAD 2>/dev/null)
+        warn "default_branch: no local branch $b in repos/${c##*/}, which is on ${cur:-?}: set default_branch=${cur:-?} in $ws/.chirat/config"
+      fi
+    done
+    ok "repos:$clones"
+    [ "$missing" = 1 ] || ok "default_branch: $b"
+  fi
+
+  no=$(chirat_config "$ws" notify_open "")
+  case $no in
+    '') warn "notify_open: not set in $ws/.chirat/config, a notification click will not open your planning session" ;;
+    *'<'* | *'>'*) warn "notify_open: placeholder left in $ws/.chirat/config: $no" ;;
+    *) ok "notify_open: $no" ;;
+  esac
+}
+
 cmd_doctor() {
-  local online=0 bad=0 p ws n=0 cl="" dir real want pr_path v wl lm no doc_open=""
-  case ${1:-} in --online) online=1; shift ;; esac
-  [ $# -eq 0 ] || usage
+  local online=0 bad=0 p ws n=0 cl="" dir real want pr_path v wl lm no doc_open="" target="" out fails
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --online) online=1 ;;
+      -*) usage ;;
+      *) [ -z "$target" ] || usage; target=$1 ;;
+    esac
+    shift
+  done
   ok() { echo "ok   $*"; }
   warn() { echo "warn $*"; }
   fail() { echo "FAIL $*"; bad=1; }
@@ -1531,6 +1650,25 @@ cmd_doctor() {
 
   # 8: watcher
   if wl=$(watcher_line); then ok "$wl"; else fail "${wl#STALE: }"; fi
+
+  # 9: one workspace in full, or one line per registered workspace
+  if [ -n "$target" ]; then
+    ws=$(real_path "$target")
+    if [ ! -d "$ws" ]; then fail "workspace $ws: no such directory"
+    elif [ ! -d "$ws/.chirat" ]; then fail "workspace $ws: not a workspace (no .chirat/)"
+    else doctor_workspace "$ws"; fi
+  elif [ -f "$config" ]; then
+    while IFS= read -r ws; do
+      [ -n "$ws" ] || continue
+      if [ ! -d "$ws/.chirat" ]; then
+        echo "${ws##*/}: not a workspace (no .chirat/)"
+        continue
+      fi
+      out=$(doctor_workspace "$(real_path "$ws")")
+      fails=$(printf '%s\n' "$out" | sed -n 's/^FAIL \([A-Za-z_]*\):.*/\1 FAIL/p' | paste -sd, - | sed 's/,/, /g')
+      echo "${ws##*/}: ${fails:-ok}"
+    done < <(workspaces)
+  fi
   return "$bad"
 }
 
