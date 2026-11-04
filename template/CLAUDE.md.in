@@ -23,7 +23,7 @@ user.* inside a repo.
 | `docs/WORKFLOW.md` | Private process guide (never shared) |
 | `docs/PARKED.md` | Deferred ideas / open questions |
 | `docs/input/` | **Read-only.** Incoming material |
-| `docs/scope/` | Dated scope snapshots (`BASELINE_YYYY-MM-DD.md`) |
+| `docs/scope/` | Optional: dated scope snapshots (`BASELINE_YYYY-MM-DD.md`) |
 | `docs/plans/` | One file per feature/task; `<topic>.prompt-N.md` are the prompts handed to Claude Code |
 | `docs/analysis/` | Technical analysis, research |
 | `docs/status/` | Status, handover notes — memory between sessions |
@@ -59,10 +59,7 @@ user.* inside a repo.
 
 ## Landing
 
-<!--
-- plugin/ → claude plugin update chirat@chirat
-- bin/chirat-watch → chirat-watch restart
--->
+<!-- One bullet per step to run after a merge: - <path prefix> → <command> -->
 
 ## Useful commands
 

@@ -1,21 +1,47 @@
 #!/usr/bin/env bash
 # chirat-init — create a new workspace from template/.
 #
-#   chirat-init <name> [dir] --name <git name> --email <git email>
-#              [--ssh-key <path>] [--description <text>]
+#   chirat-init <name> [dir] --git-name <git name> --git-email <git email>
+#              [--ssh-key <path>] [--description <text>] [--no-commit]
+#              [--repo <url>]... [--branch <name>] [--project <uuid-or-url>]
 #
-# Creates <dir>/<name> (default dir: ~/code), fills {{NAME}} / {{DESCRIPTION}},
-# renames CLAUDE.md.in to CLAUDE.md, writes <workspace>/.gitconfig, runs
-# `git init -b main` in the workspace with a .gitignore that leaves repos/
-# and .claude/ out (and .chirat/lock/, .chirat/review/), and prints the includeIf block to add to ~/.gitconfig plus how to add
-# a private remote. Never overwrites an existing directory and never edits
-# ~/.gitconfig.
+#   <name>   folder name of the workspace, kept exactly as given; recommended:
+#            <project>-workspace (e.g. mvg-workspace)
+#   [dir]    parent folder (default: ~/code); the workspace is <dir>/<name>
+#
+#   --git-name, --git-email  identity for every repository under the workspace,
+#                 written to <workspace>/.gitconfig (--name, --email: aliases)
+#   --ssh-key     core.sshCommand = ssh -i '<key>' -o IdentitiesOnly=yes, so a
+#                 push cannot go out with another key the agent offers first
+#   --description one paragraph for the workspace CLAUDE.md
+#   --no-commit   leave the template uncommitted
+#   --repo        clone <url> into repos/<basename without .git> after the first
+#                 commit; repeatable. A failed clone warns and the run goes on
+#   --branch      clone that branch and set default_branch=<name> in
+#                 .chirat/config. default_branch is per workspace, not per repo:
+#                 one --branch applies to every --repo
+#   --project     notify_open=claude://claude.ai/project/<uuid> in .chirat/config;
+#                 takes the uuid or https://claude.ai/project/<uuid>
+#
+# Fills {{NAME}} / {{DESCRIPTION}}, renames CLAUDE.md.in to CLAUDE.md, writes
+# <workspace>/.gitconfig, runs `git init -b main` with a .gitignore that leaves
+# repos/, .claude/, .chirat/lock/ and .chirat/review/ out, commits the template
+# as `docs: workspace bootstrap` and prints the steps still to do; `chirat-watch
+# doctor <workspace>` checks them afterwards. If the commit fails it warns,
+# leaves the files staged and prints the command to retry. A clone with its own
+# AGENTS.md or CLAUDE.md gets a pointer in the workspace CLAUDE.md.
+# Never overwrites an existing directory, never edits ~/.gitconfig, asks nothing.
 
 set -euo pipefail
 
 usage() {
-  sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '4,6p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 64
+}
+
+help() {
+  sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
 }
 
 die() {
@@ -23,18 +49,28 @@ die() {
   exit 1
 }
 
+warn() {
+  echo "chirat-init: warning: $*" >&2
+}
+
 here=$(cd "$(dirname "$0")" && pwd)
-template=$(dirname "$here")/template
+root=$(dirname "$here")
+template=$root/template
 [ -d "$template" ] || die "template not found: $template"
 
 ws_name="" parent="" git_name="" git_email="" ssh_key="" description=""
+no_commit=0 branch="" project="" repos=()
 while [ $# -gt 0 ]; do
   case $1 in
-    --name) [ $# -ge 2 ] || usage; git_name=$2; shift 2 ;;
-    --email) [ $# -ge 2 ] || usage; git_email=$2; shift 2 ;;
+    --git-name | --name) [ $# -ge 2 ] || usage; git_name=$2; shift 2 ;;
+    --git-email | --email) [ $# -ge 2 ] || usage; git_email=$2; shift 2 ;;
     --ssh-key) [ $# -ge 2 ] || usage; ssh_key=$2; shift 2 ;;
     --description) [ $# -ge 2 ] || usage; description=$2; shift 2 ;;
-    -h | --help) usage ;;
+    --no-commit) no_commit=1; shift ;;
+    --repo) [ $# -ge 2 ] || usage; repos+=("$2"); shift 2 ;;
+    --branch) [ $# -ge 2 ] || usage; branch=$2; shift 2 ;;
+    --project) [ $# -ge 2 ] || usage; project=$2; shift 2 ;;
+    -h | --help) help ;;
     -*) die "unknown option: $1" ;;
     *)
       if [ -z "$ws_name" ]; then ws_name=$1
@@ -50,16 +86,39 @@ if [ -z "$ws_name" ] || [ -z "$git_name" ] || [ -z "$git_email" ]; then usage; f
 case $ws_name in */* | .* | *[[:space:]]*) die "invalid name: $ws_name" ;; esac
 [ -n "$description" ] || description="TODO: one paragraph on what $ws_name is."
 
+repo_name() { # repo_name <url>: the folder a clone of <url> goes to
+  local n=${1%/}
+  n=${n##*/}
+  n=${n##*:}
+  printf '%s\n' "${n%.git}"
+}
+
+if [ -n "$branch" ] && [ ${#repos[@]} -eq 0 ]; then die "--branch needs --repo"; fi
+for url in ${repos[@]+"${repos[@]}"}; do
+  case $(repo_name "$url") in '' | . | ..) die "no folder name in repo url: $url" ;; esac
+done
+
+uuid=""
+if [ -n "$project" ]; then
+  uuid=${project#https://claude.ai/project/}
+  uuid=${uuid%%[/?#]*}
+  uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+  [[ $uuid =~ $uuid_re ]] || die "--project: not a project uuid or https://claude.ai/project/<uuid> url: $project"
+fi
+
 parent=${parent:-$HOME/code}
 parent=${parent/#\~/$HOME}
 mkdir -p "$parent"
-parent=$(cd "$parent" && pwd)
+# Physical path: includeIf gitdir does not match through a symlink.
+parent=$(cd "$parent" && pwd -P)
 ws=$parent/$ws_name
 [ ! -e "$ws" ] || die "already exists, not overwriting: $ws"
 
+ssh_command=""
 if [ -n "$ssh_key" ]; then
   ssh_key=${ssh_key/#\~/$HOME}
-  [ -f "$ssh_key" ] || echo "chirat-init: warning: ssh key not found: $ssh_key" >&2
+  [ -f "$ssh_key" ] || warn "ssh key not found: $ssh_key"
+  ssh_command="ssh -i '$(printf '%s' "$ssh_key" | sed "s/'/'\\\\''/g")' -o IdentitiesOnly=yes"
 fi
 
 cp -R "$template" "$ws"
@@ -81,10 +140,21 @@ while IFS= read -r f; do
   fill "$f"
 done < <(grep -rlF '{{' "$ws" || true)
 
+config_set() { # config_set <key> <value>: uncomment the template's line for <key>
+  local f=$ws/.chirat/config line
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in "# $1="*) line="$1=$2" ;; esac
+    printf '%s\n' "$line"
+  done <"$f" >"$f.new"
+  mv "$f.new" "$f"
+}
+[ -z "$branch" ] || config_set default_branch "$branch"
+[ -z "$uuid" ] || config_set notify_open "claude://claude.ai/project/$uuid"
+
 git config -f "$ws/.gitconfig" user.name "$git_name"
 git config -f "$ws/.gitconfig" user.email "$git_email"
-if [ -n "$ssh_key" ]; then
-  git config -f "$ws/.gitconfig" core.sshCommand "ssh -i '$ssh_key'"
+if [ -n "$ssh_command" ]; then
+  git config -f "$ws/.gitconfig" core.sshCommand "$ssh_command"
 fi
 
 # The workspace is its own private repository; the clones under repos/ are
@@ -95,27 +165,126 @@ fi
 printf '%s\n' "repos/" ".claude/" ".DS_Store" ".chirat/lock/" ".chirat/review/" >"$ws/.gitignore"
 git init -q -b main "$ws"
 
+q() { # q <text>: <text> escaped for pasting between double quotes
+  printf '%s' "$1" | sed 's/[\\"$`]/\\&/g'
+}
+
+msg="docs: workspace bootstrap"
+ws_q=$(q "$ws")
+# includeIf is not in place yet, so the commits carry the identity themselves.
+identity=(-c "user.name=$git_name" -c "user.email=$git_email")
+retry="git -C \"$ws_q\" -c user.name=\"$(q "$git_name")\" -c user.email=\"$(q "$git_email")\" commit -m \"$msg\""
+commit_state=skipped
+if [ "$no_commit" = 0 ]; then
+  if git -C "$ws" add -A && git -C "$ws" "${identity[@]}" commit -q -m "$msg"; then
+    commit_state=committed
+  else
+    commit_state=failed
+    warn "first commit failed; the files stay staged. Retry with:"
+    echo "  $retry" >&2
+  fi
+fi
+
+failed=() rules=""
+if [ ${#repos[@]} -gt 0 ]; then
+  clone_args=(-q)
+  [ -z "$branch" ] || clone_args+=(--branch "$branch")
+  [ -z "$ssh_command" ] || export GIT_SSH_COMMAND=$ssh_command
+  for url in "${repos[@]}"; do
+    name=$(repo_name "$url")
+    if ! GIT_TERMINAL_PROMPT=0 git clone "${clone_args[@]}" -- "$url" "$ws/repos/$name" </dev/null; then
+      warn "clone failed: $url"
+      failed+=("$url")
+      continue
+    fi
+    for rf in AGENTS.md CLAUDE.md; do
+      if [ -e "$ws/repos/$name/$rf" ]; then
+        rules+="- \`repos/$name/\` — its own rules file \`repos/$name/$rf\` is canonical; read it first."$'\n'
+        break
+      fi
+    done
+  done
+fi
+
+if [ -n "$rules" ]; then
+  printf '\n## The code repository\n\n%s' "$rules" >>"$ws/CLAUDE.md"
+  # The pointer belongs to the bootstrap, not to a second commit.
+  case $commit_state in
+    committed)
+      git -C "$ws" add CLAUDE.md
+      git -C "$ws" "${identity[@]}" commit -q --amend --no-edit ||
+        warn "CLAUDE.md is staged but not committed"
+      ;;
+    failed) git -C "$ws" add CLAUDE.md ;;
+  esac
+fi
+
+n=0
+step() { n=$((n + 1)); printf '  %d. %s\n' "$n" "$1"; }
+cmd() { printf '       %s\n' "$1"; }
+note() { printf '     %s\n' "$1"; }
+
+case $commit_state in
+  committed) state="1 commit" ;;
+  failed) state="nothing committed yet, files staged" ;;
+  *) state="nothing committed yet" ;;
+esac
+echo "Created workspace: $ws (git repository, branch main, $state)"
+echo
+echo "Next steps:"
+
+step "Git identity for this workspace (chirat-init does not edit ~/.gitconfig):"
+cmd "git config --global --add includeIf.\"gitdir:$ws_q/\".path \"$ws_q/.gitconfig\""
+
+case $commit_state in
+  skipped)
+    step "First commit:"
+    cmd "git -C \"$ws_q\" add -A && git -C \"$ws_q\" commit -m \"$msg\""
+    ;;
+  failed)
+    step "First commit (it failed above; see the error, the files are staged):"
+    cmd "$retry"
+    ;;
+esac
+
+if [ ${#repos[@]} -eq 0 ]; then
+  step "Clone your repositories, one folder each (a prompt's repo: is the folder name):"
+  cmd "git clone URL \"$ws_q/repos/NAME\""
+  note "If the repo's main branch is not main, set default_branch= in \"$ws_q/.chirat/config\"."
+elif [ ${#failed[@]} -gt 0 ]; then
+  step "Clone what failed above, one folder each (a prompt's repo: is the folder name):"
+  for url in "${failed[@]}"; do
+    cmd "git clone ${branch:+--branch \"$(q "$branch")\" }\"$(q "$url")\" \"$ws_q/repos/$(q "$(repo_name "$url")")\""
+  done
+fi
+
+step "Once per machine, put chirat-watch and chirat-prompt on your PATH:"
+cmd "\"$(q "$here")/chirat-watch\" install"
+note "then, inside Claude Code:"
+cmd "/plugin marketplace add $root"
+cmd "/plugin install chirat@chirat"
+
+step "Register the workspace with the watcher:"
+if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+  cfg_q=$(q "$XDG_CONFIG_HOME/chirat")
+  cmd "mkdir -p \"$cfg_q\" && echo \"$ws_q\" >> \"$cfg_q/workspaces\""
+else
+  # shellcheck disable=SC2088 # printed for the reader's shell to expand
+  cmd "mkdir -p ~/.config/chirat && echo \"$ws_q\" >> ~/.config/chirat/workspaces"
+fi
+
+step "Open \"$ws_q\" as the root folder of your planning session (Claude Project / Cowork)."
+[ -n "$uuid" ] || note "To land notification clicks there, set notify_open= in \"$ws_q/.chirat/config\"."
+
+step "Check everything:"
+cmd "chirat-watch doctor \"$ws_q\""
+
 cat <<EOF
-Created workspace: $ws (git repository, branch main, nothing committed yet)
 
-Add this block to ~/.gitconfig (chirat-init does not edit it):
-
-[includeIf "gitdir:$ws/"]
-    path = $ws/.gitconfig
-
-To keep the workspace on a private remote (optional; pushes stay manual):
-
-  git -C "$ws" add -A && git -C "$ws" commit -m "docs: workspace bootstrap"
-  git -C "$ws" remote add origin git@github.com:<you>/$ws_name-workspace.git
-  git -C "$ws" push -u origin main
-
-Next steps:
-  1. Create a Claude Project with $ws as its root folder.
-  2. git clone your repository into $ws/repos/
-  3. Write $ws/docs/scope/BASELINE_$(date +%Y-%m-%d).md
-  4. Put chirat-watch and chirat-prompt on your PATH (once per machine):
-       chirat-watch install
-  5. To run prompts headless, add the workspace to ~/.config/chirat/workspaces:
-       echo "$ws" >> ~/.config/chirat/workspaces
-     then start the watcher with: chirat-watch --tmux
+Optional — a private remote for the workspace (OWNER = your GitHub user or organization).
+Create an empty private repo first (no README), then:
+  git -C "$ws_q" remote add origin git@github.com:OWNER/$ws_name.git
+  git -C "$ws_q" push -u origin main
+Or with the GitHub CLI, in one step:
+  gh repo create OWNER/$ws_name --private --source "$ws_q" --remote origin --push
 EOF

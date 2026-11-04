@@ -1,4 +1,5 @@
 {
+  "_comment": "add your repository's build and test commands here, to permissions.allow",
   "permissions": {
     "allow": [
       "Bash(git *)",
@@ -8,12 +9,8 @@
       "Bash(npm install)",
       "Bash(npm test)",
       "Bash(npm run *)",
-      "Bash(bash bin/*)",
       "Bash(bash repos/*)",
-      "Bash(chirat-prompt *)",
-      "Bash(shellcheck *)",
-      "Bash(claude plugin validate *)",
-      "Bash(tmux ls*)"
+      "Bash(chirat-prompt *)"
     ],
     "deny": [
       "Bash(npm publish*)",

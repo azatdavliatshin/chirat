@@ -15,7 +15,7 @@ Private. Never leaves this folder; never goes into a repo.
 │   ├── WORKFLOW.md            this file
 │   ├── PARKED.md              deferred ideas / questions
 │   ├── input/                 read-only incoming material
-│   ├── scope/                 BASELINE_YYYY-MM-DD.md snapshots
+│   ├── scope/                 optional: dated BASELINE_YYYY-MM-DD.md snapshots (a practice; chirat does not read them)
 │   ├── plans/                 one plan per feature; <topic>.prompt-N.md = prompts for Claude Code
 │   ├── analysis/              research
 │   ├── status/                session handovers — memory between sessions
