@@ -68,12 +68,13 @@ What the permission mode means for you: [safety](safety.md#permissions).
 
 Runs the machine checks, then these for the workspace (`~` allowed; a path
 without `.chirat/` is a `FAIL`). A `FAIL` on `includeIf` or `workspaces` prints
-the command that fixes it.
+the command that fixes it. Only the asked workspace is listed in the machine
+part.
 
 | Check | Result | Meaning |
 |---|---|---|
 | `includeIf` | `ok` / `FAIL` | `~/.gitconfig`, or a file it includes, has `includeIf "gitdir:<ws>/"` with `path = <ws>/.gitconfig`; `~` and symlinks resolved, trailing `/` required |
-| `identity` | `ok` / `FAIL` | `user.email` as git really sees it, in the workspace and in the first clone, is the one in `<ws>/.gitconfig`: the proof that the include works |
+| `identity` | `ok` / `FAIL` | `user.email` (and `user.name`, and `core.sshCommand` when `<ws>/.gitconfig` sets them) as git really sees it, in the workspace and in the first clone, must come *from* `<ws>/.gitconfig` (`git config --show-origin`): the same address in `~/.gitconfig` does not pass. The proof that the include works, and that the `--ssh-key` is in effect; `warn` when git is too old for `--show-origin` |
 | `workspaces` | `ok` / `FAIL` | the workspace is listed in `~/.config/chirat/workspaces` |
 | `repos` | `ok` / `warn` | at least one clone in `repos/`; a workspace may start without one |
 | `default_branch` | `ok` / `warn` | the configured branch exists locally in each clone; `warn` names the clone's current branch as the likely value |

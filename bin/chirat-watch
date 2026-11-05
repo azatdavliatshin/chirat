@@ -77,8 +77,10 @@
 #                 identity FAIL`, or `mvg: ok`). With ws (`~` allowed): that
 #                 workspace's setup too — FAIL includeIf (in ~/.gitconfig or a
 #                 file it includes; `gitdir:<ws>/`, path = <ws>/.gitconfig, ~
-#                 and symlinks resolved), FAIL identity (git's user.email in the
-#                 workspace and the first clone is the one in <ws>/.gitconfig),
+#                 and symlinks resolved), FAIL identity (git's user.email, and
+#                 user.name / core.sshCommand when <ws>/.gitconfig sets them,
+#                 must come from <ws>/.gitconfig in the workspace and the
+#                 first clone: checked by --show-origin, not by value),
 #                 FAIL workspaces (not in the watcher's list), warn repos (no
 #                 clone), warn default_branch (no such local branch in a clone),
 #                 warn notify_open (unset or a placeholder). A FAIL prints the
@@ -1433,7 +1435,7 @@ real_path() {
 # doctor_workspace <ws>: the per-workspace checks, through cmd_doctor's ok / warn
 # / fail. <ws> is a resolved path that has .chirat/.
 doctor_workspace() {
-  local ws=$1 q nl=$'\n' rec key val dir found=0 why c first="" want got wrong="" clones="" b cur missing=0 no
+  local ws=$1 q nl=$'\n' rec key val dir found=0 why c first="" want wname wssh sshkey rc wrong="" clones="" b cur missing=0 no
   q=$(printf '%s' "$ws" | sed 's/[\\"$`]/\\&/g')
 
   # --includes: --global alone does not follow include.path. -z: a key can hold
@@ -1464,16 +1466,51 @@ doctor_workspace() {
     if [ -e "${c}.git" ]; then first=${c%/}; break; fi
   done
 
+  # identity: not just the values (a global user.email can be the same address)
+  # but where git reads them from: the workspace .gitconfig must be the origin.
   want=$(git config -f "$ws/.gitconfig" user.email 2>/dev/null)
+  wname=$(git config -f "$ws/.gitconfig" user.name 2>/dev/null)
+  wssh=$(git config -f "$ws/.gitconfig" core.sshCommand 2>/dev/null)
   if [ -z "$want" ]; then
     fail "identity: no user.email in $ws/.gitconfig"
   else
+    local keys="user.email" old=0 line src gotv
+    [ -z "$wname" ] || keys="$keys user.name"
+    [ -z "$wssh" ] || keys="$keys core.sshCommand"
     for c in "$ws" ${first:+"$first"}; do
-      got=$(git -C "$c" config user.email 2>/dev/null)
-      [ "$got" = "$want" ] || wrong="$wrong $c gives [$got];"
+      for key in $keys; do
+        rc=0
+        line=$(git -C "$c" config --show-origin --get "$key" 2>/dev/null) || rc=$?
+        if [ "$rc" = 129 ]; then old=1; break 2; fi
+        if [ -z "$line" ]; then
+          wrong="$wrong $key in $c is not set;"
+          continue
+        fi
+        src=${line%%$'\t'*}
+        gotv=${line#*$'\t'}
+        case $src in
+          file:*) src=${src#file:}; [ "$(real_path "$src")" = "$ws/.gitconfig" ] && src="" || true ;;
+        esac
+        if [ -n "$src" ]; then
+          wrong="$wrong $key in $c comes from $src, not $ws/.gitconfig;"
+        else
+          case $key in
+            user.email) [ "$gotv" = "$want" ] || wrong="$wrong $key in $c gives [$gotv];" ;;
+            user.name) [ "$gotv" = "$wname" ] || wrong="$wrong $key in $c gives [$gotv];" ;;
+            core.sshCommand) [ "$gotv" = "$wssh" ] || wrong="$wrong $key in $c gives [$gotv];" ;;
+          esac
+        fi
+      done
     done
-    if [ -z "$wrong" ]; then ok "identity: $want"
-    else fail "identity: $ws/.gitconfig has $want, but git in$wrong the include is not taking effect"; fi
+    if [ "$old" = 1 ]; then warn "identity: cannot check origin (git too old for --show-origin)"
+    elif [ -z "$wrong" ]; then
+      sshkey=""
+      if [ -n "$wssh" ]; then
+        sshkey=$(printf '%s\n' "$wssh" | sed -n 's/.*-i  *["'"'"']\{0,1\}\([^"'"'"' ]*\).*/\1/p')
+        sshkey=", ssh key ${sshkey:-$wssh}"
+      fi
+      ok "identity: $want$sshkey"
+    else fail "identity:$wrong the include is not taking effect"; fi
   fi
 
   found=0
@@ -1516,7 +1553,7 @@ doctor_workspace() {
 }
 
 cmd_doctor() {
-  local online=0 bad=0 p ws n=0 cl="" dir real want pr_path v wl lm no doc_open="" target="" out fails
+  local online=0 bad=0 p ws n=0 cl="" dir real want pr_path v wl lm no tgt_real target="" out fails
   while [ $# -gt 0 ]; do
     case $1 in
       --online) online=1 ;;
@@ -1558,6 +1595,8 @@ cmd_doctor() {
   fi
 
   # 4: config
+  tgt_real=""
+  [ -z "$target" ] || tgt_real=$(real_path "$target")
   while IFS= read -r lm; do warn "$lm"; done < <(legacy_global)
   if [ ! -f "$config" ]; then
     fail "config: $config missing"
@@ -1565,6 +1604,8 @@ cmd_doctor() {
     while IFS= read -r ws; do
       [ -n "$ws" ] || continue
       n=$((n + 1))
+      # doctor <ws>: only that workspace's lines; its own section follows
+      [ -z "$target" ] || [ "$(real_path "$ws")" = "$tgt_real" ] || continue
       lm=$(legacy_ws_msg "$ws")
       [ -z "$lm" ] || warn "workspace $ws: $lm (skipped by the watcher)"
       if [ ! -d "$ws" ]; then fail "workspace $ws: no such directory"
@@ -1579,7 +1620,6 @@ cmd_doctor() {
             claude://* | https://* | file://*) ;;
             *) [ -e "$no" ] || warn "notify_open: unrecognized value $no ($ws)" ;;
           esac
-          [ -n "$doc_open" ] || doc_open=$no
         fi
       fi
     done < <(workspaces)
@@ -1629,7 +1669,7 @@ cmd_doctor() {
     tnv=${tnv%.}
     [ -n "$tnv" ] || tnv="?"
     case $tnv in
-      3.*) ok "terminal-notifier 3.x: click opens ${doc_open:-Claude}" ;;
+      3.*) ok "terminal-notifier 3.x (click opens each workspace's notify_open)" ;;
       *) warn "terminal-notifier $tnv: 3.x needed for -open; brew upgrade terminal-notifier" ;;
     esac
     if [ "$online" = 1 ]; then
@@ -1662,7 +1702,9 @@ cmd_doctor() {
     while IFS= read -r ws; do
       [ -n "$ws" ] || continue
       if [ ! -d "$ws/.chirat" ]; then
-        echo "${ws##*/}: not a workspace (no .chirat/)"
+        if [ -d "$ws" ]; then echo "${ws##*/}: FAIL not a workspace (no .chirat/)"
+        else echo "${ws##*/}: FAIL no such directory"; fi
+        bad=1
         continue
       fi
       out=$(doctor_workspace "$(real_path "$ws")")

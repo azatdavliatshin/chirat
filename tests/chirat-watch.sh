@@ -1013,9 +1013,9 @@ exit 0
 EOF2
 chmod +x "$tmp/dtn/terminal-notifier"
 FAKE_TNV="terminal-notifier 3.1.0." PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
-has "doctor: terminal-notifier 3 ok" "$tmp/doc2.out" "ok   terminal-notifier 3.x: click opens Claude"
+has "doctor: terminal-notifier 3 ok" "$tmp/doc2.out" "ok   terminal-notifier 3.x (click opens each workspace's notify_open)"
 FAKE_TNV=3.1.0 PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
-has "doctor: terminal-notifier bare 3 ok" "$tmp/doc2.out" "ok   terminal-notifier 3.x: click opens Claude"
+has "doctor: terminal-notifier bare 3 ok" "$tmp/doc2.out" "ok   terminal-notifier 3.x (click opens each workspace's notify_open)"
 FAKE_TNV="terminal-notifier 2.0.0." PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
 has "doctor: terminal-notifier 2 warns" "$tmp/doc2.out" "warn terminal-notifier 2.0.0: 3.x needed for -open; brew upgrade terminal-notifier"
 PATH=$tmp/dtn:$dpath "$watch" doctor >"$tmp/doc2.out" 2>&1
@@ -1215,6 +1215,90 @@ dd
 eq "doctor: a workspace with only a warn exits 0" 0 $?
 has "doctor: warn-only workspace is ok in the summary" "$tmp/dd.out" "dw: ok"
 mv "$tmp/docapp" "$dws/repos/app"
+printf '%s\n%s\n' "$dws" "$dws2" >"$dh/.config/chirat/workspaces"
+
+# --- doctor: identity by origin, quieter doctor <ws> ------------------------
+
+printf '%s\n' "$dws" >"$dh/.config/chirat/workspaces"
+if grep -q 'claude://' <(FAKE_TNV=3.1.0 PATH=$tmp/dtn:$dpath "$watch" doctor | grep 'terminal-notifier 3.x'); then ko "doctor: terminal-notifier line names no project"; else ok "doctor: terminal-notifier line names no project"; fi
+
+# the regression: the same address globally, no includeIf
+rm -f "$dh/.gitconfig"
+dgit config --global user.email doc@example.com
+dgit config --global user.name "Doc Tor"
+dd "$dws"
+eq "doctor ws: same global email, no include exits 1" 1 $?
+has "doctor ws: same global email FAIL identity" "$tmp/dd.out" "FAIL identity: user.email in $dws comes from $dh/.gitconfig, not $dws/.gitconfig"
+has "doctor ws: ... and the clone" "$tmp/dd.out" "user.email in $dws/repos/app comes from $dh/.gitconfig"
+has "doctor ws: ... and user.name" "$tmp/dd.out" "user.name in $dws comes from $dh/.gitconfig"
+
+# include in place -> ok; also through an included file
+rm -f "$dh/.gitconfig"
+dgit config --global user.email doc@example.com
+dgit config --global --add "includeIf.gitdir:$dws/.path" "$dws/.gitconfig"
+dd "$dws"
+eq "doctor ws: global email plus include exits 0" 0 $?
+has "doctor ws: identity ok with the include" "$tmp/dd.out" "ok   identity: doc@example.com"
+rm -f "$dh/.gitconfig"
+dgit config --global user.email doc@example.com
+dgit config --global include.path "$dh/extra.gitconfig"
+dd "$dws"
+eq "doctor ws: include inside an included file, global email exits 0" 0 $?
+has "doctor ws: identity ok via included file" "$tmp/dd.out" "ok   identity: doc@example.com"
+
+# user.name from the wrong origin: the include comes first, a later global wins
+dinclude "$dws/" "$dws/.gitconfig"
+dgit config --global user.name "Other Name"
+dd "$dws"
+eq "doctor ws: user.name from the global file exits 1" 1 $?
+has "doctor ws: user.name FAIL" "$tmp/dd.out" "FAIL identity: user.name in $dws comes from $dh/.gitconfig"
+
+# core.sshCommand
+git config -f "$dws/.gitconfig" core.sshCommand "ssh -i '$dh/.ssh/id_work' -o IdentitiesOnly=yes"
+rm -f "$dh/.gitconfig"
+dgit config --global user.email doc@example.com
+dgit config --global user.name "Doc Tor"
+dd "$dws"
+eq "doctor ws: sshCommand without include exits 1" 1 $?
+has "doctor ws: sshCommand FAIL" "$tmp/dd.out" "core.sshCommand in $dws is not set"
+dinclude "$dws/" "$dws/.gitconfig"
+dd "$dws"
+eq "doctor ws: sshCommand with include exits 0" 0 $?
+has "doctor ws: ok names the key" "$tmp/dd.out" "ok   identity: doc@example.com, ssh key $dh/.ssh/id_work"
+dgit config --global core.sshCommand "ssh -i /elsewhere"
+dd "$dws"
+eq "doctor ws: sshCommand from the global file exits 1" 1 $?
+has "doctor ws: sshCommand origin FAIL" "$tmp/dd.out" "core.sshCommand in $dws comes from $dh/.gitconfig"
+git config -f "$dws/.gitconfig" --unset core.sshCommand
+dinclude "$dws/" "$dws/.gitconfig"
+dd "$dws"
+if grep 'identity' "$tmp/dd.out" | grep -qi 'ssh'; then ko "doctor ws: no ssh text without core.sshCommand"; else ok "doctor ws: no ssh text without core.sshCommand"; fi
+
+# the first clone is checked as well: a repo-local identity beats the include
+git -C "$dws/repos/app" config user.email local@example.com
+dd "$dws"
+eq "doctor ws: clone with its own email exits 1" 1 $?
+has "doctor ws: clone FAIL" "$tmp/dd.out" "user.email in $dws/repos/app comes from .git/config"
+git -C "$dws/repos/app" config --unset user.email
+
+# doctor <ws> lists only that workspace in the machine part
+printf '%s\n%s\n' "$dws" "$dws2" >"$dh/.config/chirat/workspaces"
+dd "$dws"
+if grep -q "ok   workspace $dws2" "$tmp/dd.out"; then ko "doctor ws: no other workspace line"; else ok "doctor ws: no other workspace line"; fi
+has "doctor ws: the asked workspace line" "$tmp/dd.out" "ok   workspace $dws"
+dd
+has "doctor: without ws every workspace line" "$tmp/dd.out" "ok   workspace $dws2"
+
+# a registered path that is not a workspace, or vanished: FAIL, exit 1
+mkdir -p "$dh/notws"
+printf '%s\n%s\n' "$dws" "$dh/notws" >"$dh/.config/chirat/workspaces"
+dd
+eq "doctor: registered non-workspace exits 1" 1 $?
+has "doctor: non-workspace summary FAIL" "$tmp/dd.out" "notws: FAIL not a workspace (no .chirat/)"
+printf '%s\n%s\n' "$dws" "$dh/vanished" >"$dh/.config/chirat/workspaces"
+dd
+eq "doctor: vanished path exits 1" 1 $?
+has "doctor: vanished summary FAIL" "$tmp/dd.out" "vanished: FAIL no such directory"
 printf '%s\n%s\n' "$dws" "$dws2" >"$dh/.config/chirat/workspaces"
 
 mv "$tmp/bin/claude.run" "$tmp/bin/claude"

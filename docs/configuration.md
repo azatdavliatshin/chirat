@@ -57,7 +57,9 @@ workspace `.gitconfig`:
 
 `IdentitiesOnly=yes` makes ssh offer that key and no other. It reaches git only
 through the includeIf in `~/.gitconfig` (`chirat-watch doctor <ws>` checks it),
-so add that before the first push.
+so add that before the first push. `chirat-watch doctor <ws>` shows whether
+the workspace key is in effect: `identity` fails when `core.sshCommand` comes
+from anywhere but `<ws>/.gitconfig`.
 
 ## Permissions in a new workspace
 

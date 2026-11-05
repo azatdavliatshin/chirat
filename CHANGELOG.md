@@ -34,6 +34,17 @@ All notable changes are listed here, in the
 - `chirat-watch doctor` without an argument exits 1 when a registered
   workspace's summary line has a `FAIL`, like `doctor <ws>`; `warn` still
   does not count.
+- `chirat-watch doctor <ws>`: the machine part lists only that workspace, and
+  the `terminal-notifier` line no longer shows one workspace's `notify_open`.
+
+### Fixed
+
+- `doctor` identity check compared values, so a global `user.email` equal to
+  the workspace's gave a false `ok` while the workspace `.gitconfig` (and its
+  `core.sshCommand`) was not applied. It now checks where `user.email`,
+  `user.name` and `core.sshCommand` come from.
+- `doctor` without an argument: a registered path that is not a workspace, or
+  no longer exists, is a `FAIL` and exits 1.
 
 ### Documentation
 
