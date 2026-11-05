@@ -290,7 +290,7 @@ has "scp-style url: folder name" "$tmp/r8.out" "\"$tmp/r8/repos/app\""
 
 # --- --project -----------------------------------------------------------
 
-id=01a153df-9d74-7359-9465-bb52d476d989
+id=00000000-0000-4000-8000-000000000000
 "$init" p1 "$tmp" --git-name "P" --git-email p@example.com --project "$id" >"$tmp/p1.out" 2>&1
 eq "--project uuid: notify_open" "notify_open=claude://claude.ai/project/$id" "$(grep -E '^notify_open=' "$tmp/p1/.chirat/config")"
 if grep -q 'set notify_open=' "$tmp/p1.out"; then ko "--project: no notify_open hint"; else ok "--project: no notify_open hint"; fi

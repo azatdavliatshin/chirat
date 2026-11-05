@@ -4,6 +4,8 @@ Tests, linting, plugin validation, platforms and CI, and how reports against
 the commit guard are handled. Back to the [README](../README.md); related:
 [safety](safety.md), [commands](commands.md).
 
+Planned work is in the [roadmap](roadmap.md); requests go to GitHub issues.
+
 Run from the root of the clone:
 
 ```bash

@@ -98,6 +98,7 @@ creating a workspace and running your first task.
 | [safety.md](docs/safety.md) | you want to know what runs can do and what the commit guard covers |
 | [troubleshooting.md](docs/troubleshooting.md) | a prompt is stuck, a run failed or a notification is missing |
 | [upgrading.md](docs/upgrading.md) | you update chirat or move over from *relay* |
+| [roadmap.md](docs/roadmap.md) | you want to know what is planned next |
 | [development.md](docs/development.md) | you run the tests or report a guard bypass |
 
 ## License

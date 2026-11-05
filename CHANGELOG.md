@@ -5,6 +5,8 @@ All notable changes are listed here, in the
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-11-05
+
 ### Added
 
 - `chirat-watch doctor <ws>` verifies one workspace's setup: includeIf, the
@@ -49,8 +51,9 @@ All notable changes are listed here, in the
 ### Documentation
 
 - README is a short introduction; the guide and reference moved to `docs/`.
+- Public roadmap: `docs/roadmap.md`.
 
-## [0.2.1] — 2026-10-29
+## [0.2.1] — 2026-11-02
 
 ### Fixed
 
@@ -159,5 +162,7 @@ were internal.
   upgrade path from relay.
 - The default permission mode is `auto` instead of `acceptEdits`.
 
+[Unreleased]: https://github.com/azatdavliatshin/chirat/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.2.2
 [0.2.1]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.2.1
 [0.2.0]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.2.0
