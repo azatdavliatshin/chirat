@@ -69,11 +69,12 @@
 #                 modified since the lock's start; no tool output; times are UTC
 #   doctor [--online] [ws]
 #                 one ok / warn / FAIL line per check (claude, plugin, config,
-#                 tmux, PATH, state dir, watcher); exit 1 on any FAIL; --online
-#                 also asks claude for a reply (login expired shows up here).
-#                 Without ws: one more line per registered workspace, naming
-#                 its FAILs (`mvg: includeIf FAIL, identity FAIL`, or `mvg: ok`);
-#                 these do not change the exit code. With ws (`~` allowed): that
+#                 tmux, PATH, state dir, watcher); --online also asks claude
+#                 for a reply (login expired shows up here). Exit status, both
+#                 forms: 1 on any FAIL, machine check or workspace; warn does
+#                 not count; 0 otherwise. Without ws: one more line per
+#                 registered workspace, naming its FAILs (`mvg: includeIf FAIL,
+#                 identity FAIL`, or `mvg: ok`). With ws (`~` allowed): that
 #                 workspace's setup too — FAIL includeIf (in ~/.gitconfig or a
 #                 file it includes; `gitdir:<ws>/`, path = <ws>/.gitconfig, ~
 #                 and symlinks resolved), FAIL identity (git's user.email in the
@@ -1667,6 +1668,7 @@ cmd_doctor() {
       out=$(doctor_workspace "$(real_path "$ws")")
       fails=$(printf '%s\n' "$out" | sed -n 's/^FAIL \([A-Za-z_]*\):.*/\1 FAIL/p' | paste -sd, - | sed 's/,/, /g')
       echo "${ws##*/}: ${fails:-ok}"
+      if printf '%s\n' "$out" | grep -q '^FAIL'; then bad=1; fi
     done < <(workspaces)
   fi
   return "$bad"

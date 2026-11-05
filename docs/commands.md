@@ -59,7 +59,7 @@ What the permission mode means for you: [safety](safety.md#permissions).
 | `recover [--dry-run] [ws…]` | stale-lock recovery on demand; refuses a workspace whose lock is live |
 | `logs [-n N] [-f] [ws…]` | the last N (default 20) lines of `watch.log`; `-f` follows |
 | `tail [-f] [ws]` | the run in progress: assistant text and tool calls, one line each, from Claude Code's transcripts under `~/.claude/projects/`; no tool output; times in UTC |
-| `doctor [--online] [ws]` | one `ok` / `warn` / `FAIL` line per setup check; `--online` also makes a real `claude -p` call, where an expired login shows up; exit 1 on any `FAIL`. Without `ws`, one more line per registered workspace naming its `FAIL`s (`mvg: includeIf FAIL, identity FAIL`), which does not change the exit code. With `ws`, [that workspace's setup](#doctor-ws) too |
+| `doctor [--online] [ws]` | one `ok` / `warn` / `FAIL` line per setup check; `--online` also makes a real `claude -p` call, where an expired login shows up; exit 1 on any `FAIL`, 0 otherwise (`warn` does not count; same with and without `ws`). Without `ws`, one more line per registered workspace naming its `FAIL`s (`mvg: includeIf FAIL, identity FAIL`); such a `FAIL` exits 1 too. With `ws`, [that workspace's setup](#doctor-ws) too |
 | `restart [--force]` | stop the watcher and start `--tmux` again with the same flags; refused while `claude` runs unless `--force` (the prompt goes back to `pending`) |
 | `install [dir]` | symlink `chirat-watch` and `chirat-prompt` into `dir` (default `~/.local/bin`); replaces symlinks, refuses anything else, hints at `PATH` |
 | `[ws…]` | workspace paths, or a bare name: `demo` selects the configured path ending in `/demo` |

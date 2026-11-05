@@ -17,7 +17,7 @@ user.* inside a repo.
 | Path | Purpose |
 |---|---|
 | `CLAUDE.md` | This file — main context |
-| `.claude/settings.local.json` | Local permissions for this workspace |
+| `.claude/settings.local.json` | Local permissions for this workspace — add your repositories' build and test commands to `permissions.allow` |
 | `.gitconfig` | Git identity for every repo under this workspace (via `includeIf` in `~/.gitconfig`) |
 | `.chirat/` | chirat's own state: run log, `LATEST`, lock; optional `config` (`plans_dir`, `status_dir`, `default_branch`) |
 | `docs/WORKFLOW.md` | Private process guide (never shared) |

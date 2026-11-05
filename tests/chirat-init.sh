@@ -313,13 +313,15 @@ done
 has "settings: base list has git" "$settings" '"Bash(git *)"'
 has "settings: base list has npm test" "$settings" '"Bash(npm test)"'
 has "settings: base list has chirat-prompt" "$settings" '"Bash(chirat-prompt *)"'
-has "settings: says where to add commands" "$settings" "add your repository's build and test commands here"
+has "CLAUDE.md: says where to add commands" "$ws/CLAUDE.md" 'permissions.allow'
 has "settings: deny git push" "$settings" '"Bash(git push *)"'
 has "settings: deny git -C push" "$settings" '"Bash(git -C * push*)"'
 has "settings: deny npm publish" "$settings" '"Bash(npm publish*)"'
 has "settings: deny skip-permissions" "$settings" '"Bash(claude --dangerously-skip-permissions*)"'
 if command -v python3 >/dev/null 2>&1; then
   if python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$settings"; then ok "settings: valid JSON"; else ko "settings: valid JSON"; fi
+  eq "settings: top-level keys are exactly permissions" "permissions" "$(python3 -I -c 'import json,sys; print(",".join(sorted(json.load(open(sys.argv[1])))))' "$settings")"
+  eq "settings: deny rules" "Bash(npm publish*)|Bash(git push)|Bash(git push *)|Bash(git -C * push*)|Bash(claude --dangerously-skip-permissions*)" "$(python3 -I -c 'import json,sys; print("|".join(json.load(open(sys.argv[1]))["permissions"]["deny"]))' "$settings")"
 fi
 if grep -qF 'chirat@chirat' "$ws/CLAUDE.md"; then ko "CLAUDE.md Landing: no chirat@chirat"; else ok "CLAUDE.md Landing: no chirat@chirat"; fi
 has "CLAUDE.md Landing: heading kept" "$ws/CLAUDE.md" "## Landing"

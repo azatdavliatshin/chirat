@@ -72,7 +72,10 @@ git -C ~/code/demo-workspace/repos/app branch --show-current
 
 Replace `URL` with your repository's. Clone one folder per repository: the
 clone must live at `repos/<repo>`, and the prompt's `repo:` is that folder
-name. If its default branch is not `main`, edit
+name. Add its build and test commands to `permissions.allow` in
+`.claude/settings.local.json`
+([why](configuration.md#permissions-in-a-new-workspace)). If its default branch
+is not `main`, edit
 `~/code/demo-workspace/.chirat/config` (the template ships it with every key
 commented out) and set:
 

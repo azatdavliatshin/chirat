@@ -1,5 +1,4 @@
 {
-  "_comment": "add your repository's build and test commands here, to permissions.allow",
   "permissions": {
     "allow": [
       "Bash(git *)",

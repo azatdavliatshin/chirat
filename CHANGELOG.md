@@ -28,7 +28,12 @@ All notable changes are listed here, in the
   the steps still to do, `doctor` last. The workspace path it prints is the
   physical one, the only one includeIf matches.
 - Leaner template: a minimal allow list without chirat's own commands, no
-  chirat example under `## Landing`, `docs/scope/` marked optional.
+  chirat example under `## Landing`, `docs/scope/` marked optional. The
+  settings file is plain schema-only JSON; the hint to add your build and
+  test commands lives in the workspace `CLAUDE.md` and the docs.
+- `chirat-watch doctor` without an argument exits 1 when a registered
+  workspace's summary line has a `FAIL`, like `doctor <ws>`; `warn` still
+  does not count.
 
 ### Documentation
 

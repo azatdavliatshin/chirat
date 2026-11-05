@@ -991,6 +991,10 @@ mkdir -p "$tmp/inst"
 dpath=$tmp/inst:$tmp/bin:/usr/bin:/bin
 doc() { PATH=$dpath "$watch" doctor "$@" >"$tmp/doc.out" 2>&1; return $?; }
 printf '%s\n' "$ws" >"$XDG_CONFIG_HOME/chirat/workspaces"
+# the registered workspace must be green too: doctor without ws exits 1 on its FAIL
+git init -q -b main "$ws"
+git config -f "$ws/.gitconfig" user.email ws@example.com
+git config -f "$tmp/.gitconfig" "includeIf.gitdir:$(cd -P "$ws" && pwd -P)/.path" "$ws/.gitconfig"
 doc
 eq "doctor: all good exits 0" 0 $?
 has "doctor: claude" "$tmp/doc.out" "ok   claude: "
@@ -1192,11 +1196,26 @@ git init -q -b main "$dws2"
 git config -f "$dws2/.gitconfig" user.email mvg@example.com
 printf '%s\n%s\n' "$dws" "$dws2" >"$dh/.config/chirat/workspaces"
 dd
-eq "doctor: a workspace FAIL does not change the exit code" 0 $?
+eq "doctor: a workspace FAIL exits 1" 1 $?
 has "doctor: a green workspace in one line" "$tmp/dd.out" "dw: ok"
 has "doctor: a failing workspace in one line" "$tmp/dd.out" "mvg: includeIf FAIL, identity FAIL"
 eq "doctor: one line each" 2 "$(grep -cE '^(dw|mvg): ' "$tmp/dd.out")"
 if grep -q 'git config --global' "$tmp/dd.out"; then ko "doctor: no fix lines in the summary"; else ok "doctor: no fix lines in the summary"; fi
+dd --online
+eq "doctor --online: a workspace FAIL exits 1" 1 $?
+has "doctor --online: the summary names the failing workspace" "$tmp/dd.out" "mvg: includeIf FAIL, identity FAIL"
+
+# all registered workspaces green -> 0; a warn alone -> 0
+printf '%s\n' "$dws" >"$dh/.config/chirat/workspaces"
+dd
+eq "doctor: all workspaces green exits 0" 0 $?
+has "doctor: green summary line" "$tmp/dd.out" "dw: ok"
+mv "$dws/repos/app" "$tmp/docapp"
+dd
+eq "doctor: a workspace with only a warn exits 0" 0 $?
+has "doctor: warn-only workspace is ok in the summary" "$tmp/dd.out" "dw: ok"
+mv "$tmp/docapp" "$dws/repos/app"
+printf '%s\n%s\n' "$dws" "$dws2" >"$dh/.config/chirat/workspaces"
 
 mv "$tmp/bin/claude.run" "$tmp/bin/claude"
 
