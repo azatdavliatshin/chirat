@@ -76,9 +76,14 @@ plugin is enabled): `chirat-prompt get <file> <key>`,
      `git -C R worktree add ../<repo>-<worktree> -b <branch> <default_branch>`
      (if the branch already exists, `git -C R worktree add
      ../<repo>-<worktree> <branch>`). Work in `W`.
-     If `W` exists, it must be a git worktree of `R`: `git -C W rev-parse
-     --git-dir` succeeds, otherwise fail with "<W> exists but is not a
-     worktree of <R>". Read its branch with `git -C W rev-parse
+     If `W` exists, it must be listed by `R` itself: one of the `worktree
+     <path>` lines of `git -C R worktree list --porcelain` must equal the
+     resolved path of `W` (`realpath <W>`, or `python3 -c 'import os,sys;
+     print(os.path.realpath(sys.argv[1]))' <W>` where `realpath` is missing).
+     Otherwise fail with "<W> exists but is not a worktree of <R>" — a plain
+     folder, a separate clone or another repository's worktree all fail
+     this way, even though `git -C W rev-parse --git-dir` would succeed in
+     them. Read its branch with `git -C W rev-parse
      --abbrev-ref HEAD`. If it equals `<branch>`, work in `W`. If it
      differs and `git -C W status --porcelain` is not empty, do not switch
      and never stash — fail with "uncommitted changes on <current branch>
