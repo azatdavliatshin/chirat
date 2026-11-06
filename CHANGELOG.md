@@ -5,6 +5,8 @@ All notable changes are listed here, in the
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-11-06
+
 ### Fixed
 
 - `/next` verifies the branch of an existing worktree before working in it.
@@ -167,7 +169,8 @@ were internal.
   upgrade path from relay.
 - The default permission mode is `auto` instead of `acceptEdits`.
 
-[Unreleased]: https://github.com/azatdavliatshin/chirat/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/azatdavliatshin/chirat/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.2.3
 [0.2.2]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.2.2
 [0.2.1]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.2.1
 [0.2.0]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.2.0

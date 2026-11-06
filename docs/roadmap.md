@@ -6,7 +6,7 @@ changes are listed in [CHANGELOG](../CHANGELOG.md).
 
 Ideas and requests are welcome as GitHub issues.
 
-## Now — 0.2.2: first public release
+## Now — 0.2.3: first public release
 
 - A short README and separate guides ([getting started](getting-started.md),
   [workflow](workflow.md), reference pages).
