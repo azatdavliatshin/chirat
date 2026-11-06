@@ -218,15 +218,14 @@ feat/hello 1a2b3c4
 
 ## Next for the human
 1. Review this file and `git -C repos/app diff main..feat/hello`.
-2. `git -C repos/app merge --no-edit feat/hello`
+2. `git -C repos/app checkout main && git -C repos/app merge --no-edit feat/hello`
 ```
 
 Review, then merge into the right base branch, naming it explicitly:
 
 ```bash
 git -C ~/code/demo-workspace/repos/app diff main..feat/hello
-git -C ~/code/demo-workspace/repos/app checkout main        # only if the clone is still on feat/hello
-git -C ~/code/demo-workspace/repos/app merge --no-edit feat/hello
+git -C ~/code/demo-workspace/repos/app checkout main && git -C ~/code/demo-workspace/repos/app merge --no-edit feat/hello
 ```
 
 Use your `default_branch` instead of `main` if it differs. A run returns the

@@ -207,6 +207,7 @@
 set -uo pipefail
 
 self=$0
+tab=$'\t'
 while [ -L "$self" ]; do # installed as a symlink: find the real script
   link=$(readlink "$self")
   case $link in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
@@ -885,7 +886,7 @@ note_waiting() { # note_waiting <ws>
   while IFS=$'\t' read -r f after _; do
     [ -n "$f" ] || continue
     rel=${f#"$ws"/}
-    last=$(awk -F'\t' -v k="$ws	$rel" '$2 "\t" $3 == k { print $1 }' "$seen" 2>/dev/null | tail -n 1)
+    last=$(awk -F'\t' -v k="$ws$tab$rel" '$2 "\t" $3 == k { print $1 }' "$seen" 2>/dev/null | tail -n 1)
     if [ -n "$last" ] && [ $((now - last)) -lt 600 ]; then continue; fi
     [ "$dry_run" = 1 ] || printf '%s\t%s\t%s\n' "$now" "$ws" "$rel" >>"$seen"
     line=$(printf '%s\twaiting\t%s\t%s\t%s' "$(now_iso)" "$ws" "$rel" "$after")
@@ -901,7 +902,7 @@ note_misnamed() { # note_misnamed <ws>
   while IFS=$'\t' read -r f reason; do
     [ -n "$f" ] || continue
     rel=${f#"$ws"/}
-    grep -qxF -- "$ws	$rel" "$seen" 2>/dev/null && continue
+    grep -qxF -- "$ws$tab$rel" "$seen" 2>/dev/null && continue
     [ "$dry_run" = 1 ] || printf '%s\t%s\n' "$ws" "$rel" >>"$seen"
     line=$(printf '%s\tmisnamed\t%s\t%s\t%s' "$(now_iso)" "$ws" "$rel" "$reason")
     [ "$dry_run" = 1 ] || printf '%s\n' "$line" >>"$log"

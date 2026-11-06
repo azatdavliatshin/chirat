@@ -5,6 +5,11 @@ All notable changes are listed here, in the
 
 ## [Unreleased]
 
+### Fixed
+
+- `/next` verifies the branch of an existing worktree before working in it.
+- The merge command in the status report switches to the default branch first.
+
 ## [0.2.2] — 2026-11-05
 
 ### Added

@@ -76,12 +76,24 @@ plugin is enabled): `chirat-prompt get <file> <key>`,
      `git -C R worktree add ../<repo>-<worktree> -b <branch> <default_branch>`
      (if the branch already exists, `git -C R worktree add
      ../<repo>-<worktree> <branch>`). Work in `W`.
+     If `W` exists, it must be a git worktree of `R`: `git -C W rev-parse
+     --git-dir` succeeds, otherwise fail with "<W> exists but is not a
+     worktree of <R>". Read its branch with `git -C W rev-parse
+     --abbrev-ref HEAD`. If it equals `<branch>`, work in `W`. If it
+     differs and `git -C W status --porcelain` is not empty, do not switch
+     and never stash — fail with "uncommitted changes on <current branch>
+     in <W>". If it differs and the tree is clean, `git -C W checkout
+     <branch>` when `refs/heads/<branch>` exists, otherwise
+     `git -C W checkout -b <branch> <default_branch>`; if git refuses
+     because `<branch>` is checked out in another worktree of `R`, the run
+     ends `failed` with git's message.
    - `worktree` unset: work in `R`. If `git -C R status --porcelain` is not
      empty and the current branch is not `<branch>`, do not switch — fail
      with "uncommitted changes on <current branch>". Otherwise
      `git -C R checkout <branch>`, or `git -C R checkout -b <branch> <default_branch>`
      if it does not exist.
-   Confirm with `git -C <tree> rev-parse --abbrev-ref HEAD`.
+   Confirm with `git -C <tree> rev-parse --abbrev-ref HEAD`; in both cases
+   the name must equal `<branch>`, a mismatch is `failed`.
 
 3. **Do the work.** Execute the prompt body exactly, in that tree. Honour its
    own checkpoints and stop where it says to stop. Rules that always apply:
@@ -125,8 +137,12 @@ plugin is enabled): `chirat-prompt get <file> <key>`,
    merge.
 
    - `done`: (1) review this file and `git -C repos/<repo> diff
-     <default_branch>..<branch>`; (2) `git -C repos/<repo> merge --no-edit <branch>`;
-     (3) the landing steps: if the workspace `CLAUDE.md` has a `## Landing`
+     <default_branch>..<branch>`; (2) `git -C repos/<repo> checkout
+     <default_branch> && git -C repos/<repo> merge --no-edit <branch>` —
+     when step 5 left `repos/<repo>` on `<branch>` because the tree was
+     dirty, print right before it the note "`repos/<repo>` is on `<branch>`
+     with uncommitted changes — commit or drop them first"; same command for
+     worktree runs; (3) the landing steps: if the workspace `CLAUDE.md` has a `## Landing`
      section, apply its rules to the "Files touched" list and print only the
      steps that match, as commands; (4) `Releases:` the prompts that
      `chirat-prompt waiting .` lists with `after=<this branch>`, or
