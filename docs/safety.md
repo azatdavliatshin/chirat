@@ -70,7 +70,11 @@ does not see:
 - a function that commits, called through another function under a
   different git environment (`f() { git commit …; }; g() { f; }; GIT_DIR=… g`);
 - a function run as a `trap` handler after the environment changed
-  (`trap f EXIT; export GIT_DIR=…`).
+  (`trap f EXIT; export GIT_DIR=…`);
+- a `git add` (or `commit -a`, or a pathspec on the commit) in the *same*
+  Bash call as the commit: the hook inspects the index when the call starts,
+  so a file added and committed in one command is not seen; the two-call
+  form is. Fixed in the next release.
 
 `plugin/tests/guard-corpus.sh` runs every line of its corpus against a real
 shell and fails when the guard allows something harmful; documented gaps are
