@@ -63,6 +63,6 @@ user.* inside a repo.
 
 ## Useful commands
 
-Host prerequisites: `git`, `jq` (commit guard), `shellcheck` (if the repos
-carry shell scripts). Add verified build / test commands here as the repos
-take shape.
+Host prerequisites: `git`; optional `jq` (the commit guard and `chirat-watch
+tail` fall back to `python3`). Add verified build / test commands here as the
+repos take shape.

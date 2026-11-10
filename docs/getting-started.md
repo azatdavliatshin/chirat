@@ -22,7 +22,8 @@ Project). Read [safety](safety.md) first: runs use your machine, your
   [configuration](configuration.md#notifications)), `shellcheck` for
   development.
 - A git repository of your own with at least one commit and a default
-  branch. The examples call it `app`.
+  branch, or none yet — step 3 shows how to start one. The examples call it
+  `app`.
 - A planning session that can read and write the workspace folder. chirat
   does not provide that; see step 6.
 
@@ -70,9 +71,17 @@ git -C ~/code/demo-workspace/repos/app log --oneline -1    # must show a commit
 git -C ~/code/demo-workspace/repos/app branch --show-current
 ```
 
-Replace `URL` with your repository's. Clone one folder per repository: the
-clone must live at `repos/<repo>`, and the prompt's `repo:` is that folder
-name. Add its build and test commands to `permissions.allow` in
+Replace `URL` with your repository's. No repository yet? Create one with a
+first commit — a run branches from `default_branch`, so the repository needs
+at least one commit:
+
+```bash
+git init -b main ~/code/demo-workspace/repos/app
+git -C ~/code/demo-workspace/repos/app commit --allow-empty -m "chore: init"
+```
+
+Clone one folder per repository: the clone must live at `repos/<repo>`, and
+the prompt's `repo:` is that folder name. Add its build and test commands to `permissions.allow` in
 `.claude/settings.local.json`
 ([why](configuration.md#permissions-in-a-new-workspace)). If its default branch
 is not `main`, edit
@@ -90,17 +99,19 @@ hints compare against ([configuration](configuration.md#workspace-config)).
 several), `--branch NAME` also sets `default_branch`
 ([commands](commands.md#chirat-init)).
 
-## 4. Install the plugin (Claude Code)
+## 4. Install the plugin (terminal)
 
-Inside a Claude Code session, add the marketplace — the local clone path —
-and install the plugin:
+In the terminal, add the marketplace — the local clone path — and install
+the plugin:
 
+```bash
+claude plugin marketplace add ~/code/chirat-src
+claude plugin install chirat@chirat
 ```
-/plugin marketplace add ~/code/chirat-src
-/plugin install chirat@chirat
-```
 
-(From GitHub instead of the clone: `/plugin marketplace add azatdavliatshin/chirat`.)
+(From GitHub instead of the clone: `claude plugin marketplace add
+azatdavliatshin/chirat`. The same works inside a Claude Code session as
+`/plugin marketplace add …` and `/plugin install chirat@chirat`.)
 The plugin brings `/chirat:next`, `/chirat:handover`, `/chirat:poll`, a
 read-only `reviewer` agent and the commit guard. Steps 1 and 4 are once per
 machine.

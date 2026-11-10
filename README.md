@@ -60,7 +60,8 @@ not every Claude Project has access to a local folder, so check yours.
 Read this before your first run. Runs happen on your machine, with your
 `claude` login and whatever credentials are available there. The default
 permission mode is `auto`: a classifier, not you, approves each action. A
-plugin hook refuses `git push`, `npm publish` and commits of workspace files,
+plugin hook refuses `git push`, `npm publish` and commits that would carry
+workspace files into a code repository,
 but it is defense in depth against accidents, not a sandbox. `git push` and
 `npm publish` are also denied in the workspace settings, and you do the
 merging. The watcher needs no server of its own; Claude Code still uses its
@@ -75,12 +76,12 @@ git clone https://github.com/azatdavliatshin/chirat ~/code/chirat-src
 ~/code/chirat-src/bin/chirat-watch install   # chirat-watch, chirat-prompt → ~/.local/bin
 ```
 
-Make sure `~/.local/bin` is on your `PATH` (`install` says if not). Then,
-typed inside a Claude Code session:
+Make sure `~/.local/bin` is on your `PATH` (`install` says if not). Then
+install the plugin:
 
-```
-/plugin marketplace add ~/code/chirat-src
-/plugin install chirat@chirat
+```bash
+claude plugin marketplace add ~/code/chirat-src
+claude plugin install chirat@chirat
 ```
 
 Next, [docs/getting-started.md](docs/getting-started.md) walks through

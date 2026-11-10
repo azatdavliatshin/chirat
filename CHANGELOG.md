@@ -5,7 +5,14 @@ All notable changes are listed here, in the
 
 ## [Unreleased]
 
-## [0.2.3] — 2026-11-06
+## [0.2.3] — 2026-11-10
+
+### Changed
+
+- Docs: the plugin is installed from the terminal (`claude plugin …`), the
+  slash commands are the alternative; getting started shows how to begin
+  with a repository that does not exist yet; the roadmap moves 0.3.0 to Now
+  and names the commit guard's same-call gap as the next fix.
 
 ### Fixed
 

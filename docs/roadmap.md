@@ -6,17 +6,7 @@ changes are listed in [CHANGELOG](../CHANGELOG.md).
 
 Ideas and requests are welcome as GitHub issues.
 
-## Now — 0.2.3: first public release
-
-- A short README and separate guides ([getting started](getting-started.md),
-  [workflow](workflow.md), reference pages).
-- `chirat-init` that ends with pasteable next steps and an optional
-  `--repo` / `--branch` / `--project` setup.
-- `chirat-watch doctor <workspace>`: checks that a workspace's git
-  identity, SSH key, registration and settings are actually in effect.
-- A cold start on a clean machine, following only the public docs.
-
-## Next — 0.3.0: workspaces run in parallel
+## Now — 0.3.0: workspaces run in parallel
 
 Today the watcher runs one prompt at a time across all workspaces, and the
 first workspace in the config goes first. In 0.3.0 each workspace gets its
@@ -27,6 +17,15 @@ own queue:
   it);
 - a workspace held back by the cap says so in `status` and the log, so a
   `pending` prompt never waits without a reason.
+
+## Next — commit guard: the same-call shape
+
+The guard inspects the index when a Bash call starts, so `git add` and
+`git commit` in one command are not seen (listed under
+[Known limitations](safety.md#what-it-is-for)). Next: the hook follows
+`git add`, `commit -a` and pathspecs, and files written by `cp`/`mv`/a
+redirection, in the same call — with tests whose fixtures are *not*
+pre-staged.
 
 ## Then — 0.4.0: the review loop
 

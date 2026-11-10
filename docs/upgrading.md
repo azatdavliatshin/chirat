@@ -50,7 +50,7 @@ workspace that still has `.relay/`.
    watcher may still be live: check it first, do not move.
 6. Plugin, in Claude Code: `/plugin uninstall relay@relay`,
    `/plugin marketplace remove relay`, add the marketplace again (see
-   [getting started](getting-started.md#4-install-the-plugin-claude-code)),
+   [getting started](getting-started.md#4-install-the-plugin-terminal)),
    `/plugin install chirat@chirat`.
 7. The GitHub repository was renamed too; old URLs redirect, but update
    existing clones: `git remote set-url origin
