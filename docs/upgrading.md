@@ -29,17 +29,17 @@ group. Run `chirat-watch status` to see the state.
 
 ## From 0.2.x
 
-Version 0.3.0 brings this change: workspaces now have one queue each, and
-`restart` the watcher after updating so the new code runs. The default `--max-parallel 1` still runs one prompt at
-a time, but two workspaces with ready prompts now take turns instead of the
-first in the config always going first, and a run that finishes starts the
-next pass at once. A workspace held back by the cap says so in `status`
-(`next: wait (1 pending; limit 1, running: …)`) and in the log (`held`). To
-run several workspaces at once, stop the watcher and start it with the flag —
-`chirat-watch --tmux --max-parallel 2` — `restart` keeps it from then on.
-Parallel runs share the subscription's rate limits, which is why the default
-is 1. A lock left by a 0.2.x watcher (no `runner.pid`) is still read and
-recovered.
+In 0.3.0 each workspace has its own queue. Restart the watcher after updating
+(`chirat-watch restart`) so the new code runs. The default `--max-parallel 1`
+still runs one prompt at a time, but two workspaces with ready prompts now
+take turns instead of the first in the config always going first, and a run
+that finishes starts the next pass at once. A workspace held back by the cap
+says so in `status` (`next: wait (1 pending; limit 1, running: …)`) and in the
+log (`held`). To run several workspaces at once, stop the watcher and start it
+with the flag — `chirat-watch --tmux --max-parallel 2` — `restart` keeps it
+from then on. Parallel runs share the subscription's rate limits, which is why
+the default is 1. A lock left by a 0.2.x watcher (no `runner.pid`) is still
+read and recovered.
 
 ## From relay
 
