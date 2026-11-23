@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # chirat-watch — poll workspaces for pending prompts and run them headless.
 #
-#   chirat-watch [--once] [--dry-run] [--interval N] [--permission-mode M] [--tmux] [--version]
+#   chirat-watch [--once] [--dry-run] [--interval N] [--max-parallel N] [--permission-mode M] [--tmux] [--version]
 #   chirat-watch install [dir] | status [ws…] | recover [--dry-run] [ws…] | restart [--force]
 #   chirat-watch logs [-n N] [-f] [ws…] | tail [-f] [ws] | doctor [--online] [ws]
 #
@@ -10,7 +10,8 @@
 #
 # Every --interval seconds (default 60) each workspace is asked for its next
 # pending prompt (`chirat-prompt next`). For a hit, chirat-watch takes the lock
-# <ws>/.chirat/lock, runs from <ws>
+# <ws>/.chirat/lock, starts a *runner* (a child process of the watcher) and
+# goes on to the next workspace. The runner runs from <ws>
 #
 #   claude -p "/chirat:next <file>" --model <model> --permission-mode <mode>
 #          --permission-prompts none --output-format json
@@ -25,7 +26,30 @@
 #   <iso time> <tab> <ws> <tab> <file> <tab> <model> <tab> <exit> <tab> <seconds>
 #   <tab> <permission mode>
 #
-#   --once        single pass over all workspaces, then exit 0
+# One run per workspace at a time (a workspace whose lock is held is skipped);
+# `--max-parallel` caps the total, default 1. Each pass begins at the
+# workspace after the one that last started a run, or at the first one the cap
+# held back (round-robin over the config list), so two workspaces with ready
+# prompts take turns instead of the first in the list always winning. A
+# workspace with a ready prompt that the cap holds back is `held`, logged to
+# watch.log and stdout
+#
+#   <iso time> <tab> held <tab> <ws> <tab> <file> <tab> limit=<N> <tab> running=<ws name>[,<ws name>…]
+#
+# at most once per 10 minutes per workspace, and again whenever the set of
+# running workspaces changes (state in <log dir>/held.seen; a workspace's entry
+# is cleared when it starts a run, so every new wait gets its own line).
+# `status` shows the same reason on the `next:` line. A finished runner wakes
+# the watcher (SIGUSR1), so the next pass starts at once instead of after the
+# rest of the --interval sleep. Parallel runs share the subscription's rate
+# limits, which is why the default is 1.
+#
+#   --once        single pass over all workspaces, then wait for every run,
+#                 then exit 0; a workspace the cap holds back waits for a
+#                 free slot inside the pass (no `held` line), so under the
+#                 default cap the hits run one after another in config order
+#   --max-parallel N  at most N runs at the same time (whole number ≥ 1,
+#                 default 1), still at most one per workspace
 #   --dry-run     print the claude command instead of running it, and write
 #                 nothing at all: no lock, no runs/, no LATEST, no watch.log
 #                 or *.seen line (the log line is printed only), no
@@ -56,17 +80,19 @@
 #                 is live
 #   restart [--force]
 #                 stop the watcher and start `chirat-watch --tmux` again with
-#                 the same flags; refused while a claude is running unless
-#                 --force (the prompt then goes back to `pending`)
+#                 the same flags (the cap included); refused while any run is
+#                 live unless --force (every prompt then goes back to `pending`)
 #
 #   logs [-n N] [-f] [ws…]
 #                 last N (default 20) lines of watch.log as stored, only those
 #                 of the given workspaces when any; -f follows
 #   tail [-f] [ws]
 #                 the run in progress for ws (the only workspace with a live
-#                 lock when omitted): assistant text and tool calls, one line
-#                 each, from the newest ~/.claude/projects/<ws, / as ->/*.jsonl
-#                 modified since the lock's start; no tool output; times are UTC
+#                 lock when omitted; with several, the refusal lists one
+#                 `chirat-watch tail <name>` per line): assistant text and
+#                 tool calls, one line each, from the newest
+#                 ~/.claude/projects/<ws, / as ->/*.jsonl modified since the
+#                 lock's start; no tool output; times are UTC
 #   doctor [--online] [ws]
 #                 one ok / warn / FAIL line per check (claude, plugin, config,
 #                 tmux, PATH, state dir, watcher); --online also asks claude
@@ -109,34 +135,59 @@
 # dir and for RELAY_* variables (ignored); doctor also for old relay-watch /
 # relay-prompt on PATH and a live tmux session `relay`.
 #
-# The lock directory records its owners: watcher.pid (chirat-watch), prompt
-# (path relative to the workspace), run (<stem>.<stamp>, the basename of the
-# .json/.err), started (iso time) and, once claude is up, claude.pid. claude
-# runs in its own process group and is its leader, so claude.pid is also the
-# process group id (pgid) of everything it starts. "claude is alive" means:
-# the pid runs, or any process of that group still runs (`pgrep -g`, else
-# `ps -o pgid= -A`; zombies do not count), or the group cannot be inspected
-# at all (ps/pgrep failing) — unknown is never "gone". Before every
-# `chirat-prompt next`, a lock is stale when its watcher is dead and its claude
-# is dead or was never started: the prompt is put back to `pending` if it still
-# says `running`, a note goes to the run's .err, an empty .json is removed, the
-# lock is removed and a line with `recovered` in the exit column is logged. A
-# lock whose claude or watcher.pid is alive is never stale: the workspace
-# is in progress and is skipped, whatever the prompt's status says (a live
-# watcher with a dead claude is between claude's exit and release_lock). Known
-# limitation: a dead PID (or group id) reused by an unrelated process makes a
-# lock look alive until that process exits; no timeouts or other heuristics.
+# The lock directory records its owners, six files: watcher.pid (the main
+# chirat-watch process), prompt (path relative to the workspace), run
+# (<stem>.<stamp>, the basename of the .json/.err), started (iso time),
+# runner.pid (the runner, written by the runner itself as its first step) and,
+# once claude is up, claude.pid. claude runs in its own process group and is
+# its leader, so claude.pid is also the process group id (pgid) of everything
+# it starts. "claude is alive" means: the pid runs, or any process of that
+# group still runs (`pgrep -g`, else `ps -o pgid= -A`; zombies do not count),
+# or the group cannot be inspected at all (ps/pgrep failing) — unknown is
+# never "gone". A lock with runner.pid is live while its runner or its claude
+# is alive; watcher.pid does not keep it alive, because the watcher outlives
+# every run — otherwise a runner killed with -9 would leave a lock that looks
+# live for as long as the watcher runs, and its workspace would stop without
+# a word. watcher.pid counts only for a lock without runner.pid: one written
+# by 0.2.x, or the instant between `mkdir` and the runner writing its pid.
+# Before every `chirat-prompt next`, a lock that is not live is stale: the
+# prompt is put back to `pending` if it still says `running`, a note goes to
+# the run's .err, an empty .json is removed, the lock is removed and a line
+# with `recovered` in the exit column is logged. A live lock is never stale:
+# the workspace is in progress and is skipped, whatever the prompt's status
+# says (a live runner with a dead claude is between claude's exit and
+# release_lock). Known limitation: a dead PID (or group id) reused by an
+# unrelated process makes a lock look alive until that process exits; no
+# timeouts or other heuristics.
 #
-# SIGINT/SIGTERM/SIGHUP (tmux kill-session) during a run: TERM to claude's
-# whole process group, then wait for the *group* (not just claude) up to
-# $CHIRAT_STOP_GRACE seconds (default 15), KILL the group, wait another 5 s.
-# Only once no process of the group is left does the prompt go back to
-# `pending` (note in the .err file), the lock is released and the run is
-# logged with `interrupted` in the exit column. If anything of the group
-# survives even KILL, or the group cannot be inspected, the prompt and the
-# lock are left as they are and the exit column says `interrupted-alive`; the
-# next start then waits for that group. `restart --force` applies the same
-# rule when it has to KILL a watcher that did not stop by itself.
+# Signals. The runner wakes the watcher with SIGUSR1 once its run is logged,
+# but only after checking that <state dir>/watcher.pid still names the watcher
+# that started it (a runner can outlive its watcher, and USR1 kills a process
+# that does not expect it); otherwise it finishes and signals nobody. The
+# watcher's USR1 handler sets a flag and ends the interval sleep, nothing
+# else; the flag is checked before and after the sleep is started, so a
+# wake-up can arrive at any instant without being lost.
+# SIGINT/SIGTERM/SIGHUP (tmux kill-session) to the watcher: its handler
+# first ignores INT, TERM, HUP and USR1, ends the sleep, forwards the stop to
+# every live runner (HUP as HUP, anything else as TERM — Bash 3.2 ignores INT
+# in an asynchronous child) and waits for all of them, then exits 130. A stop
+# that arrives while the USR1 handler runs is handled right after its current
+# command (bash runs other pending traps at command boundaries), so it is not
+# lost; a wake-up that arrives during a stop is ignored. Each runner has its
+# own handler for its run: TERM to claude's whole process group, then wait for
+# the *group* (not just claude) up to $CHIRAT_STOP_GRACE seconds (default 15),
+# KILL the group, wait another 5 s. Only once no process of the group is left
+# does the prompt go back to `pending` (note in the .err file), the lock is
+# released and the run is logged with `interrupted` in the exit column. If
+# anything of the group survives even KILL, or the group cannot be inspected,
+# the prompt and the lock are left as they are and the exit column says
+# `interrupted-alive`; that runner exits 130 with its lock kept, and the next
+# start then waits for that group. `restart --force` stops the watcher the
+# same way; when it has to KILL a watcher that did not stop by itself, the
+# runners survive that watcher, so `restart` sends TERM to each lock's
+# runner.pid and waits for it (its own stop puts the prompt back to
+# `pending`), and stops claude's group directly only for a lock whose runner
+# is already gone.
 #
 # A run that ends `done`, `blocked` or `failed` leaves the result in the
 # prompt's front matter: `commit: <full sha>` is the head of its `branch:` in
@@ -279,7 +330,7 @@ case ${1:-} in
   status | recover | restart | logs | tail | doctor) sub=$1; shift; sub_args=("$@"); set -- ;;
 esac
 
-once=0 dry_run=0 interval=60 use_tmux=0
+once=0 dry_run=0 interval=60 max_parallel=1 use_tmux=0
 mode=${CHIRAT_PERMISSION_MODE:-auto}
 pass_through=()
 while [ $# -gt 0 ]; do
@@ -290,6 +341,11 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || usage
       case $2 in '' | *[!0-9]*) die "--interval needs a whole number of seconds" ;; esac
       interval=$2; pass_through+=("$1" "$2"); shift 2 ;;
+    --max-parallel)
+      [ $# -ge 2 ] || usage
+      case $2 in '' | *[!0-9]*) die "--max-parallel needs a whole number, 1 or more" ;; esac
+      [ "$2" -ge 1 ] || die "--max-parallel needs a whole number, 1 or more"
+      max_parallel=$2; pass_through+=("$1" "$2"); shift 2 ;;
     --permission-mode)
       [ $# -ge 2 ] || usage
       [ -n "$2" ] || die "--permission-mode needs a value"
@@ -479,10 +535,10 @@ stop_group() {
   wait_group_gone "$1" 5
 }
 
-# remove_lock <dir>: the five files by name, then the directory
+# remove_lock <dir>: the six files by name, then the directory
 remove_lock() {
   local f
-  for f in watcher.pid prompt run started claude.pid; do rm -f "$1/$f"; done
+  for f in watcher.pid prompt run started runner.pid claude.pid; do rm -f "$1/$f"; done
   rmdir "$1" 2>/dev/null
 }
 
@@ -505,15 +561,13 @@ fail_if_unfinished() { # fail_if_unfinished <file> <err file> <note>
 }
 
 # Stopping the watcher is not the prompt's fault: an unfinished prompt goes
-# back to `pending` so the next watcher start retries it.
+# back to `pending` so the next watcher start retries it. `interrupted` is the
+# runner's handler (INT/TERM/HUP, forwarded by the watcher or straight from
+# tmux); the current_* / claude_pid state is the runner's own.
 current_ws="" current_model="" current_started="" child="" claude_pid="" sig=""
 interrupted() {
   local status secs gone why
-  trap '' INT TERM HUP
-  if [ -n "$child" ]; then
-    kill -TERM "$child" 2>/dev/null
-    wait "$child" 2>/dev/null
-  fi
+  trap '' INT TERM HUP USR1
   if [ -n "$claude_pid" ]; then
     stop_group "$claude_pid"
     gone=$?
@@ -546,9 +600,49 @@ interrupted() {
   release_lock
   exit 130
 }
-trap 'sig=SIGINT; interrupted' INT
-trap 'sig=SIGTERM; interrupted' TERM
-trap 'sig=SIGHUP; interrupted' HUP
+
+# The watcher's own stop: end the sleep, give back a lock taken but not yet
+# handed to a runner, forward the stop to every runner (HUP as HUP, the rest
+# as TERM: Bash 3.2 ignores INT in an asynchronous child), wait for all of
+# them, exit 130. Order and reasons: header, "Signals".
+rpids=() rwss=() # live runners: pid and workspace, same index
+main_pid=$$
+stop_watcher() {
+  local p fw=TERM
+  trap '' INT TERM HUP USR1
+  [ "$sig" != SIGHUP ] || fw=HUP
+  if [ -n "$child" ]; then
+    kill -TERM "$child" 2>/dev/null
+    wait "$child" 2>/dev/null
+    child=""
+  fi
+  release_lock
+  for p in ${rpids[@]+"${rpids[@]}"}; do kill -"$fw" "$p" 2>/dev/null; done
+  for p in ${rpids[@]+"${rpids[@]}"}; do wait "$p" 2>/dev/null; done
+  exit 130
+}
+trap 'sig=SIGINT; stop_watcher' INT
+trap 'sig=SIGTERM; stop_watcher' TERM
+trap 'sig=SIGHUP; stop_watcher' HUP
+
+# A finished runner wakes the watcher; the handler only sets the flag and ends
+# the interval sleep (the loop checks the flag before and after starting it).
+woken=0
+on_wake() {
+  woken=1
+  [ -z "$child" ] || kill -TERM "$child" 2>/dev/null
+}
+trap on_wake USR1
+
+# wake_watcher (in the runner): USR1 to the watcher that started this run, but
+# only while <state dir>/watcher.pid still names it — a runner can outlive its
+# watcher, and USR1 kills a process that does not expect it.
+wake_watcher() {
+  local p
+  p=$(cat "$state_dir/watcher.pid" 2>/dev/null) || return 0
+  [ "$p" = "$main_pid" ] || return 0
+  kill -USR1 "$main_pid" 2>/dev/null || true
+}
 
 # The run log is complete only once claude has exited, so the skill leaves
 # the run log out of its own commit; .chirat/runs, .chirat/LATEST and
@@ -685,8 +779,8 @@ notify() { # notify <ws> <stem> <status> <started epoch> <run>: desktop notifica
   fi
 }
 
-run_one() { # run_one <ws> <prompt file>
-  local ws=$1 file=$2 rel stem model runs stamp out err started exit_code secs
+run_one() { # run_one <ws> <prompt file>: take the lock and start the runner; 0 when one was started
+  local ws=$1 file=$2 rel stem model runs stamp out err started
   rel=${file#"$ws"/}
   stem=${rel##*/}
   stem=${stem%.md}
@@ -699,19 +793,19 @@ run_one() { # run_one <ws> <prompt file>
     # not just reported as stale) means a run is in progress.
     if [ -d "$ws/.chirat/lock" ] && [ "$dry_recovered" = 0 ]; then
       echo "chirat-watch: $ws is locked ($ws/.chirat/lock), skipping" >&2
-      return
+      return 1
     fi
     stamp=$(now_stamp)
     printf 'cd %q && claude -p %q --model %q --permission-mode %q --permission-prompts none --output-format json >%q 2>>%q\n' \
       "$ws" "/chirat:next $rel" "$model" "$mode" "$runs/$stem.$stamp.json" "$runs/$stem.$stamp.err"
     log_line "$ws" "$rel" "$model" dry-run 0
-    return
+    return 1
   fi
 
-  mkdir -p "$runs" || return
+  mkdir -p "$runs" || return 1
   if ! mkdir "$ws/.chirat/lock" 2>/dev/null; then
     echo "chirat-watch: $ws is locked ($ws/.chirat/lock), skipping" >&2
-    return
+    return 1
   fi
   lock_dir=$ws/.chirat/lock
 
@@ -731,7 +825,33 @@ run_one() { # run_one <ws> <prompt file>
   now_iso >"$lock_dir/started"
   [ -z "$select_warn" ] || printf '%s\n' "$select_warn" >>"$err"
 
+  # The runner is a child of the watcher, in the watcher's process group; from
+  # here on the lock is the runner's, and the pass goes on.
+  (
+    runner "$ws" "$file" "$rel" "$stem" "$model" "$out" "$err" "$started" "$stem.$stamp"
+  ) </dev/null &
+  rpids+=("$!") rwss+=("$ws")
+  lock_dir=""
+  return 0
+}
+
+# runner <ws> <file> <rel> <stem> <model> <out> <err> <started> <run>: one run,
+# in its own process — everything from starting claude to the log line. Its
+# traps are its own (a subshell starts with the defaults); the EXIT trap is the
+# watcher's and is dropped here.
+runner() {
+  local ws=$1 file=$2 rel=$3 stem=$4 model=$5 out=$6 err=$7 started=$8 run=$9 exit_code secs rpid
+  trap - EXIT
+  trap '' USR1
+  lock_dir=$ws/.chirat/lock
   current_file=$file current_err=$err current_ws=$ws current_model=$model current_started=$started
+  trap 'sig=SIGINT; interrupted' INT
+  trap 'sig=SIGTERM; interrupted' TERM
+  trap 'sig=SIGHUP; interrupted' HUP
+  # Bash 3.2 has no $BASHPID; a child's $PPID is this process.
+  rpid=${BASHPID:-$(sh -c 'echo $PPID')}
+  printf '%s\n' "$rpid" >"$lock_dir/runner.pid"
+
   # Background + wait, so a signal reaches the trap while claude is running.
   # Job control gives the background job its own process group; the subshell
   # execs claude, so its PID is claude's and the group id.
@@ -751,25 +871,69 @@ run_one() { # run_one <ws> <prompt file>
 
   fail_if_unfinished "$file" "$err" "claude exited $exit_code"
   case $("$chirat_prompt" get "$file" status 2>/dev/null) in done | blocked | failed) record_commit "$ws" "$file" ;; esac
-  notify "$ws" "$stem" "$("$chirat_prompt" get "$file" status 2>/dev/null || echo unknown)" "$started" "$stem.$stamp"
+  notify "$ws" "$stem" "$("$chirat_prompt" get "$file" status 2>/dev/null || echo unknown)" "$started" "$run"
   current_file="" current_err=""
   secs=$(( $(date +%s) - started ))
   write_latest "$ws" "$file" "$stem" "$exit_code" "$secs"
   release_lock
   commit_run_log "$ws" "$stem" "$rel"
   log_line "$ws" "$rel" "$model" "$exit_code" "$secs"
+  wake_watcher
+  exit 0
+}
+
+# reap_runners: forget the runners that have exited (waited for, so no zombie
+# is left). A runner that is alive with its lock already gone is finishing —
+# the run-log commit, the log line, the wake-up — and gets up to 5 s to exit
+# before it still counts as running.
+reap_runners() {
+  local i n=${#rpids[@]} p keep_p=() keep_w=()
+  [ "$n" -gt 0 ] || return 0
+  for ((i = 0; i < n; i++)); do
+    p=${rpids[$i]}
+    if alive "$p" && [ ! -d "${rwss[$i]}/.chirat/lock" ]; then wait_gone "$p" 5 || true; fi
+    if alive "$p"; then
+      keep_p+=("$p") keep_w+=("${rwss[$i]}")
+    else
+      wait "$p" 2>/dev/null
+    fi
+  done
+  rpids=(${keep_p[@]+"${keep_p[@]}"}) rwss=(${keep_w[@]+"${keep_w[@]}"})
+}
+
+# wait_runners: until every runner has exited (a wake-up may end a `wait`
+# early; the runner is then checked again)
+wait_runners() {
+  while [ ${#rpids[@]} -gt 0 ]; do
+    wait "${rpids[0]}" 2>/dev/null
+    reap_runners
+  done
+}
+
+# running_names: the workspaces with a live runner, config order, bare names,
+# comma-separated (the `running=` of a held line)
+running_names() {
+  local w r out=""
+  while IFS= read -r w; do
+    for r in ${rwss[@]+"${rwss[@]}"}; do
+      [ "$r" = "$w" ] && out="${out:+$out,}${w##*/}"
+    done
+  done < <(workspaces)
+  printf '%s\n' "$out"
 }
 
 iso_to_epoch() { # iso_to_epoch <iso time>: epoch seconds, or nothing
   date -j -f %Y-%m-%dT%H:%M:%S%z "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null
 }
 
-# lock_read <ws>: load the lock's owner files into lk_* (empty when absent)
+# lock_read <ws>: load the lock's owner files into lk_* (empty when absent;
+# a 0.2.x lock has no runner.pid)
 lock_read() {
   local lock=$1/.chirat/lock
-  lk_cpid="" lk_wpid="" lk_rel="" lk_run="" lk_started=""
+  lk_cpid="" lk_wpid="" lk_rpid="" lk_rel="" lk_run="" lk_started=""
   [ -f "$lock/claude.pid" ] && lk_cpid=$(<"$lock/claude.pid")
   [ -f "$lock/watcher.pid" ] && lk_wpid=$(<"$lock/watcher.pid")
+  [ -f "$lock/runner.pid" ] && lk_rpid=$(<"$lock/runner.pid")
   [ -f "$lock/prompt" ] && lk_rel=$(<"$lock/prompt")
   [ -f "$lock/run" ] && lk_run=$(<"$lock/run")
   [ -f "$lock/started" ] && lk_started=$(<"$lock/started")
@@ -778,14 +942,24 @@ lock_read() {
 
 # lock_state <ws>: classify the lock, change nothing. Prints
 #   none                      no lock
-#   live                      claude is alive, or the watcher is (between
-#                             claude's exit and release_lock)
-#   setup                     no claude.pid yet, the watcher is alive
-#   stale <reason>            claude dead / watcher dead / legacy lock, no owners
+#   live                      claude is alive, or the runner is (between
+#                             claude's exit and release_lock); for a lock
+#                             without runner.pid (0.2.x), or the watcher is
+#   setup                     no claude.pid yet, the runner (or, without
+#                             runner.pid, the watcher) is alive
+#   stale <reason>            claude dead / runner dead / watcher dead /
+#                             legacy lock, no owners
+# With runner.pid, watcher.pid does not count: the watcher outlives its runs.
 lock_state() {
   [ -d "$1/.chirat/lock" ] || { echo none; return 0; }
   lock_read "$1"
   if [ -n "$lk_cpid" ] && claude_live "$lk_cpid"; then echo live
+  elif [ -n "$lk_rpid" ]; then
+    if alive "$lk_rpid"; then
+      if [ -z "$lk_cpid" ]; then echo setup; else echo live; fi
+    elif [ -n "$lk_cpid" ]; then echo "stale claude $lk_cpid dead"
+    else echo "stale runner $lk_rpid dead"
+    fi
   elif [ -n "$lk_wpid" ] && alive "$lk_wpid"; then
     if [ -z "$lk_cpid" ]; then echo setup; else echo live; fi
   elif [ -n "$lk_cpid" ]; then echo "stale claude $lk_cpid dead"
@@ -794,14 +968,19 @@ lock_state() {
   fi
 }
 
+# lock_owner: after lock_read on a live or setup lock, who holds it:
+# `claude <pid>`, `runner <pid>` or `watcher <pid>`
+lock_owner() {
+  if [ -n "$lk_cpid" ] && claude_live "$lk_cpid"; then echo "claude $lk_cpid"
+  elif [ -n "$lk_rpid" ] && alive "$lk_rpid"; then echo "runner $lk_rpid"
+  else echo "watcher $lk_wpid"
+  fi
+}
+
 # in_progress <ws>: the "not touching it" line for a live or setup lock
 in_progress() {
   lock_read "$1"
-  if [ -n "$lk_cpid" ] && claude_live "$lk_cpid"; then
-    echo "chirat-watch: $1: in progress, lock held by claude $lk_cpid (${lk_rel:--})" >&2
-  else
-    echo "chirat-watch: $1: in progress, lock held by watcher $lk_wpid (${lk_rel:--})" >&2
-  fi
+  echo "chirat-watch: $1: in progress, lock held by $(lock_owner) (${lk_rel:--})" >&2
 }
 
 # recover_stale <ws>: heal a lock left by a dead watcher/claude (rules in the
@@ -895,6 +1074,30 @@ note_waiting() { # note_waiting <ws>
   done < <("$chirat_prompt" waiting "$ws" 2>/dev/null)
 }
 
+# Log a workspace the cap holds back at most once per 10 minutes, and again
+# whenever the set of running workspaces it names has changed. State:
+# <epoch><tab><ws><tab><rel><tab><running> per line in held.seen; clear_held
+# forgets a workspace when it starts a run, so every new wait gets its own line.
+note_held() { # note_held <ws> <rel>
+  local ws=$1 rel=$2 seen=$state_dir/held.seen now last lastrun running line
+  running=$(running_names)
+  now=$(date +%s)
+  last=$(awk -F'\t' -v w="$ws" '$2 == w { t = $1; r = $4 } END { if (t != "") print t "\t" r }' "$seen" 2>/dev/null)
+  lastrun=${last#*"$tab"}
+  last=${last%%"$tab"*}
+  if [ -n "$last" ] && [ $((now - last)) -lt 600 ] && [ "$lastrun" = "$running" ]; then return 0; fi
+  printf '%s\t%s\t%s\t%s\n' "$now" "$ws" "$rel" "$running" >>"$seen"
+  line=$(printf '%s\theld\t%s\t%s\tlimit=%s\trunning=%s' "$(now_iso)" "$ws" "$rel" "$max_parallel" "$running")
+  printf '%s\n' "$line" >>"$log"
+  printf '%s\n' "$line"
+}
+
+clear_held() { # clear_held <ws>
+  local seen=$state_dir/held.seen
+  [ -f "$seen" ] || return 0
+  awk -F'\t' -v w="$1" '$2 != w' "$seen" >"$seen.tmp" && mv "$seen.tmp" "$seen"
+}
+
 # Log each misnamed prompt file once; a file renamed to a valid name is simply
 # picked up by `next`. State: <ws><tab><rel> per line in misnamed.seen.
 note_misnamed() { # note_misnamed <ws>
@@ -921,45 +1124,92 @@ note_legacy() { # note_legacy <ws> <message>
   printf '%s\n' "$line"
 }
 
-pass() {
-  local ws file pd lm
-  while IFS= read -r ws; do
-    lm=$(legacy_ws_msg "$ws")
-    if [ -n "$lm" ]; then
-      note_legacy "$ws" "$lm"
-      continue
-    fi
-    pd=$(chirat_config "$ws" plans_dir docs/plans)
-    if [ ! -d "$ws/$pd" ]; then
-      echo "chirat-watch: not a workspace (no $pd): $ws" >&2
-      continue
-    fi
-    recover_dry=$dry_run dry_recovered=0 dry_recovered_files=()
-    if ! recover_stale "$ws"; then
-      note_misnamed "$ws"
-      continue
-    fi
-    # Under --dry-run the prompts a recovery would re-queue are still
-    # `running` on disk; `next --as-pending` counts them as pending for this
-    # one call, so the preview picks from the same queue, in the same order,
-    # as the real pass does after recovering them.
-    if [ "$dry_run" = 1 ] && [ ${#dry_recovered_files[@]} -gt 0 ]; then
-      file=$("$chirat_prompt" next "$ws" --as-pending "${dry_recovered_files[@]}" 2>/dev/null)
-    else
-      file=$("$chirat_prompt" next "$ws" 2>/dev/null)
-    fi
-    if [ -n "$file" ]; then
-      # `next` is quiet; the chosen prompt's own warning (`after_mode: done`
-      # let it through) must be seen: printed here, kept in the run's .err.
-      select_warn=$("$chirat_prompt" check "$ws" "$file" 2>&1 >/dev/null) || select_warn=""
-      [ -z "$select_warn" ] || printf '%s\n' "$select_warn"
-      run_one "$ws" "$file"
-      select_warn=""
-    else
-      note_waiting "$ws"
-    fi
+# wait_slot: under --once a workspace the cap holds back waits for a runner
+# to exit, instead of being left for a pass that will not come.
+wait_slot() {
+  while [ ${#rpids[@]} -ge "$max_parallel" ]; do
+    wait "${rpids[0]}" 2>/dev/null
+    reap_runners
+  done
+}
+
+# pass_ws <ws>: one workspace of a pass. Returns 0 (nothing started), 1 (a
+# ready prompt held back by the cap) or 2 (a run started).
+pass_ws() {
+  local ws=$1 file pd lm rc=0
+  lm=$(legacy_ws_msg "$ws")
+  if [ -n "$lm" ]; then
+    note_legacy "$ws" "$lm"
+    return 0
+  fi
+  pd=$(chirat_config "$ws" plans_dir docs/plans)
+  if [ ! -d "$ws/$pd" ]; then
+    echo "chirat-watch: not a workspace (no $pd): $ws" >&2
+    return 0
+  fi
+  recover_dry=$dry_run dry_recovered=0 dry_recovered_files=()
+  if ! recover_stale "$ws"; then
     note_misnamed "$ws"
-  done < <(workspaces)
+    return 0
+  fi
+  # Under --dry-run the prompts a recovery would re-queue are still
+  # `running` on disk; `next --as-pending` counts them as pending for this
+  # one call, so the preview picks from the same queue, in the same order,
+  # as the real pass does after recovering them.
+  if [ "$dry_run" = 1 ] && [ ${#dry_recovered_files[@]} -gt 0 ]; then
+    file=$("$chirat_prompt" next "$ws" --as-pending "${dry_recovered_files[@]}" 2>/dev/null)
+  else
+    file=$("$chirat_prompt" next "$ws" 2>/dev/null)
+  fi
+  if [ -n "$file" ]; then
+    # The cap (not applied by --dry-run, which starts nothing): under --once
+    # wait for a slot, in loop mode leave the workspace held for a later pass.
+    if [ "$dry_run" = 0 ] && [ ${#rpids[@]} -ge "$max_parallel" ]; then
+      if [ "$once" = 1 ]; then
+        wait_slot
+      else
+        note_held "$ws" "${file#"$ws"/}"
+        note_misnamed "$ws"
+        return 1
+      fi
+    fi
+    # `next` is quiet; the chosen prompt's own warning (`after_mode: done`
+    # let it through) must be seen: printed here, kept in the run's .err.
+    select_warn=$("$chirat_prompt" check "$ws" "$file" 2>&1 >/dev/null) || select_warn=""
+    [ -z "$select_warn" ] || printf '%s\n' "$select_warn"
+    if run_one "$ws" "$file"; then
+      clear_held "$ws"
+      rc=2
+    fi
+    select_warn=""
+  else
+    note_waiting "$ws"
+  fi
+  note_misnamed "$ws"
+  return "$rc"
+}
+
+# pass: reap finished runners, then every workspace once, starting where the
+# previous pass stopped: at the first workspace the cap held back, else after
+# the last one that started a run (round-robin over the config list).
+rr_start=0
+pass() {
+  local ws i n list=() first_held=-1 last_started=-1
+  while IFS= read -r ws; do list+=("$ws"); done < <(workspaces)
+  n=${#list[@]}
+  [ "$n" -gt 0 ] || return 0
+  reap_runners
+  [ "$rr_start" -lt "$n" ] || rr_start=0
+  for ((i = 0; i < n; i++)); do
+    pass_ws "${list[$(( (rr_start + i) % n ))]}"
+    case $? in
+      1) [ "$first_held" -ge 0 ] || first_held=$i ;;
+      2) last_started=$i ;;
+    esac
+  done
+  if [ "$first_held" -ge 0 ]; then rr_start=$(( (rr_start + first_held) % n ))
+  elif [ "$last_started" -ge 0 ]; then rr_start=$(( (rr_start + last_started + 1) % n ))
+  fi
 }
 
 # --- status / recover / restart ---------------------------------------------
@@ -1014,13 +1264,26 @@ tn_app_path() {
   esac
 }
 
+# watcher_parallel: the cap of the recorded watcher, from watcher.flags (1 when
+# the flag is absent)
+watcher_parallel() {
+  local f prev="" v=1
+  if [ -f "$state_dir/watcher.flags" ]; then
+    while IFS= read -r f; do
+      [ "$prev" != --max-parallel ] || v=$f
+      prev=$f
+    done <"$state_dir/watcher.flags"
+  fi
+  printf '%s\n' "$v"
+}
+
 watcher_line() {
   local pid flags
   if [ ! -f "$state_dir/watcher.pid" ]; then echo "watcher: not running"; return 0; fi
   if pid=$(watcher_alive); then
     flags=$(tr '\n' ' ' <"$state_dir/watcher.flags" 2>/dev/null)
     flags=${flags% }
-    echo "watcher: alive (pid $pid, flags: ${flags:-none})"
+    echo "watcher: alive (pid $pid, flags: ${flags:-none}, parallel: $(watcher_parallel))"
     return 0
   fi
   echo "STALE: watcher: dead (stale pid file, pid $(<"$state_dir/watcher.pid"))"
@@ -1092,10 +1355,28 @@ next_line() {
     return 0
   fi
   if [ "${7:-0}" -gt 0 ]; then
-    echo "  next: wait ($7 pending)"
+    rl=$(held_reason "$ws")
+    echo "  next: wait ($7 pending${rl:+; $rl})"
     return 0
   fi
   echo "  next: queue empty"
+}
+
+# held_reason <ws>: `limit <N>, running: <names>` when the live watcher's cap
+# is what keeps this workspace's ready prompt waiting — the workspace has no
+# lock, `next` has a hit, and as many workspaces hold a live lock as the cap
+# allows. Nothing otherwise (no watcher: today's wording).
+held_reason() {
+  local ws=$1 cap w names="" n=0
+  watcher_alive >/dev/null || return 0
+  [ "$(lock_state "$ws")" = none ] || return 0
+  "$chirat_prompt" next "$ws" >/dev/null 2>&1 || return 0
+  cap=$(watcher_parallel)
+  while IFS= read -r w; do
+    case $(lock_state "$w") in live | setup) n=$((n + 1)); names="${names:+$names, }${w##*/}" ;; esac
+  done < <(workspaces)
+  [ "$n" -ge "$cap" ] || return 0
+  printf 'limit %s, running: %s\n' "$cap" "$names"
 }
 
 # status_ws <ws>: one block; returns 1 when something in it is stale
@@ -1152,7 +1433,7 @@ status_ws() {
       if [ -n "$lk_cpid" ] && claude_live "$lk_cpid"; then
         echo "  lock: claude $lk_cpid alive since ${lk_started:--}$rel"
       else
-        echo "  lock: held by watcher $lk_wpid$rel"
+        echo "  lock: held by $(lock_owner)$rel"
       fi ;;
     stale*) echo "  lock: STALE: ${state#stale }$rel"; bad=1 ;;
   esac
@@ -1233,22 +1514,28 @@ cmd_recover() {
 }
 
 cmd_restart() {
-  local force=0 list ws state pid="" t secs flags=() f _
+  local force=0 list ws state pid="" t secs flags=() f _ live="" nlive=0
   case ${1:-} in --force) force=1; shift ;; esac
   [ $# -eq 0 ] || usage
   command -v tmux >/dev/null 2>&1 || die "tmux not installed"
   list=$(workspaces)
+  # Refused while any run is live: every one is named.
   while IFS= read -r ws; do
     [ -n "$ws" ] || continue
+    [ "$force" = 0 ] || break
     state=$(lock_state "$ws")
+    case $state in live | setup) ;; *) continue ;; esac
     lock_read "$ws"
-    if [ "$state" = live ] && [ -n "$lk_cpid" ] && claude_live "$lk_cpid" && [ "$force" = 0 ]; then
-      secs=0
-      if [ -n "$lk_started" ] && t=$(iso_to_epoch "$lk_started") && [ -n "$t" ]; then secs=$(($(date +%s) - t)); fi
-      [ "$secs" -ge 0 ] || secs=0
-      die "refusing to restart: ${lk_rel:--} is running (claude $lk_cpid, $(fmt_secs "$secs")); --force stops it and puts the prompt back to pending"
-    fi
+    secs=0
+    if [ -n "$lk_started" ] && t=$(iso_to_epoch "$lk_started") && [ -n "$t" ]; then secs=$(($(date +%s) - t)); fi
+    [ "$secs" -ge 0 ] || secs=0
+    live="$live${live:+, }${ws##*/}/${lk_rel:--} is running ($(lock_owner), $(fmt_secs "$secs"))"
+    nlive=$((nlive + 1))
   done <<<"$list"
+  if [ -n "$live" ]; then
+    if [ "$nlive" = 1 ]; then die "refusing to restart: $live; --force stops it and puts the prompt back to pending"
+    else die "refusing to restart: $live; --force stops them and puts the prompts back to pending"; fi
+  fi
 
   if [ -f "$state_dir/watcher.flags" ]; then
     while IFS= read -r f; do [ -n "$f" ] && flags+=("$f"); done <"$state_dir/watcher.flags"
@@ -1265,12 +1552,26 @@ cmd_restart() {
       echo "chirat-watch: watcher $pid did not stop within $((stop_grace + 10)) s, sending KILL" >&2
       kill -KILL "$pid" 2>/dev/null
       wait_gone "$pid" 5
-      # The killed watcher could not clean up: apply its rule to the claude
-      # group of every lock it held — gone, or left for the next watcher.
+      # The killed watcher could not clean up, but its runners survive it:
+      # each gets TERM and stops its own run (prompt back to `pending`, lock
+      # released). Only a lock whose runner is already gone has its claude
+      # group stopped directly — gone, or left for the next watcher.
       while IFS= read -r ws; do
         [ -n "$ws" ] || continue
         lock_read "$ws"
-        [ "$lk_wpid" = "$pid" ] && [ -n "$lk_cpid" ] || continue
+        [ "$lk_wpid" = "$pid" ] || continue
+        if [ -n "$lk_rpid" ] && alive "$lk_rpid"; then
+          kill -TERM "$lk_rpid" 2>/dev/null
+          if ! wait_gone "$lk_rpid" $((stop_grace + 10)); then
+            echo "chirat-watch: $ws: runner $lk_rpid did not stop within $((stop_grace + 10)) s; lock and prompt left as they are" >&2
+          elif [ -d "$ws/.chirat/lock" ]; then
+            echo "chirat-watch: $ws: runner $lk_rpid stopped but kept the lock (claude's group survived or cannot be inspected; see the run's .err)" >&2
+          else
+            echo "chirat-watch: $ws: stopped runner $lk_rpid; its prompt is pending again" >&2
+          fi
+          continue
+        fi
+        [ -n "$lk_cpid" ] || continue
         stop_group "$lk_cpid"
         case $? in
           0) echo "chirat-watch: $ws: stopped claude's process group $lk_cpid; the next pass recovers the lock" >&2 ;;
@@ -1319,13 +1620,13 @@ cmd_logs() {
     shift
   done
   if [ ! -f "$log" ]; then echo "no log yet"; return 0; fi
-  # the ws column is the second tab-separated field; `waiting`, `misnamed` and
-  # `legacy` lines carry it third, so match either
+  # the ws column is the second tab-separated field; `waiting`, `held`,
+  # `misnamed` and `legacy` lines carry it third, so match either
   filter() {
     if [ ${#names[@]} -eq 0 ]; then cat; return; fi
     while IFS= read -r line; do
       w=$(printf '%s\n' "$line" | cut -f2)
-      case $w in waiting | misnamed | legacy) w=$(printf '%s\n' "$line" | cut -f3) ;; esac
+      case $w in waiting | held | misnamed | legacy) w=$(printf '%s\n' "$line" | cut -f3) ;; esac
       ws_match "$w" "${names[@]}" && printf '%s\n' "$line"
     done
   }
@@ -1397,7 +1698,13 @@ cmd_tail() {
     case $(lock_state "$w") in live | setup) lockws+=("$w") ;; esac
   done < <(if [ -n "$name" ]; then select_ws "$name" || exit 1; else workspaces; fi)
   if [ ${#lockws[@]} -eq 0 ]; then die "no run in progress${name:+ in $name}"; fi
-  if [ ${#lockws[@]} -gt 1 ]; then die "several runs in progress (${lockws[*]}); name one"; fi
+  if [ ${#lockws[@]} -gt 1 ]; then
+    {
+      echo "chirat-watch: several runs in progress; name one:"
+      for w in "${lockws[@]}"; do echo "  chirat-watch tail ${w##*/}"; done
+    } >&2
+    exit 1
+  fi
   ws=${lockws[0]}
   lock_read "$ws"
   started=$(iso_to_epoch "${lk_started:-}")
@@ -1742,13 +2049,21 @@ forget_watcher() {
 trap forget_watcher EXIT
 if [ "$once" = 1 ]; then
   pass
+  wait_runners
   exit 0
 fi
 
+# The sleep runs in the background so a trapped signal ends the `wait`. The
+# wake-up flag is cleared before the pass and checked both before and after
+# the sleep is started: a USR1 at any instant either skips the sleep or ends
+# it (the handler kills the sleep once `child` is known).
 while :; do
+  woken=0
   pass
+  [ "$woken" = 0 ] || continue
   sleep "$interval" &
   child=$!
-  wait "$child"
+  [ "$woken" = 0 ] || kill -TERM "$child" 2>/dev/null
+  wait "$child" 2>/dev/null
   child=""
 done

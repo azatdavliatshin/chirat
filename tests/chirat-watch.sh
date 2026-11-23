@@ -77,7 +77,9 @@ gone() { # gone <pid>: wait up to 5 s until it no longer exists
 # $FAKE_CHILD). Exits with $FAKE_EXIT (default 0). FAKE_FINAL sets the status it ends with (default
 # done); FAKE_SF names a status file it writes before that; FAKE_COMMIT=1 makes
 # one commit on the prompt's branch in repos/demo first; FAKE_SET_COMMIT sets
-# `commit:` to that value (a wrong one, for the watcher to correct).
+# `commit:` to that value (a wrong one, for the watcher to correct). A line
+# `fake-sleep: N` in the prompt body makes it sleep N seconds after the claim
+# (the parallel tests give each run its own length that way).
 
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/claude" <<'EOF'
@@ -103,6 +105,8 @@ if [ "$mode" = orphan ]; then
 fi
 if [ -n "$file" ] && [ "$mode" != noclaim ]; then
   "$RP" set "$file" status running
+  fs=$(sed -n 's/^fake-sleep: //p' "$file" 2>/dev/null)
+  [ -z "$fs" ] || sleep "$fs"
   case $mode in sleep | hang | stubborn | orphan) sleep 30 ;; esac
   [ -z "${FAKE_SF:-}" ] || echo "status" >"$FAKE_SF"
   if [ -n "${FAKE_COMMIT:-}" ]; then
@@ -352,14 +356,17 @@ rm -f "$ws/docs/plans/demo.prompt-9.md"
 runs=$ws/.chirat/runs
 pf=$ws/docs/plans/demo.prompt-20.md
 
-# A dead watcher and a dead claude leave the prompt `running` and the lock.
-# die_mid_run <FAKE_MODE>: start, kill the watcher and claude's whole process
-# group with -9, leave wpid/cpid/err/json set.
+# A dead watcher, a dead runner and a dead claude leave the prompt `running`
+# and the lock. die_mid_run <FAKE_MODE>: start, kill the watcher, its runner
+# and claude's whole process group with -9, leave wpid/rpid/cpid/err/json set.
+# (The runner is its own process since 0.3.0; left alive it would see claude
+# die and mark the prompt `failed`, which is the point of a runner.)
 die_mid_run() {
   FAKE_MODE=$1 "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
   wpid=$!
   wait_claude "$pf"
   cpid=$(cat "$ws/.chirat/lock/claude.pid")
+  rpid=$(cat "$ws/.chirat/lock/runner.pid")
   run=$(cat "$ws/.chirat/lock/run")
   # Let the fake reach its sleep first: KILL to the group must not cut
   # chirat-prompt off between renaming the file and logging the change.
@@ -368,8 +375,10 @@ die_mid_run() {
     sleep 0.1
   done
   kill -9 "$wpid"
+  kill -9 "$rpid"
   kill -9 -- "-$cpid"
   wait "$wpid" 2>/dev/null
+  gone "$rpid"
   gone "$cpid"
   for _ in $(seq 1 50); do ps -o pgid= -A 2>/dev/null | tr -d ' ' | grep -qx "$cpid" || break; sleep 0.1; done
 }
@@ -862,7 +871,7 @@ eq "watcher.flags while running" "--interval
 1000" "$(cat "$XDG_STATE_HOME/chirat/watcher.flags")"
 st
 eq "status: live run exits 0" 0 $?
-has "status: watcher alive with flags" "$tmp/st.out" "watcher: alive (pid $wpid, flags: --interval 1000)"
+has "status: watcher alive with flags" "$tmp/st.out" "watcher: alive (pid $wpid, flags: --interval 1000, parallel: 1)"
 has "status: claude alive since" "$tmp/st.out" "alive since"
 has "status: running prompt listed" "$tmp/st.out" "1 running (demo.prompt-1)"
 cpid=$(cat "$ws/.chirat/lock/claude.pid")
@@ -1699,6 +1708,379 @@ eq "preview (after): would run 2, 1 waits for dep" docs/plans/demo.prompt-2.md "
 "$watch" --once >/dev/null 2>&1
 eq "real pass (after): ran 2" docs/plans/demo.prompt-2.md "$(ran)"
 eq "real pass (after): 1 re-queued and waiting" pending "$("$rp" get "$p1" status)"
+
+# --- parallel workspaces: one queue per workspace, --max-parallel ------------
+# T<n> follows §5 of the prompt that introduced this (relay.prompt-30). Each
+# test gets fresh workspaces under $par and a fresh log; runs last as long as
+# their prompt's `fake-sleep:` says.
+
+par=$tmp/par
+mkdir -p "$par"
+export CHIRAT_NOTIFY=0
+mkpws() { # mkpws <name>…: workspaces under $par, each with a clone
+  local w
+  for w in "$@"; do
+    w=$par/$w
+    mkdir -p "$w"/docs/{plans,status} "$w/repos" "$w/.chirat"
+    git init -q -b main "$w/repos/demo"
+    git -C "$w/repos/demo" commit -q --allow-empty -m init
+  done
+}
+pprompt() { # pprompt <ws name> <file> [sleep seconds]
+  {
+    printf '%s\n' '---' 'model: sonnet' 'status: pending' 'repo: demo' 'branch: feat/x' '---' "# $2"
+    [ -z "${3:-}" ] || printf 'fake-sleep: %s\n' "$3"
+  } >"$par/$1/docs/plans/$2"
+}
+pcfg() { # pcfg <ws name>…: the watcher's config, in that order
+  printf '%s\n' "$@" | sed "s#^#$par/#" >"$XDG_CONFIG_HOME/chirat/workspaces"
+}
+preset() { # preset: empty log, no .seen files, no watcher pid files
+  rm -f "$XDG_STATE_HOME"/chirat/*.seen "$XDG_STATE_HOME"/chirat/watcher.*
+  : >"$log"
+}
+pst() { "$rp" get "$par/$1/docs/plans/$2" status; }
+plock() { printf '%s\n' "$par/$1/.chirat/lock"; }
+wait_claude_in() { # wait_claude_in <ws name> <file>: until it runs and claude.pid is there
+  local _
+  for _ in $(seq 1 100); do
+    [ "$(pst "$1" "$2")" = running ] && [ -s "$par/$1/.chirat/lock/claude.pid" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+until_true() { # until_true <tenths of a second> <command…>: poll until it succeeds
+  local n=$1
+  shift
+  while [ "$n" -gt 0 ]; do
+    "$@" && return 0
+    n=$((n - 1))
+    sleep 0.1
+  done
+  return 1
+}
+run_lines() { awk -F'\t' '$2 !~ /^(waiting|held|misnamed|legacy)$/' "$log" | wc -l | tr -d ' '; }
+runs_at_least() { [ "$(run_lines)" -ge "$1" ]; }
+held_at_least() { [ "$(held_lines "$1")" -ge "$2" ]; }
+pst_is() { [ "$(pst "$1" "$2")" = "$3" ]; }
+run_ws_seq() { awk -F'\t' '$2 !~ /^(waiting|held|misnamed|legacy)$/ { n = split($2, a, "/"); printf "%s%s", (c++ ? " " : ""), a[n] }' "$log"; }
+held_lines() { awk -F'\t' -v w="$par/$1" '$2 == "held" && $3 == w' "$log" | wc -l | tr -d ' '; }
+log_parses() { # every line is a 7-field run line or a known keyword line
+  awk -F'\t' '
+    $2 == "held" { if (NF != 6 || $5 !~ /^limit=[0-9]+$/ || $6 !~ /^running=/) bad = 1; next }
+    $2 == "waiting" || $2 == "misnamed" { if (NF != 5) bad = 1; next }
+    $2 == "legacy" { if (NF != 5) bad = 1; next }
+    { if (NF != 7 || $1 !~ /^[0-9]{4}-/) bad = 1 }
+    END { exit bad }' "$log"
+}
+stop_watcher() { kill -TERM "$1" 2>/dev/null; wait "$1" 2>/dev/null; }
+
+# T1: default cap, two workspaces, two pending each — runs alternate, one at
+# a time; the held workspace says why, once per wait.
+mkpws p1 p2
+pprompt p1 demo.prompt-1.md 1; pprompt p1 demo.prompt-2.md 1
+pprompt p2 demo.prompt-1.md 1; pprompt p2 demo.prompt-2.md 1
+pcfg p1 p2
+preset
+"$watch" --interval 1000 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude_in p1 demo.prompt-1.md
+exists "T1: runner.pid is in the lock" -s "$(plock p1)/runner.pid"
+eq "T1: lock's watcher.pid is the watcher" "$wpid" "$(cat "$(plock p1)/watcher.pid")"
+rpid=$(cat "$(plock p1)/runner.pid")
+if kill -0 "$rpid" 2>/dev/null && [ "$(ps -o ppid= -p "$rpid" | tr -d ' ')" = "$wpid" ]; then ok "T1: the runner is a child of the watcher"; else ko "T1: the runner is a child of the watcher"; fi
+"$watch" status p2 >"$tmp/st.out" 2>&1
+has "T1: status: watcher line reports the cap" "$tmp/st.out" "parallel: 1)"
+has "T1: status: held workspace names the limit and the running one" "$tmp/st.out" "  next: wait (2 pending; limit 1, running: p1)"
+until_true 300 runs_at_least 4
+eq "T1: four runs" 4 "$(run_lines)"
+eq "T1: runs alternate p1, p2, p1, p2" "p1 p2 p1 p2" "$(run_ws_seq)"
+eq "T1: all four done" "done done done done" "$(pst p1 demo.prompt-1.md) $(pst p1 demo.prompt-2.md) $(pst p2 demo.prompt-1.md) $(pst p2 demo.prompt-2.md)"
+eq "T1: p2 held twice (one line per wait)" 2 "$(held_lines p2)"
+eq "T1: p1 held once" 1 "$(held_lines p1)"
+want=$(printf 'held\t%s/p2\tdocs/plans/demo.prompt-1.md\tlimit=1\trunning=p1' "$par")
+case $(grep "	held	" "$log" | head -n 1) in *"$want") ok "T1: held line format" ;; *) ko "T1: held line format" "$(grep "	held	" "$log" | head -n 1)" ;; esac
+eq "T1: held lines echoed to stdout" 3 "$(grep -c "	held	" "$tmp/out")"
+if log_parses; then ok "T1: every log line parses"; else ko "T1: every log line parses" "$(cat "$log")"; fi
+stop_watcher "$wpid"
+eq "T1: logs filter matches held lines" 2 "$("$watch" logs -n 100 p2 | grep -c "	held	")"
+
+# T2: a finished run wakes the watcher — the next run starts long before the
+# interval has elapsed.
+mkpws q1
+pprompt q1 demo.prompt-1.md 1; pprompt q1 demo.prompt-2.md 1
+pcfg q1
+preset
+t0=$(date +%s)
+"$watch" --interval 1000 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+until_true 150 runs_at_least 2
+t1=$(date +%s)
+eq "T2: two runs" 2 "$(run_lines)"
+if [ $((t1 - t0)) -le 10 ]; then ok "T2: second run started within 10 s of the first, interval 1000"; else ko "T2: second run started within 10 s of the first, interval 1000" "$((t1 - t0)) s"; fi
+stop_watcher "$wpid"
+eq "T2: watcher exits 130 on TERM with no run live" 130 $?
+
+# T3: --max-parallel 2, two workspaces: both run at once, no held line.
+mkpws r1 r2
+pprompt r1 demo.prompt-1.md 3; pprompt r2 demo.prompt-1.md 3
+pcfg r1 r2
+preset
+"$watch" --interval 1000 --max-parallel 2 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude_in r1 demo.prompt-1.md
+wait_claude_in r2 demo.prompt-1.md
+if [ -d "$(plock r1)" ] && [ -d "$(plock r2)" ]; then ok "T3: both locks exist at the same time"; else ko "T3: both locks exist at the same time"; fi
+"$watch" status >"$tmp/st.out" 2>&1
+has "T3: status reports parallel: 2" "$tmp/st.out" "parallel: 2)"
+"$watch" tail >"$tmp/out2" 2>"$tmp/stderr2"
+eq "T3: tail without a workspace refuses with two live runs" 1 $?
+eq "T3: tail lists one command per workspace" "  chirat-watch tail r1
+  chirat-watch tail r2" "$(grep 'chirat-watch tail' "$tmp/stderr2")"
+until_true 150 runs_at_least 2
+eq "T3: both done" "done done" "$(pst r1 demo.prompt-1.md) $(pst r2 demo.prompt-1.md)"
+eq "T3: two log lines, no held line" 2 "$(wc -l <"$log" | tr -d ' ')"
+if log_parses; then ok "T3: every log line parses"; else ko "T3: every log line parses" "$(cat "$log")"; fi
+stop_watcher "$wpid"
+absent "T3: locks gone" "$(plock r1)"
+
+# T4: --max-parallel 2, three workspaces: the third is held, then runs.
+mkpws s1 s2 s3
+pprompt s1 demo.prompt-1.md 2; pprompt s2 demo.prompt-1.md 2; pprompt s3 demo.prompt-1.md 1
+pcfg s1 s2 s3
+preset
+"$watch" --interval 1000 --max-parallel 2 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude_in s1 demo.prompt-1.md
+wait_claude_in s2 demo.prompt-1.md
+until_true 50 held_at_least s3 1
+eq "T4: third workspace held" 1 "$(held_lines s3)"
+has "T4: held line names both running workspaces" "$log" "limit=2	running=s1,s2"
+absent "T4: held workspace has no lock" "$(plock s3)"
+until_true 150 runs_at_least 3
+eq "T4: then it ran" "done" "$(pst s3 demo.prompt-1.md)"
+eq "T4: three runs" 3 "$(run_lines)"
+stop_watcher "$wpid"
+
+# T5: one workspace mid-run, a prompt set pending in another, cap 2 — it
+# starts on the next pass (the starvation this fixes).
+mkpws u1 u2
+pprompt u1 demo.prompt-1.md 4
+pcfg u1 u2
+preset
+"$watch" --interval 1 --max-parallel 2 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude_in u1 demo.prompt-1.md
+pprompt u2 demo.prompt-1.md 1
+if wait_claude_in u2 demo.prompt-1.md && [ -d "$(plock u1)" ] && [ "$(pst u1 demo.prompt-1.md)" = running ]; then
+  ok "T5: the second workspace starts while the first is still running"
+else
+  ko "T5: the second workspace starts while the first is still running" "u1=$(pst u1 demo.prompt-1.md) u2=$(pst u2 demo.prompt-1.md)"
+fi
+until_true 150 runs_at_least 2
+eq "T5: both done" "done done" "$(pst u1 demo.prompt-1.md) $(pst u2 demo.prompt-1.md)"
+stop_watcher "$wpid"
+
+# T6: SIGTERM with two runs live: both back to pending, both locks gone.
+mkpws v1 v2
+pprompt v1 demo.prompt-1.md 30; pprompt v2 demo.prompt-1.md 30
+pcfg v1 v2
+preset
+"$watch" --interval 1000 --max-parallel 2 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude_in v1 demo.prompt-1.md
+wait_claude_in v2 demo.prompt-1.md
+c1=$(cat "$(plock v1)/claude.pid") c2=$(cat "$(plock v2)/claude.pid")
+kill -TERM "$wpid"
+wait "$wpid"
+eq "T6: watcher exits 130" 130 $?
+eq "T6: both prompts pending" "pending pending" "$(pst v1 demo.prompt-1.md) $(pst v2 demo.prompt-1.md)"
+absent "T6: v1 lock gone" "$(plock v1)"
+absent "T6: v2 lock gone" "$(plock v2)"
+has "T6: v1 err notes the interruption" "$(first "$par"/v1/.chirat/runs/*.err)" "chirat-watch was interrupted with the prompt still 'running'; set to pending (SIGTERM)"
+has "T6: v2 err notes the interruption" "$(first "$par"/v2/.chirat/runs/*.err)" "set to pending (SIGTERM)"
+eq "T6: two interrupted log lines" 2 "$(grep -c "	interrupted	" "$log")"
+if kill -0 "$c1" 2>/dev/null || kill -0 "$c2" 2>/dev/null; then ko "T6: both claudes gone"; else ok "T6: both claudes gone"; fi
+absent "T6: watcher.pid gone" "$XDG_STATE_HOME/chirat/watcher.pid"
+
+# T7: --once keeps its meaning: default cap runs the hits one after another in
+# config order; cap 2 exits only after both have finished.
+mkpws w1 w2
+pprompt w1 demo.prompt-1.md 1; pprompt w2 demo.prompt-1.md 1
+pcfg w1 w2
+preset
+t0=$(date +%s)
+"$watch" --once >"$tmp/out" 2>"$tmp/stderr"
+rc=$?
+t1=$(date +%s)
+eq "T7: --once exits 0" 0 "$rc"
+eq "T7: --once ran both, in config order" "w1 w2" "$(run_ws_seq)"
+eq "T7: --once: both done at exit" "done done" "$(pst w1 demo.prompt-1.md) $(pst w2 demo.prompt-1.md)"
+if [ $((t1 - t0)) -ge 2 ]; then ok "T7: --once under the default cap ran them one after another"; else ko "T7: --once under the default cap ran them one after another" "$((t1 - t0)) s"; fi
+eq "T7: --once wrote no held line" 0 "$(grep -c "	held	" "$log")"
+absent "T7: --once: no lock left" "$(plock w1)"
+pprompt w1 demo.prompt-2.md 2; pprompt w2 demo.prompt-2.md 2
+preset
+t0=$(date +%s)
+"$watch" --once --max-parallel 2 >"$tmp/out" 2>"$tmp/stderr"
+rc=$?
+t1=$(date +%s)
+eq "T7: --once --max-parallel 2 exits 0" 0 "$rc"
+eq "T7: --once --max-parallel 2: both done at exit" "done done" "$(pst w1 demo.prompt-2.md) $(pst w2 demo.prompt-2.md)"
+eq "T7: --once --max-parallel 2: two log lines at exit" 2 "$(run_lines)"
+if [ $((t1 - t0)) -le 4 ]; then ok "T7: --once --max-parallel 2 ran them at the same time"; else ko "T7: --once --max-parallel 2 ran them at the same time" "$((t1 - t0)) s"; fi
+absent "T7: --once --max-parallel 2: no lock left" "$(plock w2)"
+
+# T8: a bad --max-parallel is a usage error and starts nothing.
+mkpws x0
+pprompt x0 demo.prompt-1.md
+pcfg x0
+preset
+for bad in 0 x; do
+  "$watch" --once --max-parallel "$bad" >"$tmp/out" 2>"$tmp/stderr"
+  eq "T8: --max-parallel $bad exits 1" 1 $?
+  has "T8: --max-parallel $bad says why" "$tmp/stderr" "--max-parallel needs a whole number, 1 or more"
+done
+"$watch" --once --max-parallel >"$tmp/out" 2>"$tmp/stderr"
+eq "T8: --max-parallel without a value exits 64" 64 $?
+eq "T8: nothing started" pending "$(pst x0 demo.prompt-1.md)"
+absent "T8: no runs/" "$par/x0/.chirat/runs"
+absent "T8: no watcher.pid" "$XDG_STATE_HOME/chirat/watcher.pid"
+eq "T8: nothing logged" 0 "$(wc -l <"$log" | tr -d ' ')"
+
+# T9: restart is refused while any run is live; --force puts every run back
+# and keeps the cap.
+mkpws x1 x2
+pprompt x1 demo.prompt-1.md 30; pprompt x2 demo.prompt-1.md 30
+pcfg x1 x2
+preset
+: >"$FAKE_TMUX_LOG"
+"$watch" --interval 1000 --max-parallel 2 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude_in x1 demo.prompt-1.md
+wait_claude_in x2 demo.prompt-1.md
+"$watch" restart >"$tmp/out2" 2>"$tmp/stderr2"
+eq "T9: restart refused with two live runs" 1 $?
+has "T9: refusal names the first run" "$tmp/stderr2" "x1/docs/plans/demo.prompt-1.md is running"
+has "T9: refusal names the second run" "$tmp/stderr2" "x2/docs/plans/demo.prompt-1.md is running"
+has "T9: refusal: --force wording for several" "$tmp/stderr2" "--force stops them and puts the prompts back to pending"
+eq "T9: refusal stopped nothing" "running running" "$(pst x1 demo.prompt-1.md) $(pst x2 demo.prompt-1.md)"
+FAKE_TMUX_RUN=0 "$watch" restart --force >"$tmp/out2" 2>"$tmp/stderr2"
+eq "T9: restart --force exits 0" 0 $?
+wait "$wpid"
+eq "T9: old watcher exited 130" 130 $?
+eq "T9: both prompts pending" "pending pending" "$(pst x1 demo.prompt-1.md) $(pst x2 demo.prompt-1.md)"
+absent "T9: x1 lock gone" "$(plock x1)"
+absent "T9: x2 lock gone" "$(plock x2)"
+has "T9: new session keeps --max-parallel" "$FAKE_TMUX_LOG" "--max-parallel 2"
+
+# T10: a 0.2.x lock (no runner.pid) is read, shown by status and recovered
+# when stale.
+mkpws y1
+pprompt y1 demo.prompt-1.md
+pcfg y1
+preset
+sleep 0.01 &
+dead=$!
+wait "$dead"
+"$rp" set "$par/y1/docs/plans/demo.prompt-1.md" status running
+mkdir "$(plock y1)"
+echo $$ >"$(plock y1)/watcher.pid"
+echo "$dead" >"$(plock y1)/claude.pid"
+echo docs/plans/demo.prompt-1.md >"$(plock y1)/prompt"
+"$watch" status >"$tmp/st.out" 2>&1
+eq "T10: 0.2.x lock with a live watcher is not stale" 0 $?
+has "T10: status says the watcher holds it" "$tmp/st.out" "lock: held by watcher $$ on docs/plans/demo.prompt-1.md"
+"$watch" --once >/dev/null 2>"$tmp/stderr"
+has "T10: pass skips it as in progress" "$tmp/stderr" "in progress, lock held by watcher $$"
+eq "T10: prompt untouched" running "$(pst y1 demo.prompt-1.md)"
+echo 999999 >"$(plock y1)/watcher.pid"
+"$watch" status >"$tmp/st.out" 2>&1
+eq "T10: 0.2.x lock with a dead watcher is stale" 1 $?
+has "T10: status says claude dead" "$tmp/st.out" "lock: STALE: claude $dead dead on docs/plans/demo.prompt-1.md"
+"$watch" --once >/dev/null 2>"$tmp/stderr"
+has "T10: recovered" "$tmp/stderr" "recovered stale lock (claude $dead dead)"
+eq "T10: then the prompt ran" "done" "$(pst y1 demo.prompt-1.md)"
+eq "T10: recovered line first" recovered "$(head -n 1 "$log" | cut -f5)"
+
+# T12: watcher alive, runner and claude group killed: the next pass recovers
+# the lock and the workspace runs again.
+mkpws z1
+pprompt z1 demo.prompt-1.md 3
+pcfg z1
+preset
+"$watch" --interval 1 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude_in z1 demo.prompt-1.md
+rpid=$(cat "$(plock z1)/runner.pid") cpid=$(cat "$(plock z1)/claude.pid")
+kill -9 "$rpid"
+kill -9 -- "-$cpid"
+gone "$rpid"
+for _ in $(seq 1 50); do ps -o pgid= -A 2>/dev/null | tr -d ' ' | grep -qx "$cpid" || break; sleep 0.1; done
+until_true 100 grep -q "	recovered	" "$log"
+has "T12: the next pass logs recovered" "$log" "	recovered	"
+has "T12: stderr says which claude" "$tmp/stderr" "recovered stale lock (claude $cpid dead)"
+has "T12: status.log shows running → pending" "$par/z1/.chirat/status.log" "running	pending"
+until_true 150 pst_is z1 demo.prompt-1.md "done"
+eq "T12: the workspace ran again" "done" "$(pst z1 demo.prompt-1.md)"
+until_true 100 runs_at_least 2 # recovered + run; the log line comes after the run-log commit
+if [ "$(grep -n "	recovered	" "$log" | cut -d: -f1)" -lt "$(grep -n "	sonnet	0	" "$log" | head -n 1 | cut -d: -f1)" ]; then ok "T12: recovered line before the run line"; else ko "T12: recovered line before the run line" "$(cat "$log")"; fi
+stop_watcher "$wpid"
+absent "T12: lock gone" "$(plock z1)"
+
+# T13: restart's KILL path — a watcher that does not react to TERM (stopped
+# with SIGSTOP), two runs live: the runners are told to stop, so the prompts
+# end pending, not failed, and the locks are gone.
+mkpws k1 k2
+pprompt k1 demo.prompt-1.md 30; pprompt k2 demo.prompt-1.md 30
+pcfg k1 k2
+preset
+: >"$FAKE_TMUX_LOG"
+"$watch" --interval 1000 --max-parallel 2 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude_in k1 demo.prompt-1.md
+wait_claude_in k2 demo.prompt-1.md
+r1=$(cat "$(plock k1)/runner.pid") r2=$(cat "$(plock k2)/runner.pid")
+kill -STOP "$wpid"
+# (exit code not checked: under the fake tmux no new watcher starts, so the
+# killed watcher's pid file stays and the final watcher line reports it stale)
+FAKE_TMUX_RUN=0 CHIRAT_STOP_GRACE=0 "$watch" restart --force >"$tmp/out2" 2>"$tmp/stderr2"
+has "T13: the watcher had to be killed" "$tmp/stderr2" "did not stop within 10 s, sending KILL"
+has "T13: k1's runner was stopped" "$tmp/stderr2" "$par/k1: stopped runner $r1; its prompt is pending again"
+has "T13: k2's runner was stopped" "$tmp/stderr2" "$par/k2: stopped runner $r2; its prompt is pending again"
+wait "$wpid" 2>/dev/null
+eq "T13: prompts pending, not failed" "pending pending" "$(pst k1 demo.prompt-1.md) $(pst k2 demo.prompt-1.md)"
+absent "T13: k1 lock gone" "$(plock k1)"
+absent "T13: k2 lock gone" "$(plock k2)"
+if kill -0 "$r1" 2>/dev/null || kill -0 "$r2" 2>/dev/null; then ko "T13: runners gone"; else ok "T13: runners gone"; fi
+eq "T13: two interrupted log lines" 2 "$(grep -c "	interrupted	" "$log")"
+
+# T14: a runner whose watcher is gone, with watcher.pid naming another
+# process, sends no USR1 and still finishes its run.
+mkpws n1
+pprompt n1 demo.prompt-1.md 2
+pcfg n1
+preset
+"$watch" --interval 1000 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude_in n1 demo.prompt-1.md
+rpid=$(cat "$(plock n1)/runner.pid")
+kill -9 "$wpid"
+wait "$wpid" 2>/dev/null
+rm -f "$tmp/usr1"
+bash -c 'trap "echo USR1 >>$0" USR1; while :; do sleep 0.2; done' "$tmp/usr1" &
+hpid=$!
+echo "$hpid" >"$XDG_STATE_HOME/chirat/watcher.pid"
+until_true 100 pst_is n1 demo.prompt-1.md "done"
+eq "T14: the orphaned runner finished its run" "done" "$(pst n1 demo.prompt-1.md)"
+gone "$rpid"
+eq "T14: run logged" 1 "$(run_lines)"
+absent "T14: lock gone" "$(plock n1)"
+if kill -0 "$hpid" 2>/dev/null; then ok "T14: the process named by watcher.pid is still alive"; else ko "T14: the process named by watcher.pid is still alive"; fi
+absent "T14: it received no USR1" "$tmp/usr1"
+kill "$hpid" 2>/dev/null; wait "$hpid" 2>/dev/null
+rm -f "$XDG_STATE_HOME/chirat/watcher.pid"
+unset CHIRAT_NOTIFY
 
 # --- summary -------------------------------------------------------------
 
