@@ -90,14 +90,17 @@ repository's build and test commands to `permissions.allow`; under the
 | `.chirat/LATEST` | committed | one line per finished run |
 | `<plans_dir>/<topic>.prompt-N.md` | committed | the prompt; its `status` flip and `commit:` are part of the run log commit |
 | `.chirat/status.log` | committed | every `status` change made by `chirat-prompt set` |
-| `.chirat/lock/` | ignored | the running watcher's lock |
+| `.chirat/lock/` | ignored | the lock of the run in progress: `watcher.pid`, `runner.pid` (the run's own process), `claude.pid`, `prompt`, `run`, `started` |
 | `.chirat/review/` | ignored | diffs the planning chat renders for review |
 | `repos/`, `.claude/`, `.DS_Store` | ignored | clones, local settings |
 
 Outside the workspace: the list of workspaces to watch is
 `~/.config/chirat/workspaces`, and `~/.local/state/chirat/` holds `watch.log`
-(one line per run, plus `waiting` and `misnamed` lines; the formats are in the
-header of `bin/chirat-watch`) and the watcher's own bookkeeping.
+(one line per run, plus `waiting`, `held` and `misnamed` lines; the formats
+are in the header of `bin/chirat-watch`) and the watcher's own bookkeeping:
+`watcher.pid` and `watcher.flags` while it runs, and `waiting.seen`,
+`held.seen`, `misnamed.seen`, `legacy.seen` (when each of those lines was last
+logged, so a restart does not repeat them).
 
 **`.chirat/runs/`.** `<topic>.prompt-N.<YYYYMMDD-HHMMSS>.json` holds the
 result and metadata (not a transcript); the matching `.err` holds stderr. The

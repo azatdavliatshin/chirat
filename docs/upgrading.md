@@ -16,16 +16,30 @@ not a link to the clone: after pulling a version that touches `plugin/`, run
 ## Stopping and restarting the watcher
 
 `chirat-watch restart` stops the watcher and starts `--tmux` again with the
-same flags. It is refused while `claude` runs; `--force` sends the stop
-signals anyway and the prompt goes back to `pending`. Prefer waiting for the
-run to end. Stopping by `tmux kill-session` or Ctrl-C triggers the same
-interruption handling: TERM to `claude`'s whole process group, a wait of up to
-`CHIRAT_STOP_GRACE` seconds (default 15), KILL, and another wait; only when
-nothing of the group is left does the prompt go back to `pending`, the lock
-get released and `interrupted` get logged. If anything survives, or the group
-cannot be inspected, prompt and lock stay as they are and the log says
-`interrupted-alive`; the next start waits for that group. Run
-`chirat-watch status` to see the state.
+same flags. It is refused while any run is live; `--force` sends the stop
+signals anyway and every run's prompt goes back to `pending`. Prefer waiting
+for the runs to end. Stopping by `tmux kill-session` or Ctrl-C triggers the
+same interruption handling for each run: TERM to `claude`'s whole process
+group, a wait of up to `CHIRAT_STOP_GRACE` seconds (default 15), KILL, and
+another wait; only when nothing of the group is left does the prompt go back
+to `pending`, the lock get released and `interrupted` get logged. If anything
+survives, or the group cannot be inspected, that prompt and lock stay as they
+are and the log says `interrupted-alive`; the next start waits for that
+group. Run `chirat-watch status` to see the state.
+
+## From 0.2.x
+
+Workspaces now have one queue each, and `restart` the watcher after updating
+so the new code runs. The default `--max-parallel 1` still runs one prompt at
+a time, but two workspaces with ready prompts now take turns instead of the
+first in the config always going first, and a run that finishes starts the
+next pass at once. A workspace held back by the cap says so in `status`
+(`next: wait (1 pending; limit 1, running: …)`) and in the log (`held`). To
+run several workspaces at once, stop the watcher and start it with the flag —
+`chirat-watch --tmux --max-parallel 2` — `restart` keeps it from then on.
+Parallel runs share the subscription's rate limits, which is why the default
+is 1. A lock left by a 0.2.x watcher (no `runner.pid`) is still read and
+recovered.
 
 ## From relay
 

@@ -49,18 +49,19 @@ What the permission mode means for you: [safety](safety.md#permissions).
 
 | Flag / subcommand | Effect |
 |---|---|
-| `--once` | one pass over all workspaces, then exit 0 (also when nothing ran) |
+| `--once` | one pass over all workspaces, wait for every run it started, then exit 0 (also when nothing ran); a workspace the cap holds back waits for a free slot inside the pass, so under the default cap the hits run one after another in config order |
 | `--dry-run` | print the `claude` command instead of running it; writes nothing, including stale-lock recovery (reported as `would set … pending` / `would remove lock …`, lock left in place) and the log line (printed only) |
-| `--interval N` | seconds between passes (default 60) |
+| `--interval N` | seconds between passes (default 60); a finished run starts the next pass at once |
+| `--max-parallel N` | at most N runs at the same time, still at most one per workspace (whole number ≥ 1, default 1); kept by `restart`. Parallel runs share the subscription's rate limits, which is why the default is 1 |
 | `--permission-mode M` | `claude` permission mode, passed through (default `auto`) |
 | `--tmux` | start the watcher in a detached tmux session `chirat`; refuses if it exists |
 | `--version` | print the version |
 | `status [ws…]` | read-only: watcher, tmux session, log, and per workspace the queue, lock, last run and a `next:` line; exit 1 when something is `STALE` (a `running` prompt without a lock, as an interactive `/chirat:next` leaves, is only `warn:`). Reads `watcher.pid` and `watcher.flags`, which a running watcher keeps next to `watch.log` |
 | `recover [--dry-run] [ws…]` | stale-lock recovery on demand; refuses a workspace whose lock is live |
 | `logs [-n N] [-f] [ws…]` | the last N (default 20) lines of `watch.log`; `-f` follows |
-| `tail [-f] [ws]` | the run in progress: assistant text and tool calls, one line each, from Claude Code's transcripts under `~/.claude/projects/`; no tool output; times in UTC |
+| `tail [-f] [ws]` | the run in progress: assistant text and tool calls, one line each, from Claude Code's transcripts under `~/.claude/projects/`; no tool output; times in UTC. With several runs live and no `ws`, it refuses and lists one `chirat-watch tail <name>` per line |
 | `doctor [--online] [ws]` | one `ok` / `warn` / `FAIL` line per setup check; `--online` also makes a real `claude -p` call, where an expired login shows up; exit 1 on any `FAIL`, 0 otherwise (`warn` does not count; same with and without `ws`). Without `ws`, one more line per registered workspace naming its `FAIL`s (`mvg: includeIf FAIL, identity FAIL`); such a `FAIL` exits 1 too. With `ws`, [that workspace's setup](#doctor-ws) too |
-| `restart [--force]` | stop the watcher and start `--tmux` again with the same flags; refused while `claude` runs unless `--force` (the prompt goes back to `pending`) |
+| `restart [--force]` | stop the watcher and start `--tmux` again with the same flags (`--max-parallel` included); refused while any run is live unless `--force` (every run's prompt goes back to `pending`) |
 | `install [dir]` | symlink `chirat-watch` and `chirat-prompt` into `dir` (default `~/.local/bin`); replaces symlinks, refuses anything else, hints at `PATH` |
 | `[ws…]` | workspace paths, or a bare name: `demo` selects the configured path ending in `/demo` |
 
@@ -86,14 +87,38 @@ your remotes.
 
 ### How the watcher picks the next prompt
 
-The watcher makes one pass at a time over the registered workspaces, in the
-order of `~/.config/chirat/workspaces`. For each workspace it recovers a
-stale lock if there is one, asks for that workspace's next pending prompt
-(order: [prompts](prompts.md#naming-and-order); prompts held back by an
-unmet `after:` are skipped) and, if there is one, runs it. A run blocks the
-pass until `claude` exits, so runs are strictly sequential across all
-workspaces, and the first workspace in the list with a ready prompt goes
-first. When a pass ends it sleeps `--interval` seconds and starts again.
+Each workspace has its own queue. The watcher makes passes over the
+registered workspaces; in each pass, for each workspace, it recovers a stale
+lock if there is one, asks for that workspace's next pending prompt (order:
+[prompts](prompts.md#naming-and-order); prompts held back by an unmet
+`after:` are skipped) and, if there is one, takes the workspace lock, starts
+the run as a child process and goes on to the next workspace. So at most one
+run per workspace, and several workspaces at once — up to `--max-parallel`
+runs in total, **default 1**. Parallel runs share the subscription's rate
+limits, which is why the default is 1.
+
+A pass begins where the previous one stopped: at the first workspace the cap
+held back, else after the last one that started a run (round-robin over the
+config list). Under the default cap two workspaces with ready prompts
+therefore take turns instead of the first in the list always winning.
+
+A workspace that has a ready prompt but was not started because of the cap is
+*held*, and says so: `chirat-watch status` prints `next: wait (1 pending;
+limit 1, running: relay)`, and `watch.log` (and stdout) gets
+
+```
+<time>	held	<ws>	docs/plans/x.prompt-3.md	limit=1	running=relay
+```
+
+at most once per 10 minutes per workspace, and again whenever the set of
+running workspaces changes; a new wait after a run gets its own line. A
+prompt waiting on an unmet `after:` is `waiting`, not `held`.
+
+When a pass ends the watcher sleeps `--interval` seconds, but a finished run
+wakes it, so the next pass starts at once. `--once` makes one pass, waits for
+every run it started and exits 0; a workspace the cap holds back waits for a
+free slot inside that pass, so under the default cap `--once` runs the hits
+one after another in config order, as before.
 
 ### Outputs and what the watcher does after a run
 
@@ -103,25 +128,32 @@ commits both as `docs: run log <stem>`. A prompt still `running` (the run
 died) or `pending` (plugin missing, login expired) after `claude` exits is set
 to `failed` with a note in the `.err`; set `pending` to retry. Each run adds a
 line to `~/.local/state/chirat/watch.log` (or under `$XDG_STATE_HOME`) and
-stdout, as do `waiting` (at most every 10 minutes) and `misnamed` (once per
-file) prompts; the formats are in the script header. More:
+stdout, as do `waiting` (at most every 10 minutes), `held` (once per wait,
+see above) and `misnamed` (once per file) prompts; the formats are in the
+script header. More:
 [configuration](configuration.md#state-and-logs).
 
 ### Locks and stopping
 
 Run with `--tmux`, not one Ctrl-C away from an interrupted run.
-`.chirat/lock` keeps two watchers off one workspace and records both PIDs
-(`claude.pid` is also the id of `claude`'s process group); a lock is live
-while the watcher, `claude` or anything in `claude`'s group runs — or while
-the group cannot be inspected — and is recovered on the next pass only once
-all of that is dead (a `running` prompt goes back to `pending`). On SIGINT,
-SIGTERM or SIGHUP (`tmux kill-session`) the watcher sends TERM to `claude`'s
-whole process group, waits for the *group* (up to `CHIRAT_STOP_GRACE`
-seconds, default 15), sends KILL and waits again; only when nothing of the
-group is left does it set the prompt back to `pending`, release the lock and
-log `interrupted`. If anything survives, or the group cannot be inspected,
-prompt and lock stay as they are and the log says `interrupted-alive`. The
-exact rules are in the header of `bin/chirat-watch`. See also
+`.chirat/lock` keeps two watchers off one workspace and records who holds it:
+`watcher.pid` (the watcher), `runner.pid` (the run's own process) and
+`claude.pid` (also the id of `claude`'s process group), plus the prompt, the
+run and its start time. A lock is live while its runner, `claude` or
+anything in `claude`'s group runs — or while the group cannot be inspected —
+and is recovered on the next pass only once all of that is dead (a `running`
+prompt goes back to `pending`). The watcher's own pid does not keep a lock
+alive (it outlives every run), except for a lock written by 0.2.x, which has
+no `runner.pid`. On SIGINT, SIGTERM or SIGHUP (`tmux kill-session`) the
+watcher forwards the stop to every live run and waits for all of them; each
+run sends TERM to `claude`'s whole process group, waits for the *group* (up
+to `CHIRAT_STOP_GRACE` seconds, default 15), sends KILL and waits again; only
+when nothing of the group is left does it set its prompt back to `pending`,
+release its lock and log `interrupted`. If anything survives, or the group
+cannot be inspected, that prompt and lock stay as they are and the log says
+`interrupted-alive`. The watcher exits 130 once every run has stopped. The
+exact rules, and how the wake-up and the stop signals coexist, are in the
+header of `bin/chirat-watch`. See also
 [upgrading](upgrading.md#stopping-and-restarting-the-watcher).
 
 ## `chirat-prompt`

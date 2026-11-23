@@ -5,6 +5,42 @@ All notable changes are listed here, in the
 
 ## [Unreleased]
 
+### Added
+
+- `chirat-watch --max-parallel N`: up to N runs at the same time, still at
+  most one per workspace; whole number ≥ 1, default 1; recorded in
+  `watcher.flags`, so `restart` keeps it. `status` reports it on the watcher
+  line (`parallel: 1`).
+- A workspace with a ready prompt that the cap holds back is `held`: a
+  `held` line in `watch.log` and stdout (once per wait, at most every 10
+  minutes, and again when the set of running workspaces changes; state in
+  `held.seen`), and `next: wait (1 pending; limit 1, running: <ws>)` in
+  `status`.
+
+### Changed
+
+- One queue per workspace. The watcher no longer blocks on a run: each run
+  is a child process (its pid in the lock as `runner.pid`, the sixth file),
+  and the pass goes on to the next workspace. A pass begins where the
+  previous one stopped (round-robin), so under the default cap two
+  workspaces with ready prompts take turns instead of the first in the
+  config always winning.
+- A finished run wakes the watcher, so the next pass starts at once instead
+  of after the rest of the `--interval` sleep.
+- A lock with `runner.pid` is live while its runner or its `claude` is
+  alive; the watcher's pid no longer keeps it alive (a lock from 0.2.x is
+  read as before). A stop (SIGINT/SIGTERM/SIGHUP) is forwarded to every
+  live run; the watcher exits 130 once all of them have stopped.
+- `restart` is refused while any run is live and names each; `--force`
+  puts every run back to `pending`. When it has to KILL a watcher, it stops
+  the surviving runners (TERM, so their prompts end `pending`) instead of
+  `claude`'s groups directly.
+- `tail` without a workspace, with several runs live, lists one
+  `chirat-watch tail <name>` per line.
+- `--once` waits for every run it started; a workspace the cap holds back
+  waits for a free slot inside the pass, so under the default cap it behaves
+  as before.
+
 ## [0.2.3] — 2026-11-10
 
 ### Changed

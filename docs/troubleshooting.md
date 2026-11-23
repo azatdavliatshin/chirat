@@ -6,11 +6,25 @@ Symptom, first check, recovery. Back to the [README](../README.md); related:
 
 ## The run itself
 
-**A prompt stays `pending`.** The watcher is not running (`chirat-watch
-status`), the workspace is not in `~/.config/chirat/workspaces`, the file name
-does not match the pattern (`chirat-prompt lint <ws>`, or `misnamed` in the
-log), or an `after:` is unmet (`chirat-prompt waiting <ws>`). See
-[prompts](prompts.md) for the naming rules and `after:`.
+**A prompt stays `pending`.** Three reasons, each visible in `chirat-watch
+status`:
+
+- *It waits for a branch.* Its `after:` is unmet: the queue line says
+  `waiting after=<branch>`, `chirat-prompt waiting <ws>` says why, and the
+  log has a `waiting` line (at most every 10 minutes). Merge the branch.
+- *It is held by the cap.* Another workspace is running and `--max-parallel`
+  (default 1) is reached: the `next:` line says `wait (1 pending; limit 1,
+  running: <workspace>)` and the log has a `held` line for this wait. It
+  starts when a slot frees; to run more at once, `chirat-watch restart`
+  after adding `--max-parallel N` to the watcher's flags (stop it, start
+  `chirat-watch --tmux --max-parallel N`).
+- *No watcher is running.* `watcher: not running` (or `STALE`); start it
+  with `chirat-watch --tmux`.
+
+Also: the workspace is not in `~/.config/chirat/workspaces` (`chirat-watch
+doctor <ws>`), or the file name does not match the pattern (`chirat-prompt
+lint <ws>`, or `misnamed` in the log). See [prompts](prompts.md) for the
+naming rules and `after:`.
 
 **A run ends `failed` within seconds.** The plugin is not installed for this
 user, or the `claude` login expired: `chirat-watch doctor --online`; the `.err`
