@@ -79,13 +79,20 @@ gone() { # gone <pid>: wait up to 5 s until it no longer exists
 # one commit on the prompt's branch in repos/demo first; FAKE_SET_COMMIT sets
 # `commit:` to that value (a wrong one, for the watcher to correct). A line
 # `fake-sleep: N` in the prompt body makes it sleep N seconds after the claim
-# (the parallel tests give each run its own length that way).
+# (the parallel tests give each run its own length that way). FAKE_LOCKS names
+# a file that gets `lock` or `nolock` twice per run: whether $PWD/.chirat/lock
+# exists when claude starts and when it is about to exit.
 
 mkdir -p "$tmp/bin"
 cat >"$tmp/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 set -u
 { printf '%s\n' "$@"; echo "PWD=$PWD"; } >"$FAKE_ARGV"
+lockcheck() {
+  [ -n "${FAKE_LOCKS:-}" ] || return 0
+  if [ -d "$PWD/.chirat/lock" ]; then echo lock; else echo nolock; fi >>"$FAKE_LOCKS"
+}
+lockcheck
 file=""
 while [ $# -gt 0 ]; do
   case $1 in
@@ -118,6 +125,7 @@ if [ -n "$file" ] && [ "$mode" != noclaim ]; then
   [ -z "${FAKE_SET_COMMIT:-}" ] || "$RP" set "$file" commit "$FAKE_SET_COMMIT"
   case $mode in noflip | sleep | hang | stubborn) ;; *) "$RP" set "$file" status "${FAKE_FINAL:-done}" ;; esac
 fi
+lockcheck
 exit "${FAKE_EXIT:-0}"
 EOF
 chmod +x "$tmp/bin/claude"
@@ -2080,6 +2088,123 @@ if kill -0 "$hpid" 2>/dev/null; then ok "T14: the process named by watcher.pid i
 absent "T14: it received no USR1" "$tmp/usr1"
 kill "$hpid" 2>/dev/null; wait "$hpid" 2>/dev/null
 rm -f "$XDG_STATE_HOME/chirat/watcher.pid"
+
+# foreign_lock <ws name> <runner pid> <prompt>: a live lock this watcher did not
+# start — <runner pid> (a helper process) stands in for its runner.
+foreign_lock() {
+  local l=$par/$1/.chirat/lock
+  mkdir -p "$l"
+  echo $$ >"$l/watcher.pid"
+  echo "$2" >"$l/runner.pid"
+  echo "docs/plans/$3" >"$l/prompt"
+  echo "${3%.md}.20260101-000000" >"$l/run"
+  echo 2026-01-01T00:00:00+0000 >"$l/started"
+}
+
+# T15: a stop that arrives in the fork gap (CHIRAT_TEST_FORK_GAP widens it):
+# the watcher records the runner before it stops, so the runner is stopped,
+# its prompt is pending and no claude ran without a lock.
+mkpws g15
+pprompt g15 demo.prompt-1.md 30
+pcfg g15
+preset
+rm -f "$tmp/locks"
+FAKE_LOCKS=$tmp/locks CHIRAT_TEST_FORK_GAP=3 "$watch" --interval 1000 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude_in g15 demo.prompt-1.md
+rpid=$(cat "$(plock g15)/runner.pid")
+kill -TERM "$wpid"
+wait "$wpid"
+eq "T15: watcher exits 130" 130 $?
+if gone "$rpid"; then ok "T15: the runner forked in the gap was stopped"; else ko "T15: the runner forked in the gap was stopped"; kill -9 "$rpid" 2>/dev/null; fi
+eq "T15: its prompt is pending" pending "$(pst g15 demo.prompt-1.md)"
+absent "T15: lock gone" "$(plock g15)"
+has "T15: err notes the interruption" "$(first "$par"/g15/.chirat/runs/*.err)" "set to pending (SIGTERM)"
+eq "T15: claude never ran without a lock" "lock" "$(sort -u "$tmp/locks" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+eq "T15: claude was stopped, not left to finish" 1 "$(wc -l <"$tmp/locks" | tr -d ' ')"
+sleep 1
+eq "T15: still pending a moment later" pending "$(pst g15 demo.prompt-1.md)"
+# The other outcome: a runner stopped before its traps leaves a lock without
+# runner.pid and with a dead watcher.pid; the next watcher recovers it.
+pprompt g15 demo.prompt-1.md
+mkdir -p "$(plock g15)"
+sh -c 'exit 0' &
+dead=$!
+wait "$dead"
+echo "$dead" >"$(plock g15)/watcher.pid"
+echo docs/plans/demo.prompt-1.md >"$(plock g15)/prompt"
+echo demo.prompt-1.20260101-000000 >"$(plock g15)/run"
+echo 2026-01-01T00:00:00+0000 >"$(plock g15)/started"
+preset
+"$watch" --once >"$tmp/out" 2>"$tmp/stderr"
+eq "T15: lock of a runner killed before its traps: --once exits 0" 0 $?
+has "T15: it is recovered as stale" "$tmp/stderr" "g15: recovered stale lock ("
+eq "T15: then its prompt ran" "done" "$(pst g15 demo.prompt-1.md)"
+rm -f "$tmp/locks"
+
+# T16: a live lock this watcher did not start uses the slot: under the default
+# cap the other workspace is held (log, stdout, status name the foreign run)
+# and starts once that lock is gone.
+mkpws f1 f2
+pprompt f1 demo.prompt-1.md; "$rp" set "$par/f1/docs/plans/demo.prompt-1.md" status running
+pprompt f2 demo.prompt-1.md 1
+pcfg f1 f2
+preset
+sleep 300 &
+hpid=$!
+foreign_lock f1 "$hpid" demo.prompt-1.md
+"$watch" --interval 1 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+until_true 100 held_at_least f2 1
+sleep 2.5
+eq "T16: the other workspace is not started while the foreign lock is live" pending "$(pst f2 demo.prompt-1.md)"
+eq "T16: f2 held once" 1 "$(held_lines f2)"
+want=$(printf 'held\t%s/f2\tdocs/plans/demo.prompt-1.md\tlimit=1\trunning=f1' "$par")
+case $(grep "	held	" "$log" | head -n 1) in *"$want") ok "T16: held line names the foreign run" ;; *) ko "T16: held line names the foreign run" "$(cat "$log")" ;; esac
+has "T16: held line echoed to stdout" "$tmp/out" "running=f1"
+"$watch" status f2 >"$tmp/st.out" 2>&1
+has "T16: status names the foreign run" "$tmp/st.out" "  next: wait (1 pending; limit 1, running: f1)"
+eq "T16: no run line yet" 0 "$(run_lines)"
+rm -rf "$(plock f1)"
+kill "$hpid" 2>/dev/null; wait "$hpid" 2>/dev/null
+until_true 100 runs_at_least 1
+eq "T16: it starts after the foreign lock is gone" "done" "$(pst f2 demo.prompt-1.md)"
+eq "T16: one run, in f2" f2 "$(run_ws_seq)"
+eq "T16: the foreign workspace was left alone" running "$(pst f1 demo.prompt-1.md)"
+stop_watcher "$wpid"
+
+# T17: --once under the default cap, a foreign live lock that goes away after
+# a few seconds: the hit waits for it, then runs, exit 0.
+mkpws h1 h2
+pprompt h1 demo.prompt-1.md; "$rp" set "$par/h1/docs/plans/demo.prompt-1.md" status running
+pprompt h2 demo.prompt-1.md
+pcfg h1 h2
+preset
+mkdir -p "$(plock h1)"
+( sleep 3; rm -rf "$par/h1/.chirat/lock" ) &
+hpid=$!
+foreign_lock h1 "$hpid" demo.prompt-1.md
+t0=$(date +%s)
+"$watch" --once >"$tmp/out" 2>"$tmp/stderr"
+rc=$?
+t1=$(date +%s)
+wait "$hpid" 2>/dev/null
+eq "T17: --once exits 0" 0 "$rc"
+eq "T17: the hit ran" "done" "$(pst h2 demo.prompt-1.md)"
+if [ $((t1 - t0)) -ge 3 ]; then ok "T17: it waited for the foreign lock"; else ko "T17: it waited for the foreign lock" "$((t1 - t0)) s"; fi
+if [ $((t1 - t0)) -le 10 ]; then ok "T17: and ran soon after it went"; else ko "T17: and ran soon after it went" "$((t1 - t0)) s"; fi
+eq "T17: one run line" 1 "$(run_lines)"
+
+# T18: --once --max-parallel 2, three workspaces, the first run long and the
+# second short: the third starts when the second ends, not when the first does.
+mkpws s1 s2 s3
+pprompt s1 demo.prompt-1.md 8; pprompt s2 demo.prompt-1.md 1; pprompt s3 demo.prompt-1.md 1
+pcfg s1 s2 s3
+preset
+"$watch" --once --max-parallel 2 >"$tmp/out" 2>"$tmp/stderr"
+eq "T18: --once exits 0" 0 $?
+eq "T18: all three done" "done done done" "$(pst s1 demo.prompt-1.md) $(pst s2 demo.prompt-1.md) $(pst s3 demo.prompt-1.md)"
+eq "T18: the third finished before the first" "s2 s3 s1" "$(run_ws_seq)"
 unset CHIRAT_NOTIFY
 
 # --- summary -------------------------------------------------------------

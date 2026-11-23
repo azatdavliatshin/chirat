@@ -27,7 +27,12 @@
 #   <tab> <permission mode>
 #
 # One run per workspace at a time (a workspace whose lock is held is skipped);
-# `--max-parallel` caps the total, default 1. Each pass begins at the
+# `--max-parallel` caps the total, default 1. The total is every live or
+# setup lock among the configured workspaces, whoever started the run — this
+# watcher, or one before it (a runner that kept its lock when `restart` had to
+# KILL its watcher, a watcher killed with -9): such a run uses a slot until
+# its lock is gone, and that slot is seen free on the next pass after
+# --interval (only our own runners send the wake-up below). Each pass begins at the
 # workspace after the one that last started a run, or at the first one the cap
 # held back (round-robin over the config list), so two workspaces with ready
 # prompts take turns instead of the first in the list always winning. A
@@ -44,10 +49,12 @@
 # rest of the --interval sleep. Parallel runs share the subscription's rate
 # limits, which is why the default is 1.
 #
-#   --once        single pass over all workspaces, then wait for every run,
-#                 then exit 0; a workspace the cap holds back waits for a
-#                 free slot inside the pass (no `held` line), so under the
-#                 default cap the hits run one after another in config order
+#   --once        single pass over all workspaces, then wait for every run
+#                 it started, then exit 0; a workspace the cap holds back
+#                 waits for a free slot inside the pass (no `held` line) —
+#                 whichever lock goes first, ours or a foreign one (polled
+#                 every second) — so under the default cap the hits run one
+#                 after another in config order
 #   --max-parallel N  at most N runs at the same time (whole number ≥ 1,
 #                 default 1), still at most one per workspace
 #   --dry-run     print the claude command instead of running it, and write
@@ -188,6 +195,24 @@
 # runner.pid and waits for it (its own stop puts the prompt back to
 # `pending`), and stops claude's group directly only for a lock whose runner
 # is already gone.
+# The fork gap. The watcher takes the lock, forks the runner and then
+# records it (`rpids`) and forgets the lock (`lock_dir`) — three commands,
+# and a trap can run between any two. From before the lock's mkdir until
+# after the last of them, run_one swaps the stop handlers for ones that only
+# note the signal, and puts the real ones back afterwards, running the noted
+# stop at once. So the real handler only ever sees one of two states: the
+# lock is the main's and no runner exists (it removes the lock), or the
+# runner exists and is in `rpids` (it signals it and waits, never touching
+# its lock). No window is left because the swap itself is one `trap` per
+# signal: a signal before its swap gets the real handler while the state is
+# still "lock is the main's, no fork yet", and one after the swap back gets
+# the real handler with the runner recorded. A runner that receives the stop
+# before it has installed its own traps dies by the default action; its lock
+# then has no runner.pid and a watcher.pid that dies with the watcher, so it
+# is stale and the next watcher recovers it — the prompt is still `pending`
+# (claude never started) and runs then. CHIRAT_TEST_FORK_GAP=<seconds>
+# (test only; unset does nothing) sleeps between the fork and the
+# bookkeeping so a test can aim a stop at the gap.
 #
 # A run that ends `done`, `blocked` or `failed` leaves the result in the
 # prompt's front matter: `commit: <full sha>` is the head of its `branch:` in
@@ -621,9 +646,22 @@ stop_watcher() {
   for p in ${rpids[@]+"${rpids[@]}"}; do wait "$p" 2>/dev/null; done
   exit 130
 }
-trap 'sig=SIGINT; stop_watcher' INT
-trap 'sig=SIGTERM; stop_watcher' TERM
-trap 'sig=SIGHUP; stop_watcher' HUP
+# defer_stop / undefer_stop: around run_one's lock-and-fork section the stop
+# handlers only note the signal; undefer_stop puts the real ones back and,
+# if a stop came in meanwhile, runs it then (header, "Signals").
+stop_deferred=""
+defer_stop() {
+  trap 'stop_deferred=SIGINT' INT
+  trap 'stop_deferred=SIGTERM' TERM
+  trap 'stop_deferred=SIGHUP' HUP
+}
+undefer_stop() {
+  trap 'sig=SIGINT; stop_watcher' INT
+  trap 'sig=SIGTERM; stop_watcher' TERM
+  trap 'sig=SIGHUP; stop_watcher' HUP
+  [ -z "$stop_deferred" ] || { sig=$stop_deferred; stop_watcher; }
+}
+undefer_stop
 
 # A finished runner wakes the watcher; the handler only sets the flag and ends
 # the interval sleep (the loop checks the flag before and after starting it).
@@ -803,8 +841,13 @@ run_one() { # run_one <ws> <prompt file>: take the lock and start the runner; 0 
   fi
 
   mkdir -p "$runs" || return 1
+  # From the lock's mkdir to the last line of bookkeeping a stop is deferred
+  # (header, "Signals"): the lock is the main's or a recorded runner's at
+  # every instant the real stop handler can run.
+  defer_stop
   if ! mkdir "$ws/.chirat/lock" 2>/dev/null; then
     echo "chirat-watch: $ws is locked ($ws/.chirat/lock), skipping" >&2
+    undefer_stop
     return 1
   fi
   lock_dir=$ws/.chirat/lock
@@ -830,8 +873,11 @@ run_one() { # run_one <ws> <prompt file>: take the lock and start the runner; 0 
   (
     runner "$ws" "$file" "$rel" "$stem" "$model" "$out" "$err" "$started" "$stem.$stamp"
   ) </dev/null &
+  # Test only: widen the fork gap (seconds) so a stop can be aimed at it.
+  [ -z "${CHIRAT_TEST_FORK_GAP:-}" ] || sleep "$CHIRAT_TEST_FORK_GAP"
   rpids+=("$!") rwss+=("$ws")
   lock_dir=""
+  undefer_stop
   return 0
 }
 
@@ -910,16 +956,20 @@ wait_runners() {
   done
 }
 
-# running_names: the workspaces with a live runner, config order, bare names,
-# comma-separated (the `running=` of a held line)
-running_names() {
-  local w r out=""
+# busy: the slots in use — every configured workspace with a live or setup
+# lock, whoever started its run (this watcher, an earlier one, a runner that
+# outlived its watcher). Sets busy_n and busy_names (config order, bare
+# names, comma-separated: the `running=` of a held line). The cap, the held
+# line and status's held reason all use this one count.
+busy_n=0 busy_names=""
+busy() {
+  local w
+  busy_n=0 busy_names=""
   while IFS= read -r w; do
-    for r in ${rwss[@]+"${rwss[@]}"}; do
-      [ "$r" = "$w" ] && out="${out:+$out,}${w##*/}"
-    done
+    case $(lock_state "$w") in
+      live | setup) busy_n=$((busy_n + 1)); busy_names="${busy_names:+$busy_names,}${w##*/}" ;;
+    esac
   done < <(workspaces)
-  printf '%s\n' "$out"
 }
 
 iso_to_epoch() { # iso_to_epoch <iso time>: epoch seconds, or nothing
@@ -1078,9 +1128,8 @@ note_waiting() { # note_waiting <ws>
 # whenever the set of running workspaces it names has changed. State:
 # <epoch><tab><ws><tab><rel><tab><running> per line in held.seen; clear_held
 # forgets a workspace when it starts a run, so every new wait gets its own line.
-note_held() { # note_held <ws> <rel>
-  local ws=$1 rel=$2 seen=$state_dir/held.seen now last lastrun running line
-  running=$(running_names)
+note_held() { # note_held <ws> <rel>: after busy
+  local ws=$1 rel=$2 seen=$state_dir/held.seen now last lastrun running=$busy_names line
   now=$(date +%s)
   last=$(awk -F'\t' -v w="$ws" '$2 == w { t = $1; r = $4 } END { if (t != "") print t "\t" r }' "$seen" 2>/dev/null)
   lastrun=${last#*"$tab"}
@@ -1124,12 +1173,20 @@ note_legacy() { # note_legacy <ws> <message>
   printf '%s\n' "$line"
 }
 
-# wait_slot: under --once a workspace the cap holds back waits for a runner
-# to exit, instead of being left for a pass that will not come.
+# wait_slot: under --once a workspace the cap holds back waits for a free
+# slot, instead of being left for a pass that will not come. Any lock that
+# goes counts — no pid is waited for, so neither the oldest runner nor a
+# foreign run (not our child) holds the wait up: the busy count is taken
+# again every second, and at once when one of our runners wakes us (USR1
+# ends the sleep).
 wait_slot() {
-  while [ ${#rpids[@]} -ge "$max_parallel" ]; do
-    wait "${rpids[0]}" 2>/dev/null
-    reap_runners
+  while busy; [ "$busy_n" -ge "$max_parallel" ]; do
+    woken=0
+    sleep 1 &
+    child=$!
+    [ "$woken" = 0 ] || kill -TERM "$child" 2>/dev/null
+    wait "$child" 2>/dev/null
+    child=""
   done
 }
 
@@ -1162,9 +1219,11 @@ pass_ws() {
     file=$("$chirat_prompt" next "$ws" 2>/dev/null)
   fi
   if [ -n "$file" ]; then
-    # The cap (not applied by --dry-run, which starts nothing): under --once
-    # wait for a slot, in loop mode leave the workspace held for a later pass.
-    if [ "$dry_run" = 0 ] && [ ${#rpids[@]} -ge "$max_parallel" ]; then
+    # The cap (not applied by --dry-run, which starts nothing), counted from
+    # the locks: under --once wait for a slot, in loop mode leave the
+    # workspace held for a later pass.
+    [ "$dry_run" = 1 ] || busy
+    if [ "$dry_run" = 0 ] && [ "$busy_n" -ge "$max_parallel" ]; then
       if [ "$once" = 1 ]; then
         wait_slot
       else
@@ -1367,16 +1426,14 @@ next_line() {
 # lock, `next` has a hit, and as many workspaces hold a live lock as the cap
 # allows. Nothing otherwise (no watcher: today's wording).
 held_reason() {
-  local ws=$1 cap w names="" n=0
+  local ws=$1 cap
   watcher_alive >/dev/null || return 0
   [ "$(lock_state "$ws")" = none ] || return 0
   "$chirat_prompt" next "$ws" >/dev/null 2>&1 || return 0
   cap=$(watcher_parallel)
-  while IFS= read -r w; do
-    case $(lock_state "$w") in live | setup) n=$((n + 1)); names="${names:+$names, }${w##*/}" ;; esac
-  done < <(workspaces)
-  [ "$n" -ge "$cap" ] || return 0
-  printf 'limit %s, running: %s\n' "$cap" "$names"
+  busy
+  [ "$busy_n" -ge "$cap" ] || return 0
+  printf 'limit %s, running: %s\n' "$cap" "${busy_names//,/, }"
 }
 
 # status_ws <ws>: one block; returns 1 when something in it is stale
