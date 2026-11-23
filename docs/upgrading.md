@@ -29,8 +29,8 @@ group. Run `chirat-watch status` to see the state.
 
 ## From 0.2.x
 
-Workspaces now have one queue each, and `restart` the watcher after updating
-so the new code runs. The default `--max-parallel 1` still runs one prompt at
+Version 0.3.0 brings this change: workspaces now have one queue each, and
+`restart` the watcher after updating so the new code runs. The default `--max-parallel 1` still runs one prompt at
 a time, but two workspaces with ready prompts now take turns instead of the
 first in the config always going first, and a run that finishes starts the
 next pass at once. A workspace held back by the cap says so in `status`
