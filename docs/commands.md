@@ -94,8 +94,11 @@ lock if there is one, asks for that workspace's next pending prompt (order:
 `after:` are skipped) and, if there is one, takes the workspace lock, starts
 the run as a child process and goes on to the next workspace. So at most one
 run per workspace, and several workspaces at once — up to `--max-parallel`
-runs in total, **default 1**. Parallel runs share the subscription's rate
-limits, which is why the default is 1.
+runs in total, **default 1**. The total counts every live run among the
+registered workspaces, also one a previous watcher started (a run that kept
+going after its watcher was killed); its slot is seen free on the next pass
+after `--interval`, since only the watcher's own runs wake it. Parallel runs
+share the subscription's rate limits, which is why the default is 1.
 
 A pass begins where the previous one stopped: at the first workspace the cap
 held back, else after the last one that started a run (round-robin over the
@@ -117,8 +120,8 @@ prompt waiting on an unmet `after:` is `waiting`, not `held`.
 When a pass ends the watcher sleeps `--interval` seconds, but a finished run
 wakes it, so the next pass starts at once. `--once` makes one pass, waits for
 every run it started and exits 0; a workspace the cap holds back waits for a
-free slot inside that pass, so under the default cap `--once` runs the hits
-one after another in config order, as before.
+free slot inside that pass (whichever run ends first), so under the default
+cap `--once` runs the hits one after another in config order, as before.
 
 ### Outputs and what the watcher does after a run
 

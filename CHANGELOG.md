@@ -8,7 +8,8 @@ All notable changes are listed here, in the
 ### Added
 
 - `chirat-watch --max-parallel N`: up to N runs at the same time, still at
-  most one per workspace; whole number ≥ 1, default 1; recorded in
+  most one per workspace; every live run counts, also one a previous watcher
+  started; whole number ≥ 1, default 1; recorded in
   `watcher.flags`, so `restart` keeps it. `status` reports it on the watcher
   line (`parallel: 1`).
 - A workspace with a ready prompt that the cap holds back is `held`: a

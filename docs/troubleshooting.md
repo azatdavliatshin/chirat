@@ -14,10 +14,11 @@ status`:
   log has a `waiting` line (at most every 10 minutes). Merge the branch.
 - *It is held by the cap.* Another workspace is running and `--max-parallel`
   (default 1) is reached: the `next:` line says `wait (1 pending; limit 1,
-  running: <workspace>)` and the log has a `held` line for this wait. It
-  starts when a slot frees; to run more at once, `chirat-watch restart`
-  after adding `--max-parallel N` to the watcher's flags (stop it, start
-  `chirat-watch --tmux --max-parallel N`).
+  running: <workspace>)` and the log has a `held` line for this wait. Every
+  live run counts, also one a previous watcher started. It starts when a
+  slot frees. To run several workspaces at once, stop the watcher and start
+  it with the flag — `chirat-watch --tmux --max-parallel 2` — `restart`
+  keeps it from then on.
 - *No watcher is running.* `watcher: not running` (or `STALE`); start it
   with `chirat-watch --tmux`.
 
