@@ -22,6 +22,10 @@ eq() { # eq <name> <expected> <actual>
   if [ "$2" = "$3" ]; then ok "$1"; else ko "$1" "expected [$2], got [$3]"; fi
 }
 
+eq_log() { # eq_log <name> <expected> <actual> [log]: eq for what is counted in watch.log; a failure prints that log
+  if [ "$2" = "$3" ]; then ok "$1"; else ko "$1" "expected [$2], got [$3] in ${4:-$log}:"$'\n'"$(cat "${4:-$log}")"; fi
+}
+
 has() { # has <name> <file> <fixed string>
   if grep -qF -- "$3" "$2"; then ok "$1"; else ko "$1" "no [$3] in $2:"$'\n'"$(cat "$2")"; fi
 }
@@ -252,7 +256,7 @@ eq "LATEST: no repo → commit -" - "$a_commit"
 eq "LATEST: exit" 0 "$a_exit"
 case $a_secs in '' | *[!0-9]*) ko "LATEST: seconds" "$a_secs" ;; *) ok "LATEST: seconds" ;; esac
 eq "run log: no pending runs/ changes" "" "$(git -C "$ws" status --porcelain -- .chirat/runs)"
-eq "one log line" 1 "$(wc -l <"$log" | tr -d ' ')"
+eq_log "one log line" 1 "$(wc -l <"$log" | tr -d ' ')"
 line=$(cat "$log")
 eq "log line echoed to stdout" "$line" "$out"
 IFS=$'\t' read -r l_ts l_ws l_file l_model l_exit l_secs l_mode <<<"$line"
@@ -297,7 +301,7 @@ rm -f "$ws/docs/plans/demo.prompt-3.md"
 out=$("$watch" --once 2>/dev/null)
 eq "once with empty queue exits 0" 0 $?
 eq "once with empty queue prints nothing" "" "$out"
-eq "once with empty queue logs nothing" 3 "$(wc -l <"$log" | tr -d ' ')"
+eq_log "once with empty queue logs nothing" 3 "$(wc -l <"$log" | tr -d ' ')"
 
 # --- lock held → skip -----------------------------------------------------
 
@@ -350,7 +354,7 @@ eq "SIGTERM: watcher exits 130" 130 $?
 eq "SIGTERM: prompt back to pending" pending "$("$rp" get "$ws/docs/plans/demo.prompt-9.md" status)"
 err9=$(first "$ws"/.chirat/runs/demo.prompt-9.*.err)
 has "SIGTERM: err notes the interruption" "$err9" "chirat-watch was interrupted with the prompt still 'running'; set to pending (SIGTERM)"
-eq "SIGTERM: one more log line" $((lines_before + 1)) "$(wc -l <"$log" | tr -d ' ')"
+eq_log "SIGTERM: one more log line" $((lines_before + 1)) "$(wc -l <"$log" | tr -d ' ')"
 eq "SIGTERM: LATEST records interrupted" "demo.prompt-9	pending	feat/x	-	interrupted" "$(tail -n 1 "$ws/.chirat/LATEST" | cut -f2-6)"
 eq "SIGTERM: LATEST committed" "" "$(git -C "$ws" status --porcelain -- .chirat/LATEST)"
 eq "SIGTERM: log exit column is interrupted" interrupted "$(tail -n 1 "$log" | cut -f5)"
@@ -406,7 +410,7 @@ absent "heal: lock gone" "$ws/.chirat/lock"
 eq "heal: first log line is recovered" recovered "$(head -n 1 "$log" | cut -f5)"
 eq "heal: log names the prompt" docs/plans/demo.prompt-20.md "$(head -n 1 "$log" | cut -f3)"
 eq "heal: then the prompt ran again" "done" "$("$rp" get "$pf" status)"
-eq "heal: two log lines (recovered, run)" 2 "$(wc -l <"$log" | tr -d ' ')"
+eq_log "heal: two log lines (recovered, run)" 2 "$(wc -l <"$log" | tr -d ' ')"
 eq "status.log: pending → running, running → pending (recovery), pending → running, running → done" \
   "pending	running
 running	pending
@@ -656,7 +660,7 @@ lines_before=$(wc -l <"$log" | tr -d ' ')
 out=$("$watch" --once 2>/dev/null)
 want=$(printf 'waiting\t%s\tdocs/plans/demo.prompt-5.md\tafter=dep' "$ws")
 case $out in *"$want") ok "waiting line printed" ;; *) ko "waiting line printed" "$out" ;; esac
-eq "waiting line logged" $((lines_before + 1)) "$(wc -l <"$log" | tr -d ' ')"
+eq_log "waiting line logged" $((lines_before + 1)) "$(wc -l <"$log" | tr -d ' ')"
 out=$("$watch" --once 2>/dev/null)
 eq "waiting line not repeated within 10 minutes" "" "$out"
 eq "waiting prompt stays pending, claude not run" pending "$("$rp" get "$ws/docs/plans/demo.prompt-5.md" status)"
@@ -716,7 +720,7 @@ lines_before=$(wc -l <"$log" | tr -d ' ')
 out=$("$watch" --once 2>/dev/null)
 want=$(printf 'misnamed\t%s\tdocs/plans/demo.prompt-x.md\tname does not match <topic>.prompt-<N><suffix>.md' "$ws")
 case $out in *"$want") ok "misnamed line printed" ;; *) ko "misnamed line printed" "$out" ;; esac
-eq "misnamed line logged" $((lines_before + 1)) "$(wc -l <"$log" | tr -d ' ')"
+eq_log "misnamed line logged" $((lines_before + 1)) "$(wc -l <"$log" | tr -d ' ')"
 out=$("$watch" --once 2>/dev/null)
 eq "misnamed line not repeated" "" "$out"
 rm -f "$ws/docs/plans/demo.prompt-x.md"
@@ -935,11 +939,11 @@ for i in $(seq 1 25); do
   printf '2026-10-29T10:%02d:00+0000\t%s/aat\tdocs/plans/x.prompt-%d.md\tsonnet\t0\t5\tauto\n' "$i" "$tmp" "$i" >>"$log"
 done
 printf '2026-10-29T11:00:00+0000\twaiting\t%s/other\tdocs/plans/y.prompt-1.md\tafter=dep\n' "$tmp" >>"$log"
-eq "logs: default is 20 lines" 20 "$("$watch" logs | wc -l | tr -d ' ')"
-eq "logs: -n 2" 2 "$("$watch" logs -n 2 | wc -l | tr -d ' ')"
+eq_log "logs: default is 20 lines" 20 "$("$watch" logs | wc -l | tr -d ' ')"
+eq_log "logs: -n 2" 2 "$("$watch" logs -n 2 | wc -l | tr -d ' ')"
 eq "logs: lines as stored" "$(tail -n 1 "$log")" "$("$watch" logs -n 1)"
-eq "logs: bare name filters" 25 "$("$watch" logs -n 100 aat | wc -l | tr -d ' ')"
-eq "logs: filter matches waiting lines" 1 "$("$watch" logs -n 100 other | wc -l | tr -d ' ')"
+eq_log "logs: bare name filters" 25 "$("$watch" logs -n 100 aat | wc -l | tr -d ' ')"
+eq_log "logs: filter matches waiting lines" 1 "$("$watch" logs -n 100 other | wc -l | tr -d ' ')"
 eq "logs: filter then last N" "$(grep aat "$log" | tail -n 3)" "$("$watch" logs -n 3 aat)"
 
 # --- tail ------------------------------------------------------------------
@@ -1700,7 +1704,7 @@ eq "legacy .relay/: watcher skips the workspace" pending "$("$rp" get "$wsl/docs
 absent "legacy .relay/: no .chirat/ created" "$wsl/.chirat"
 has "legacy .relay/: logged" "$lg/state/chirat/watch.log" "$(printf 'legacy\t%s\t.relay/\t' "$wsl")"
 lgw --once >"$tmp/out" 2>&1
-eq "legacy .relay/: logged once" 1 "$(grep -c "	legacy	" "$lg/state/chirat/watch.log")"
+eq_log "legacy .relay/: logged once" 1 "$(grep -c "	legacy	" "$lg/state/chirat/watch.log")" "$lg/state/chirat/watch.log"
 lgw status >"$tmp/st.out" 2>&1
 has "legacy .relay/: status warns" "$tmp/st.out" "  warn: $mv_hint"
 PATH=$dpath lgw doctor >"$tmp/doc.out" 2>&1
@@ -1894,17 +1898,17 @@ if kill -0 "$rpid" 2>/dev/null && [ "$(ps -o ppid= -p "$rpid" | tr -d ' ')" = "$
 has "T1: status: watcher line reports the cap" "$tmp/st.out" "parallel: 1)"
 has "T1: status: held workspace names the limit and the running one" "$tmp/st.out" "  next: wait (2 pending; limit 1, running: p1)"
 until_true 300 runs_at_least 4
-eq "T1: four runs" 4 "$(run_lines)"
-eq "T1: runs alternate p1, p2, p1, p2" "p1 p2 p1 p2" "$(run_ws_seq)"
+eq_log "T1: four runs" 4 "$(run_lines)"
+eq_log "T1: runs alternate p1, p2, p1, p2" "p1 p2 p1 p2" "$(run_ws_seq)"
 eq "T1: all four done" "done done done done" "$(pst p1 demo.prompt-1.md) $(pst p1 demo.prompt-2.md) $(pst p2 demo.prompt-1.md) $(pst p2 demo.prompt-2.md)"
-eq "T1: p2 held twice (one line per wait)" 2 "$(held_lines p2)"
-eq "T1: p1 held once" 1 "$(held_lines p1)"
+eq_log "T1: p2 held twice (one line per wait)" 2 "$(held_lines p2)"
+eq_log "T1: p1 held once" 1 "$(held_lines p1)"
 want=$(printf 'held\t%s/p2\tdocs/plans/demo.prompt-1.md\tlimit=1\trunning=p1' "$par")
 case $(grep "	held	" "$log" | head -n 1) in *"$want") ok "T1: held line format" ;; *) ko "T1: held line format" "$(grep "	held	" "$log" | head -n 1)" ;; esac
 eq "T1: held lines echoed to stdout" 3 "$(grep -c "	held	" "$tmp/out")"
 if log_parses; then ok "T1: every log line parses"; else ko "T1: every log line parses" "$(cat "$log")"; fi
 stop_watcher "$wpid"
-eq "T1: logs filter matches held lines" 2 "$("$watch" logs -n 100 p2 | grep -c "	held	")"
+eq_log "T1: logs filter matches held lines" 2 "$("$watch" logs -n 100 p2 | grep -c "	held	")"
 
 # T2: a finished run wakes the watcher — the next run starts long before the
 # interval has elapsed.
@@ -1917,7 +1921,7 @@ t0=$(date +%s)
 wpid=$!
 until_true 150 runs_at_least 2
 t1=$(date +%s)
-eq "T2: two runs" 2 "$(run_lines)"
+eq_log "T2: two runs" 2 "$(run_lines)"
 if [ $((t1 - t0)) -le 10 ]; then ok "T2: second run started within 10 s of the first, interval 1000"; else ko "T2: second run started within 10 s of the first, interval 1000" "$((t1 - t0)) s"; fi
 stop_watcher "$wpid"
 eq "T2: watcher exits 130 on TERM with no run live" 130 $?
@@ -1940,7 +1944,7 @@ eq "T3: tail lists one command per workspace" "  chirat-watch tail r1
   chirat-watch tail r2" "$(grep 'chirat-watch tail' "$tmp/stderr2")"
 until_true 150 runs_at_least 2
 eq "T3: both done" "done done" "$(pst r1 demo.prompt-1.md) $(pst r2 demo.prompt-1.md)"
-eq "T3: two log lines, no held line" 2 "$(wc -l <"$log" | tr -d ' ')"
+eq_log "T3: two log lines, no held line" 2 "$(wc -l <"$log" | tr -d ' ')"
 if log_parses; then ok "T3: every log line parses"; else ko "T3: every log line parses" "$(cat "$log")"; fi
 stop_watcher "$wpid"
 absent "T3: locks gone" "$(plock r1)"
@@ -1955,12 +1959,12 @@ wpid=$!
 wait_claude_in s1 demo.prompt-1.md
 wait_claude_in s2 demo.prompt-1.md
 until_true 50 held_at_least s3 1
-eq "T4: third workspace held" 1 "$(held_lines s3)"
+eq_log "T4: third workspace held" 1 "$(held_lines s3)"
 has "T4: held line names both running workspaces" "$log" "limit=2	running=s1,s2"
 absent "T4: held workspace has no lock" "$(plock s3)"
 until_true 150 runs_at_least 3
 eq "T4: then it ran" "done" "$(pst s3 demo.prompt-1.md)"
-eq "T4: three runs" 3 "$(run_lines)"
+eq_log "T4: three runs" 3 "$(run_lines)"
 stop_watcher "$wpid"
 
 # T5: one workspace mid-run, a prompt set pending in another, cap 2 — it
@@ -2000,7 +2004,7 @@ absent "T6: v1 lock gone" "$(plock v1)"
 absent "T6: v2 lock gone" "$(plock v2)"
 has "T6: v1 err notes the interruption" "$(first "$par"/v1/.chirat/runs/*.err)" "chirat-watch was interrupted with the prompt still 'running'; set to pending (SIGTERM)"
 has "T6: v2 err notes the interruption" "$(first "$par"/v2/.chirat/runs/*.err)" "set to pending (SIGTERM)"
-eq "T6: two interrupted log lines" 2 "$(grep -c "	interrupted	" "$log")"
+eq_log "T6: two interrupted log lines" 2 "$(grep -c "	interrupted	" "$log")"
 if kill -0 "$c1" 2>/dev/null || kill -0 "$c2" 2>/dev/null; then ko "T6: both claudes gone"; else ok "T6: both claudes gone"; fi
 absent "T6: watcher.pid gone" "$XDG_STATE_HOME/chirat/watcher.pid"
 
@@ -2015,10 +2019,10 @@ t0=$(date +%s)
 rc=$?
 t1=$(date +%s)
 eq "T7: --once exits 0" 0 "$rc"
-eq "T7: --once ran both, in config order" "w1 w2" "$(run_ws_seq)"
+eq_log "T7: --once ran both, in config order" "w1 w2" "$(run_ws_seq)"
 eq "T7: --once: both done at exit" "done done" "$(pst w1 demo.prompt-1.md) $(pst w2 demo.prompt-1.md)"
 if [ $((t1 - t0)) -ge 2 ]; then ok "T7: --once under the default cap ran them one after another"; else ko "T7: --once under the default cap ran them one after another" "$((t1 - t0)) s"; fi
-eq "T7: --once wrote no held line" 0 "$(grep -c "	held	" "$log")"
+eq_log "T7: --once wrote no held line" 0 "$(grep -c "	held	" "$log")"
 absent "T7: --once: no lock left" "$(plock w1)"
 pprompt w1 demo.prompt-2.md 2; pprompt w2 demo.prompt-2.md 2
 preset
@@ -2028,7 +2032,7 @@ rc=$?
 t1=$(date +%s)
 eq "T7: --once --max-parallel 2 exits 0" 0 "$rc"
 eq "T7: --once --max-parallel 2: both done at exit" "done done" "$(pst w1 demo.prompt-2.md) $(pst w2 demo.prompt-2.md)"
-eq "T7: --once --max-parallel 2: two log lines at exit" 2 "$(run_lines)"
+eq_log "T7: --once --max-parallel 2: two log lines at exit" 2 "$(run_lines)"
 if [ $((t1 - t0)) -le 4 ]; then ok "T7: --once --max-parallel 2 ran them at the same time"; else ko "T7: --once --max-parallel 2 ran them at the same time" "$((t1 - t0)) s"; fi
 absent "T7: --once --max-parallel 2: no lock left" "$(plock w2)"
 
@@ -2047,7 +2051,7 @@ eq "T8: --max-parallel without a value exits 64" 64 $?
 eq "T8: nothing started" pending "$(pst x0 demo.prompt-1.md)"
 absent "T8: no runs/" "$par/x0/.chirat/runs"
 absent "T8: no watcher.pid" "$XDG_STATE_HOME/chirat/watcher.pid"
-eq "T8: nothing logged" 0 "$(wc -l <"$log" | tr -d ' ')"
+eq_log "T8: nothing logged" 0 "$(wc -l <"$log" | tr -d ' ')"
 
 # T9: restart is refused while any run is live; --force puts every run back
 # and keeps the cap.
@@ -2154,7 +2158,7 @@ eq "T13: prompts pending, not failed" "pending pending" "$(pst k1 demo.prompt-1.
 absent "T13: k1 lock gone" "$(plock k1)"
 absent "T13: k2 lock gone" "$(plock k2)"
 if kill -0 "$r1" 2>/dev/null || kill -0 "$r2" 2>/dev/null; then ko "T13: runners gone"; else ok "T13: runners gone"; fi
-eq "T13: two interrupted log lines" 2 "$(grep -c "	interrupted	" "$log")"
+eq_log "T13: two interrupted log lines" 2 "$(grep -c "	interrupted	" "$log")"
 
 # T14: a runner whose watcher is gone, with watcher.pid naming another
 # process, sends no USR1 and still finishes its run.
@@ -2175,7 +2179,7 @@ echo "$hpid" >"$XDG_STATE_HOME/chirat/watcher.pid"
 until_true 100 pst_is n1 demo.prompt-1.md "done"
 eq "T14: the orphaned runner finished its run" "done" "$(pst n1 demo.prompt-1.md)"
 gone "$rpid"
-eq "T14: run logged" 1 "$(run_lines)"
+eq_log "T14: run logged" 1 "$(run_lines)"
 absent "T14: lock gone" "$(plock n1)"
 if kill -0 "$hpid" 2>/dev/null; then ok "T14: the process named by watcher.pid is still alive"; else ko "T14: the process named by watcher.pid is still alive"; fi
 absent "T14: it received no USR1" "$tmp/usr1"
@@ -2251,18 +2255,18 @@ wpid=$!
 until_true 100 held_at_least f2 1
 sleep 2.5
 eq "T16: the other workspace is not started while the foreign lock is live" pending "$(pst f2 demo.prompt-1.md)"
-eq "T16: f2 held once" 1 "$(held_lines f2)"
+eq_log "T16: f2 held once" 1 "$(held_lines f2)"
 want=$(printf 'held\t%s/f2\tdocs/plans/demo.prompt-1.md\tlimit=1\trunning=f1' "$par")
 case $(grep "	held	" "$log" | head -n 1) in *"$want") ok "T16: held line names the foreign run" ;; *) ko "T16: held line names the foreign run" "$(cat "$log")" ;; esac
 has "T16: held line echoed to stdout" "$tmp/out" "running=f1"
 "$watch" status f2 >"$tmp/st.out" 2>&1
 has "T16: status names the foreign run" "$tmp/st.out" "  next: wait (1 pending; limit 1, running: f1)"
-eq "T16: no run line yet" 0 "$(run_lines)"
+eq_log "T16: no run line yet" 0 "$(run_lines)"
 rm -rf "$(plock f1)"
 kill "$hpid" 2>/dev/null; wait "$hpid" 2>/dev/null
 until_true 100 runs_at_least 1
 eq "T16: it starts after the foreign lock is gone" "done" "$(pst f2 demo.prompt-1.md)"
-eq "T16: one run, in f2" f2 "$(run_ws_seq)"
+eq_log "T16: one run, in f2" f2 "$(run_ws_seq)"
 eq "T16: the foreign workspace was left alone" running "$(pst f1 demo.prompt-1.md)"
 stop_watcher "$wpid"
 
@@ -2286,7 +2290,7 @@ eq "T17: --once exits 0" 0 "$rc"
 eq "T17: the hit ran" "done" "$(pst h2 demo.prompt-1.md)"
 if [ $((t1 - t0)) -ge 3 ]; then ok "T17: it waited for the foreign lock"; else ko "T17: it waited for the foreign lock" "$((t1 - t0)) s"; fi
 if [ $((t1 - t0)) -le 10 ]; then ok "T17: and ran soon after it went"; else ko "T17: and ran soon after it went" "$((t1 - t0)) s"; fi
-eq "T17: one run line" 1 "$(run_lines)"
+eq_log "T17: one run line" 1 "$(run_lines)"
 
 # T18: --once --max-parallel 2, three workspaces, the first run long and the
 # second short: the third starts when the second ends, not when the first does.
@@ -2297,7 +2301,7 @@ preset
 "$watch" --once --max-parallel 2 >"$tmp/out" 2>"$tmp/stderr"
 eq "T18: --once exits 0" 0 $?
 eq "T18: all three done" "done done done" "$(pst s1 demo.prompt-1.md) $(pst s2 demo.prompt-1.md) $(pst s3 demo.prompt-1.md)"
-eq "T18: the third finished before the first" "s2 s3 s1" "$(run_ws_seq)"
+eq_log "T18: the third finished before the first" "s2 s3 s1" "$(run_ws_seq)"
 unset CHIRAT_NOTIFY
 
 # --- summary -------------------------------------------------------------
