@@ -2302,6 +2302,115 @@ preset
 eq "T18: --once exits 0" 0 $?
 eq "T18: all three done" "done done done" "$(pst s1 demo.prompt-1.md) $(pst s2 demo.prompt-1.md) $(pst s3 demo.prompt-1.md)"
 eq_log "T18: the third finished before the first" "s2 s3 s1" "$(run_ws_seq)"
+
+# T19: the release window. CHIRAT_TEST_RELEASE_GAP stretches the removal of the
+# lock; readers all the way through it see a lock or none, never a stale one:
+# `status` in the first run, whole passes of a second watcher in the next.
+mkpws c1
+pcfg c1
+n=0
+for reader in status --once; do
+  n=$((n + 1))
+  pprompt c1 "demo.prompt-$n.md" 1
+  preset
+  CHIRAT_TEST_RELEASE_GAP=1 "$watch" --interval 1000 >"$tmp/out" 2>"$tmp/stderr" &
+  wpid=$!
+  wait_claude_in c1 "demo.prompt-$n.md"
+  rpid=$(cat "$(plock c1)/runner.pid")
+  until_true 100 pst_is c1 "demo.prompt-$n.md" "done"
+  polls=0 bad=""
+  while [ -d "$(plock c1)" ] && [ "$polls" -lt 200 ]; do
+    "$watch" "$reader" >"$tmp/st.out" 2>&1 || bad="$bad exit $?:"
+    bad=$bad$(grep -e STALE -e recovered "$tmp/st.out")
+    polls=$((polls + 1))
+    [ "$reader" = status ] || sleep 0.2
+  done
+  gone "$rpid"
+  if [ "$polls" -ge 3 ]; then ok "T19: $reader ran during the release"; else ko "T19: $reader ran during the release" "$polls times"; fi
+  eq "T19: $reader: exits 0, nothing STALE, nothing recovered" "" "$bad"
+  eq_log "T19: $reader: no recovered line" 0 "$(grep -c "	recovered	" "$log")"
+  eq_log "T19: $reader: one run line" 1 "$(run_lines)"
+  if grep -q recovered "$par/c1/.chirat/runs/demo.prompt-$n".*.err; then ko "T19: $reader: nothing in the run's .err" "$(cat "$par/c1/.chirat/runs/demo.prompt-$n".*.err)"; else ok "T19: $reader: nothing in the run's .err"; fi
+  absent "T19: $reader: lock gone" "$(plock c1)"
+  stop_watcher "$wpid"
+done
+# A release cut off after its first step: no lock for a reader, cleaned up by
+# the next run.
+preset
+foreign_lock c1 "$rpid" demo.prompt-1.md
+chmod +t "$(plock c1)"
+"$watch" status >"$tmp/st.out" 2>&1
+eq "T19: cut-off release: status exits 0" 0 $?
+has "T19: cut-off release: no lock" "$tmp/st.out" "  lock: none"
+"$watch" recover >"$tmp/out" 2>&1
+has "T19: cut-off release: nothing to recover" "$tmp/out" "nothing to recover"
+pprompt c1 demo.prompt-1.md
+"$watch" --once >"$tmp/out" 2>"$tmp/stderr"
+eq "T19: cut-off release: the next run takes the lock" "done" "$(pst c1 demo.prompt-1.md)"
+eq_log "T19: cut-off release: one line, the run" 1 "$(grep -c "	sonnet	0	" "$log")"
+eq_log "T19: cut-off release: no recovered line" 0 "$(grep -c "	recovered	" "$log")"
+absent "T19: cut-off release: lock gone" "$(plock c1)"
+
+# T20: the exit window. CHIRAT_TEST_READ_GAP stretches the time between reading
+# the lock and the liveness checks; the run ends in between.
+mkpws e1
+pprompt e1 demo.prompt-1.md 2
+pcfg e1
+preset
+"$watch" --interval 1000 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude_in e1 demo.prompt-1.md
+rpid=$(cat "$(plock e1)/runner.pid")
+CHIRAT_TEST_READ_GAP=6 "$watch" status >"$tmp/st.out" 2>&1 &
+spid=$!
+CHIRAT_TEST_READ_GAP=6 "$watch" --once >"$tmp/out2" 2>"$tmp/stderr2" &
+opid=$!
+gone "$rpid"
+absent "T20: the run has released its lock" "$(plock e1)"
+if kill -0 "$spid" 2>/dev/null && kill -0 "$opid" 2>/dev/null; then ok "T20: both readers are still between reads and checks"; else ko "T20: both readers are still between reads and checks"; fi
+wait "$spid"
+eq "T20: status exits 0" 0 $?
+has "T20: status: no lock" "$tmp/st.out" "  lock: none"
+wait "$opid"
+eq "T20: --once exits 0" 0 $?
+if grep -q recovered "$tmp/stderr2"; then ko "T20: the pass recovers nothing" "$(cat "$tmp/stderr2")"; else ok "T20: the pass recovers nothing"; fi
+eq_log "T20: no recovered line" 0 "$(grep -c "	recovered	" "$log")"
+eq_log "T20: one run line" 1 "$(run_lines)"
+if grep -q recovered "$par"/e1/.chirat/runs/*.err; then ko "T20: nothing in the run's .err" "$(cat "$par"/e1/.chirat/runs/*.err)"; else ok "T20: nothing in the run's .err"; fi
+stop_watcher "$wpid"
+
+# T21: a stale lock replaced by a newer run while it is being classified: the
+# newer run is neither recovered nor touched.
+mkpws j1
+pprompt j1 demo.prompt-1.md
+"$rp" set "$par/j1/docs/plans/demo.prompt-1.md" status running
+pcfg j1
+preset
+foreign_lock j1 "$dead" demo.prompt-1.md
+echo "$dead" >"$(plock j1)/claude.pid"
+CHIRAT_TEST_READ_GAP=3 "$watch" --once >"$tmp/out" 2>"$tmp/stderr" &
+opid=$!
+CHIRAT_TEST_READ_GAP=3 "$watch" status >"$tmp/st.out" 2>&1 &
+spid=$!
+sleep 1.5
+sleep 300 &
+hpid=$!
+rm -rf "$(plock j1)"
+foreign_lock j1 "$hpid" demo.prompt-1.md
+echo demo.prompt-1.20260101-000001 >"$(plock j1)/run"
+before=$(fs_snapshot "$(plock j1)")
+wait "$spid"
+eq "T21: status exits 0" 0 $?
+has "T21: status names the newer run's runner" "$tmp/st.out" "lock: held by runner $hpid"
+wait "$opid"
+eq "T21: --once exits 0" 0 $?
+has "T21: the pass leaves the newer run alone" "$tmp/stderr" "in progress, lock held by runner $hpid"
+eq_log "T21: no recovered line" 0 "$(grep -c "	recovered	" "$log")"
+eq "T21: the newer lock is untouched" "$before" "$(fs_snapshot "$(plock j1)")"
+eq "T21: its prompt is untouched" running "$(pst j1 demo.prompt-1.md)"
+absent "T21: nothing in its .err" "$par/j1/.chirat/runs/demo.prompt-1.20260101-000001.err"
+kill "$hpid" 2>/dev/null; wait "$hpid" 2>/dev/null
+rm -rf "$(plock j1)"
 unset CHIRAT_NOTIFY
 
 # --- summary -------------------------------------------------------------

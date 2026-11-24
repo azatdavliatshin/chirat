@@ -169,6 +169,50 @@
 # unrelated process makes a lock look alive until that process exits; no
 # timeouts or other heuristics.
 #
+# Taking and releasing. A lock is stale only if it is still there, and is the
+# same lock, after its owners were found dead; one that disappears or changes
+# while it is being classified is classified again (`none` once it is gone).
+#   - Release is one step: the sticky bit on the lock directory (`chmod +t`).
+#     From that instant the lock does not exist for any reader (`none`),
+#     whatever is still in it; deleting the six files and the directory is
+#     cleanup. No file can be the mark: deleting it would leave an empty
+#     directory, which is what a legacy lock looks like. Whoever removes a
+#     lock works from inside the directory (`cd`), so a lock that has been
+#     replaced by a newer one is never touched, checks that it is the lock it
+#     means (the run for a runner, the classified owners for a recovery), and
+#     only then marks it. A remover killed in the middle leaves a marked
+#     directory: `none` for readers, cleaned up by the next run that takes
+#     the lock.
+#   - A stale verdict is confirmed after the liveness checks: unmarked, and
+#     all six files read the same again. A runner marks its lock before it
+#     exits. So if the runner was found dead and the lock is unmarked after
+#     that, it died without releasing it (kill -9) and the lock is stale; if
+#     it released the lock between the reads and the checks, the mark, the
+#     missing directory or another run's files say so. A runner that had not
+#     written runner.pid at the first read and has now changes the second.
+#   - A lock without `run` (0.2.x, or the empty directory of a legacy lock)
+#     is read again 0.3 s later. Nothing here leaves such a lock on release,
+#     but an older chirat-watch still running deletes file by file, and a new
+#     lock is empty between its mkdir and watcher.pid. This pause is the one
+#     thing that is not a proof: such a process stalled for longer between
+#     two adjacent commands can still be reported as a legacy lock. It cannot
+#     lose its lock to that: watcher.pid is created exclusively and makes
+#     the directory impossible to rmdir, and the taker whose empty directory
+#     was removed under it notices and tries again.
+#   - A runner killed before its traps leaves no mark, no runner.pid and a
+#     dead watcher.pid: stale, as before. A foreign run is judged by the same
+#     files as our own, so a live one is live and its release reads as above.
+# recover_stale acts on what was classified (it does not read the lock again)
+# and removes the lock only if it is still that one. Two recoveries of one
+# stale lock at the same time (`recover` during a pass) are not excluded from
+# each other, as before: both may note it, and one that stalls while the other
+# finishes and a new run claims the prompt can still set it to `pending`.
+# Neither can remove the newer lock.
+#
+# Test only (seconds; unset does nothing): CHIRAT_TEST_RELEASE_GAP sleeps
+# after every step of a lock's removal, CHIRAT_TEST_READ_GAP between reading
+# the lock and the liveness checks, so that a test can aim at either window.
+#
 # Signals. The runner wakes the watcher with SIGUSR1 once its run is logged,
 # but only after checking that <state dir>/watcher.pid still names the watcher
 # that started it (a runner can outlive its watcher, and USR1 kills a process
@@ -592,16 +636,80 @@ stop_group() {
   wait_group_gone "$1" 5
 }
 
-# remove_lock <dir>: the six files by name, then the directory
-remove_lock() {
-  local f
-  for f in watcher.pid prompt run started runner.pid claude.pid; do rm -f "$1/$f"; done
-  rmdir "$1" 2>/dev/null
+# lock_held <dir>: the lock is there and not marked as released (header,
+# "Taking and releasing")
+lock_held() { [ -d "$1" ] && [ ! -k "$1" ]; }
+
+# lock_load <dir>: load the lock's owner files into lk_* (empty when absent; a
+# 0.2.x lock has no runner.pid, a released one counts as empty); lk_all is all
+# of them, to compare two reads
+lock_load() {
+  lk_cpid="" lk_wpid="" lk_rpid="" lk_rel="" lk_run="" lk_started="" lk_all=""
+  [ ! -k "$1" ] || return 0
+  [ -f "$1/claude.pid" ] && lk_cpid=$(cat "$1/claude.pid" 2>/dev/null)
+  [ -f "$1/watcher.pid" ] && lk_wpid=$(cat "$1/watcher.pid" 2>/dev/null)
+  [ -f "$1/runner.pid" ] && lk_rpid=$(cat "$1/runner.pid" 2>/dev/null)
+  [ -f "$1/prompt" ] && lk_rel=$(cat "$1/prompt" 2>/dev/null)
+  [ -f "$1/run" ] && lk_run=$(cat "$1/run" 2>/dev/null)
+  [ -f "$1/started" ] && lk_started=$(cat "$1/started" 2>/dev/null)
+  lk_all=$lk_cpid/$lk_wpid/$lk_rpid/$lk_rel/$lk_run/$lk_started
+  return 0
 }
 
-lock_dir="" current_file="" current_err=""
+release_gap() { [ -z "${CHIRAT_TEST_RELEASE_GAP:-}" ] || sleep "$CHIRAT_TEST_RELEASE_GAP"; }
+
+# remove_lock <dir> marked | run <run> | same <lk_all> | own: mark the lock as
+# released, then delete the six files by name and the directory, all from
+# inside it. A lock that is already marked is only cleaned up; an unmarked one
+# is removed if it is the one meant (its run, its owners, or the caller's own
+# beyond doubt), else left alone (returns 1). The owner's pid file goes last.
+remove_lock() {
+  (
+    cd "$1" 2>/dev/null || exit 1
+    if [ ! -k . ]; then
+      case $2 in
+        run) [ "$(cat run 2>/dev/null)" = "$3" ] || exit 1 ;;
+        same) lock_load .; [ "$lk_all" = "$3" ] || exit 1 ;;
+        own) ;;
+        *) exit 1 ;;
+      esac
+      chmod +t .
+      release_gap
+    fi
+    for f in claude.pid prompt run started watcher.pid runner.pid; do
+      rm -f "$f"
+      release_gap
+    done
+  ) || return 1
+  rmdir "$1" 2>/dev/null
+  return 0
+}
+
+# take_lock <dir>: mkdir is the lock, the exclusive watcher.pid the proof that
+# nobody removed the empty directory in between; leftovers of a release that
+# was cut off are cleaned up first
+take_lock() {
+  local _ rc
+  for _ in 1 2 3; do
+    if mkdir "$1" 2>/dev/null; then
+      set -C # in this shell: a subshell could be stopped with the lock empty
+      { printf '%s\n' "$$" >"$1/watcher.pid"; } 2>/dev/null
+      rc=$?
+      set +C
+      [ "$rc" != 0 ] || return 0
+      rmdir "$1" 2>/dev/null
+    elif lock_held "$1"; then return 1
+    else remove_lock "$1" marked
+    fi
+  done
+  return 1
+}
+
+lock_dir="" lock_run="" current_file="" current_err=""
 release_lock() {
-  [ -n "$lock_dir" ] && remove_lock "$lock_dir"
+  if [ -n "$lock_dir" ]; then
+    if [ -n "$lock_run" ]; then remove_lock "$lock_dir" run "$lock_run"; else remove_lock "$lock_dir" own; fi
+  fi
   lock_dir=""
 }
 
@@ -861,7 +969,7 @@ run_one() { # run_one <ws> <prompt file>: take the lock and start the runner; 0 
   if [ "$dry_run" = 1 ]; then
     # Nothing is created, not even the lock: a lock that is there (and was
     # not just reported as stale) means a run is in progress.
-    if [ -d "$ws/.chirat/lock" ] && [ "$dry_recovered" = 0 ]; then
+    if lock_held "$ws/.chirat/lock" && [ "$dry_recovered" = 0 ]; then
       echo "chirat-watch: $ws is locked ($ws/.chirat/lock), skipping" >&2
       return 1
     fi
@@ -877,7 +985,7 @@ run_one() { # run_one <ws> <prompt file>: take the lock and start the runner; 0 
   # (header, "Signals"): the lock is the main's or a recorded runner's at
   # every instant the real stop handler can run.
   defer_stop
-  if ! mkdir "$ws/.chirat/lock" 2>/dev/null; then
+  if ! take_lock "$ws/.chirat/lock"; then
     echo "chirat-watch: $ws is locked ($ws/.chirat/lock), skipping" >&2
     undefer_stop
     return 1
@@ -894,7 +1002,6 @@ run_one() { # run_one <ws> <prompt file>: take the lock and start the runner; 0 
   out=$runs/$stem.$stamp.json
   err=$runs/$stem.$stamp.err
   started=$(date +%s)
-  printf '%s\n' "$$" >"$lock_dir/watcher.pid"
   printf '%s\n' "$rel" >"$lock_dir/prompt"
   printf '%s\n' "$stem.$stamp" >"$lock_dir/run"
   now_iso >"$lock_dir/started"
@@ -921,7 +1028,7 @@ runner() {
   local ws=$1 file=$2 rel=$3 stem=$4 model=$5 out=$6 err=$7 started=$8 run=$9 exit_code secs rpid
   trap - EXIT
   trap '' USR1
-  lock_dir=$ws/.chirat/lock
+  lock_dir=$ws/.chirat/lock lock_run=$run
   current_file=$file current_err=$err current_ws=$ws current_model=$model current_started=$started
   trap 'sig=SIGINT; interrupted' INT
   trap 'sig=SIGTERM; interrupted' TERM
@@ -969,7 +1076,7 @@ reap_runners() {
   [ "$n" -gt 0 ] || return 0
   for ((i = 0; i < n; i++)); do
     p=${rpids[$i]}
-    if alive "$p" && [ ! -d "${rwss[$i]}/.chirat/lock" ]; then wait_gone "$p" 5 || true; fi
+    if alive "$p" && ! lock_held "${rwss[$i]}/.chirat/lock"; then wait_gone "$p" 5 || true; fi
     if alive "$p"; then
       keep_p+=("$p") keep_w+=("${rwss[$i]}")
     else
@@ -1008,22 +1115,12 @@ iso_to_epoch() { # iso_to_epoch <iso time>: epoch seconds, or nothing
   date -j -f %Y-%m-%dT%H:%M:%S%z "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null
 }
 
-# lock_read <ws>: load the lock's owner files into lk_* (empty when absent;
-# a 0.2.x lock has no runner.pid)
-lock_read() {
-  local lock=$1/.chirat/lock
-  lk_cpid="" lk_wpid="" lk_rpid="" lk_rel="" lk_run="" lk_started=""
-  [ -f "$lock/claude.pid" ] && lk_cpid=$(<"$lock/claude.pid")
-  [ -f "$lock/watcher.pid" ] && lk_wpid=$(<"$lock/watcher.pid")
-  [ -f "$lock/runner.pid" ] && lk_rpid=$(<"$lock/runner.pid")
-  [ -f "$lock/prompt" ] && lk_rel=$(<"$lock/prompt")
-  [ -f "$lock/run" ] && lk_run=$(<"$lock/run")
-  [ -f "$lock/started" ] && lk_started=$(<"$lock/started")
-  return 0
-}
+# lock_read <ws>: lock_load for the workspace's lock
+lock_read() { lock_load "$1/.chirat/lock"; }
 
-# lock_state <ws>: classify the lock, change nothing. Prints
-#   none                      no lock
+# lock_classify <ws>: classify the lock, change nothing; lk_state is the
+# result and lk_* the owner files it is about. lk_state is one of
+#   none                      no lock (or a released one)
 #   live                      claude is alive, or the runner is (between
 #                             claude's exit and release_lock); for a lock
 #                             without runner.pid (0.2.x), or the watcher is
@@ -1032,25 +1129,49 @@ lock_read() {
 #   stale <reason>            claude dead / runner dead / watcher dead /
 #                             legacy lock, no owners
 # With runner.pid, watcher.pid does not count: the watcher outlives its runs.
-lock_state() {
-  [ -d "$1/.chirat/lock" ] || { echo none; return 0; }
-  lock_read "$1"
-  if [ -n "$lk_cpid" ] && claude_live "$lk_cpid"; then echo live
-  elif [ -n "$lk_rpid" ]; then
-    if alive "$lk_rpid"; then
-      if [ -z "$lk_cpid" ]; then echo setup; else echo live; fi
-    elif [ -n "$lk_cpid" ]; then echo "stale claude $lk_cpid dead"
-    else echo "stale runner $lk_rpid dead"
+# A stale verdict stands only if the lock is still there, unmarked and
+# unchanged after the checks (header, "Taking and releasing"); otherwise it is
+# classified again, and one that keeps changing is not stale.
+lk_state=none
+lock_classify() {
+  local all _ lock=$1/.chirat/lock
+  for _ in 1 2 3 4 5; do
+    lk_state=none
+    if ! lock_held "$lock"; then break; fi
+    lock_load "$lock"
+    [ -z "${CHIRAT_TEST_READ_GAP:-}" ] || sleep "$CHIRAT_TEST_READ_GAP"
+    if [ -n "$lk_cpid" ] && claude_live "$lk_cpid"; then lk_state=live
+    elif [ -n "$lk_rpid" ]; then
+      if alive "$lk_rpid"; then
+        if [ -z "$lk_cpid" ]; then lk_state=setup; else lk_state=live; fi
+      elif [ -n "$lk_cpid" ]; then lk_state="stale claude $lk_cpid dead"
+      else lk_state="stale runner $lk_rpid dead"
+      fi
+    elif [ -n "$lk_wpid" ] && alive "$lk_wpid"; then
+      if [ -z "$lk_cpid" ]; then lk_state=setup; else lk_state=live; fi
+    elif [ -n "$lk_cpid" ]; then lk_state="stale claude $lk_cpid dead"
+    elif [ -n "$lk_wpid" ]; then lk_state="stale watcher $lk_wpid dead"
+    else lk_state="stale legacy lock, no owners"
     fi
-  elif [ -n "$lk_wpid" ] && alive "$lk_wpid"; then
-    if [ -z "$lk_cpid" ]; then echo setup; else echo live; fi
-  elif [ -n "$lk_cpid" ]; then echo "stale claude $lk_cpid dead"
-  elif [ -n "$lk_wpid" ]; then echo "stale watcher $lk_wpid dead"
-  else echo "stale legacy lock, no owners"
-  fi
+    case $lk_state in stale*) ;; *) return 0 ;; esac
+    all=$lk_all
+    [ -n "$lk_run" ] || sleep 0.3
+    if lock_held "$lock"; then
+      lock_load "$lock"
+      [ "$lk_all" != "$all" ] || return 0
+    fi
+  done
+  lk_state=none
+  lk_cpid="" lk_wpid="" lk_rpid="" lk_rel="" lk_run="" lk_started="" lk_all=""
 }
 
-# lock_owner: after lock_read on a live or setup lock, who holds it:
+# lock_state <ws>: print lk_state
+lock_state() {
+  lock_classify "$1"
+  echo "$lk_state"
+}
+
+# lock_owner: after lock_classify on a live or setup lock, who holds it:
 # `claude <pid>`, `runner <pid>` or `watcher <pid>`
 lock_owner() {
   if [ -n "$lk_cpid" ] && claude_live "$lk_cpid"; then echo "claude $lk_cpid"
@@ -1059,9 +1180,9 @@ lock_owner() {
   fi
 }
 
-# in_progress <ws>: the "not touching it" line for a live or setup lock
+# in_progress <ws>: after lock_classify, the "not touching it" line for a live
+# or setup lock
 in_progress() {
-  lock_read "$1"
   echo "chirat-watch: $1: in progress, lock held by $(lock_owner) (${lk_rel:--})" >&2
 }
 
@@ -1071,15 +1192,14 @@ in_progress() {
 # and dry_recovered_files (the prompts it would put back to pending, if any).
 recover_dry=0 dry_recovered=0 dry_recovered_files=() select_warn=""
 recover_stale() {
-  local ws=$1 runs lock cpid rel run started p f status state pd
+  local ws=$1 runs lock cpid rel run started all p f status pd
   local err="" stem now secs=0 t model="-" first="-" word prompts=()
-  state=$(lock_state "$ws")
-  case $state in
+  lock_classify "$ws"
+  case $lk_state in
     none) return 0 ;;
     live | setup) in_progress "$ws"; return 1 ;;
   esac
-  lock_read "$ws"
-  cpid=$lk_cpid rel=$lk_rel run=$lk_run started=$lk_started
+  cpid=$lk_cpid rel=$lk_rel run=$lk_run started=$lk_started all=$lk_all
   runs=$ws/.chirat/runs
   lock=$ws/.chirat/lock
   pd=$(chirat_config "$ws" plans_dir docs/plans)
@@ -1133,7 +1253,10 @@ recover_stale() {
     dry_recovered=1
     return 0
   fi
-  remove_lock "$lock"
+  if ! remove_lock "$lock" same "$all"; then
+    echo "chirat-watch: $ws: the lock changed while it was being recovered, left alone" >&2
+    return 1
+  fi
   echo "chirat-watch: $ws: recovered stale lock (claude ${cpid:--} dead)" >&2
   log_line "$ws" "$first" "${model:--}" recovered "$secs"
   return 0
@@ -1513,8 +1636,8 @@ status_ws() {
   echo "$line"
   echo "  notify: CHIRAT_NOTIFY=${CHIRAT_NOTIFY:-1} CHIRAT_NOTIFY_OPEN=${CHIRAT_NOTIFY_OPEN:-0} notify_open=$(chirat_config "$ws" notify_open "") (this shell's environment)"
 
-  state=$(lock_state "$ws")
-  lock_read "$ws"
+  lock_classify "$ws"
+  state=$lk_state
   rel=${lk_rel:+ on $lk_rel}
   case $state in
     none) echo "  lock: none" ;;
@@ -1574,7 +1697,7 @@ cmd_status() {
 }
 
 cmd_recover() {
-  local list ws state refused=0 did=0 dry=0 args=()
+  local list ws refused=0 did=0 dry=0 args=()
   while [ $# -gt 0 ]; do
     case $1 in
       --dry-run) dry=1 ;;
@@ -1587,23 +1710,21 @@ cmd_recover() {
   recover_dry=$dry
   while IFS= read -r ws; do
     [ -n "$ws" ] || continue
-    state=$(lock_state "$ws")
-    case $state in
-      none) continue ;;
-      live | setup)
-        in_progress "$ws"
-        echo "chirat-watch: $ws: lock is live, not recovering" >&2
-        refused=1; continue ;;
-    esac
-    did=1
     recover_stale "$ws"
+    case $lk_state in
+      none) ;;
+      live | setup)
+        echo "chirat-watch: $ws: lock is live, not recovering" >&2
+        refused=1 ;;
+      *) did=1 ;;
+    esac
   done <<<"$list"
   [ "$did" = 1 ] || [ "$refused" = 1 ] || echo "nothing to recover"
   return "$refused"
 }
 
 cmd_restart() {
-  local force=0 list ws state pid="" t secs flags=() f _ live="" nlive=0
+  local force=0 list ws pid="" t secs flags=() f _ live="" nlive=0
   case ${1:-} in --force) force=1; shift ;; esac
   [ $# -eq 0 ] || usage
   command -v tmux >/dev/null 2>&1 || die "tmux not installed"
@@ -1612,9 +1733,8 @@ cmd_restart() {
   while IFS= read -r ws; do
     [ -n "$ws" ] || continue
     [ "$force" = 0 ] || break
-    state=$(lock_state "$ws")
-    case $state in live | setup) ;; *) continue ;; esac
-    lock_read "$ws"
+    lock_classify "$ws"
+    case $lk_state in live | setup) ;; *) continue ;; esac
     secs=0
     if [ -n "$lk_started" ] && t=$(iso_to_epoch "$lk_started") && [ -n "$t" ]; then secs=$(($(date +%s) - t)); fi
     [ "$secs" -ge 0 ] || secs=0
@@ -1653,7 +1773,7 @@ cmd_restart() {
           kill -TERM "$lk_rpid" 2>/dev/null
           if ! wait_gone "$lk_rpid" $((stop_grace + 10)); then
             echo "chirat-watch: $ws: runner $lk_rpid did not stop within $((stop_grace + 10)) s; lock and prompt left as they are" >&2
-          elif [ -d "$ws/.chirat/lock" ]; then
+          elif lock_held "$ws/.chirat/lock"; then
             echo "chirat-watch: $ws: runner $lk_rpid stopped but kept the lock (claude's group survived or cannot be inspected; see the run's .err)" >&2
           else
             echo "chirat-watch: $ws: stopped runner $lk_rpid; its prompt is pending again" >&2

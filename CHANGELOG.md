@@ -5,6 +5,13 @@ All notable changes are listed here, in the
 
 ## [Unreleased]
 
+### Fixed
+
+- A run that ended at the same moment as another could be logged as
+  `recovered` (file `-`) right after its own line, and `status` could flash
+  `STALE` and exit 1 for an instant. A lock that is being released is no
+  longer taken for a stale one; a stale lock is recovered as before.
+
 ## [0.3.1] — 2026-11-24
 
 ### Added
