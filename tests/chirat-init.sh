@@ -248,6 +248,34 @@ eq "--branch exits 0" 0 $?
 eq "--branch clones that branch" x "$(git -C "$tmp/r3/repos/app" symbolic-ref --short HEAD)"
 eq "--branch: default_branch line uncommented" "default_branch=x" "$(grep -E '^default_branch=' "$tmp/r3/.chirat/config")"
 eq "--branch: the config change is in the commit" "" "$(git -C "$tmp/r3" status --porcelain)"
+if grep -q '^default_branch\.' "$tmp/r3/.chirat/config"; then ko "I2: --branch writes no per-repo key"; else ok "I2: --branch writes no per-repo key"; fi
+says "I2: no-repo hint names the per-repo key" "$out" "default_branch.NAME="
+
+# I1: without --branch, a clone that is not on main gets its own key
+git init -q -b dev "$tmp/src/devapp"
+git -C "$tmp/src/devapp" -c user.name=T -c user.email=t@example.com commit -q --allow-empty -m init
+git clone -q --bare "$tmp/src/devapp" "$tmp/remotes/devapp.git"
+git init -q --bare -b dev "$tmp/remotes/empty.git"
+rout=$("$init" i1 "$tmp" --git-name "R" --git-email r@example.com \
+  --repo "$tmp/remotes/app.git" --repo "$tmp/remotes/devapp.git" 2>&1)
+eq "I1: exits 0" 0 $?
+eq "I1: one uncommented default_branch line" "default_branch.devapp=dev" "$(grep '^default_branch' "$tmp/i1/.chirat/config")"
+eq "I1: the workspace key stays commented" "# default_branch=main" "$(grep -x '# default_branch=main' "$tmp/i1/.chirat/config")"
+says "I1: the note" "$rout" "repos/devapp is on dev; wrote default_branch.devapp=dev to .chirat/config (uncommitted)"
+not_says "I1: no note for the clone on main" "$rout" "repos/app is on"
+eq "I1: the config is modified, nothing staged" " M .chirat/config" "$(git -C "$tmp/i1" status --porcelain)"
+eq "I1: one commit" 1 "$(git -C "$tmp/i1" rev-list --count HEAD)"
+"$root/bin/chirat-watch" doctor "$tmp/i1" >"$tmp/i1.out" 2>&1
+has "I1: doctor sees both branches" "$tmp/i1.out" "ok   default_branch: main (devapp: dev)"
+if grep -q '^warn default_branch' "$tmp/i1.out"; then ko "I1: doctor has no default_branch warning" "$(cat "$tmp/i1.out")"; else ok "I1: doctor has no default_branch warning"; fi
+"$init" i1b "$tmp" --git-name "R" --git-email r@example.com \
+  --repo "$tmp/remotes/withagents.git" --repo "$tmp/remotes/devapp.git" >/dev/null 2>&1
+eq "I1: the CLAUDE.md amend does not take the config" " M .chirat/config" "$(git -C "$tmp/i1b" status --porcelain)"
+"$init" i2 "$tmp" --git-name "R" --git-email r@example.com --repo "$tmp/remotes/empty.git" >"$tmp/i2.out" 2>&1
+eq "I2: empty repository exits 0" 0 $?
+exists "I2: empty repository is cloned" -d "$tmp/i2/repos/empty/.git"
+eq "I2: empty repository writes nothing" "" "$(git -C "$tmp/i2" status --porcelain)"
+
 if "$init" r4 "$tmp" --git-name "R" --git-email r@example.com --branch x >/dev/null 2>&1; then
   ko "--branch without --repo is refused"
 else

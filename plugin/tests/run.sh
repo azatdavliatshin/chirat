@@ -426,6 +426,82 @@ eq "status.log lands in .chirat/" "work/queue/c.prompt-1.md	pending	running" "$(
 absent_log=$cws/work/queue/status.log
 if [ -e "$absent_log" ] || [ -e "$cws/docs" ]; then ko "status.log: nothing under docs/ or the plans dir"; else ok "status.log: nothing under docs/ or the plans dir"; fi
 
+# --- default_branch.<repo> ---------------------------------------------------
+
+# P1: the resolver
+pws=$tmp/pws
+mkdir -p "$pws/docs/plans" "$pws/repos"
+eq "P1: no config" main "$("$rp" default-branch "$pws" app)"
+mkdir -p "$pws/.chirat"
+pcfg() { printf '%s\n' "$@" >"$pws/.chirat/config"; }
+pcfg default_branch=trunk
+eq "P1: workspace key" trunk "$("$rp" default-branch "$pws" app)"
+pcfg default_branch.app=dev default_branch=trunk
+eq "P1: the repo's key wins" dev "$("$rp" default-branch "$pws" app)"
+eq "P1: another repo keeps the workspace key" trunk "$("$rp" default-branch "$pws" lib)"
+pcfg default_branch=trunk default_branch.app=
+eq "P1: an empty value falls back" trunk "$("$rp" default-branch "$pws" app)"
+pcfg default_branch.app=dev
+eq "P1: no workspace key" main "$("$rp" default-branch "$pws" lib)"
+pcfg default_branch=trunk default_branch.my-app.v2=dev
+eq "P1: a dotted name" dev "$("$rp" default-branch "$pws" my-app.v2)"
+eq "P1: a dotted name is not its prefix" trunk "$("$rp" default-branch "$pws" my-app)"
+pcfg 'bogus line' default_branch.app=dev
+eq "P1: a malformed line warns once" 1 "$("$rp" default-branch "$pws" app 2>&1 >/dev/null | grep -c 'not key=value')"
+if "$rp" default-branch "$pws" >/dev/null 2>&1; then ko "P1: no repo is a usage error"; else ok "P1: no repo is a usage error"; fi
+
+# P2: after: in a workspace with two clones on different branches
+pgit() { git -C "$pws/repos/$1" -c user.name=t -c user.email=t@t "${@:2}"; }
+pprompt() { # pprompt <n> <status> <repo> <branch> [key: value]…
+  local f=$pws/docs/plans/p.prompt-$1.md
+  {
+    printf '%s\n' '---' 'model: sonnet' "status: $2" "repo: $3" "branch: $4"
+    [ $# -le 4 ] || printf '%s\n' "${@:5}"
+    printf '%s\n' '---' "# p.prompt-$1"
+  } >"$f"
+}
+pclone() { # pclone <repo> <branch>: one commit on it, and feat/<repo> one ahead
+  git init -q -b "$2" "$pws/repos/$1"
+  pgit "$1" commit -q --allow-empty -m init
+  pgit "$1" checkout -q -b "feat/$1"
+  pgit "$1" commit -q --allow-empty -m work
+  pgit "$1" checkout -q "$2"
+}
+pclone app dev
+pclone lib main
+pcfg default_branch.app=dev
+p1=$pws/docs/plans/p.prompt-1.md p2=$pws/docs/plans/p.prompt-2.md
+pprompt 1 pending app feat/next "after: feat/app"
+pprompt 2 pending lib feat/next "after: feat/lib"
+eq "P2: waiting names each repo's branch" "$p1	after=feat/app	branch feat/app is not merged into dev
+$p2	after=feat/lib	branch feat/lib is not merged into main" "$("$rp" waiting "$pws")"
+if "$rp" next "$pws" >/dev/null 2>&1; then ko "P2: both unmerged, nothing is picked"; else ok "P2: both unmerged, nothing is picked"; fi
+pgit lib merge -q --no-edit feat/lib
+eq "P2: lib merged into main is picked" "$p2" "$("$rp" next "$pws")"
+eq "P2: app still waits for dev" "$p1	after=feat/app	branch feat/app is not merged into dev" "$("$rp" waiting "$pws")"
+pgit app merge -q --no-edit feat/app
+eq "P2: app merged into dev is picked" "$p1" "$("$rp" next "$pws")"
+eq "P2: nothing waits" "" "$("$rp" waiting "$pws")"
+pprompt 1 pending app feat/next "worktree: fix" "after: feat/app"
+eq "P2: with worktree: the key is still the repo's" "" "$("$rp" waiting "$pws")"
+
+# P3: the branch is gone, its recorded commit decides
+rm -f "$p1" "$p2"
+pprompt 3 "done" app feat/app "commit: $(pgit app rev-parse feat/app)"
+pgit app branch -q -D feat/app
+pprompt 4 pending app feat/next "after: feat/app"
+p4=$pws/docs/plans/p.prompt-4.md
+eq "P3: the commit is in dev: picked" "$p4" "$("$rp" next "$pws")"
+pgit app checkout -q -b feat/side
+pgit app commit -q --allow-empty -m side
+sha=$(pgit app rev-parse HEAD)
+pgit app branch -q main # in main, the fallback, but not in dev
+pgit app checkout -q dev
+pgit app branch -q -D feat/side
+pprompt 3 "done" app feat/app "commit: $sha"
+if "$rp" next "$pws" >/dev/null 2>&1; then ko "P3: the commit is not in dev: not picked"; else ok "P3: the commit is not in dev: not picked"; fi
+eq "P3: waiting names dev" "$p4	after=feat/app	branch feat/app is gone and its result commit ${sha:0:7} is not merged into dev" "$("$rp" waiting "$pws")"
+
 # .chirat/ in a code repo is refused; in a workspace repo only the lock is.
 mkdir -p "$repo/.chirat/runs"
 echo "{}" >"$repo/.chirat/runs/x.json"

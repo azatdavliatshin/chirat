@@ -1196,6 +1196,69 @@ dd "$dws"
 has "doctor ws: notify_open placeholder warn" "$tmp/dd.out" "warn notify_open: placeholder left"
 printf 'notify_open=claude://claude.ai/project/x\n' >"$dws/.chirat/config"
 
+# W2: default_branch per repository
+dcfg() { printf '%s\n' "$@" 'notify_open=claude://claude.ai/project/x' >"$dws/.chirat/config"; }
+line() { # line <name> <whole line of the output>
+  if grep -qxF -- "$2" "$tmp/dd.out"; then ok "$1"; else ko "$1" "no line [$2] in: $(cat "$tmp/dd.out")"; fi
+}
+no_line() { # no_line <name> <regex>
+  if grep -q -- "$2" "$tmp/dd.out"; then ko "$1" "$(grep -- "$2" "$tmp/dd.out")"; else ok "$1"; fi
+}
+dmiss() { # dmiss <branch> <clone> <current> <key>: the missing-branch line
+  echo "warn default_branch: no local branch $1 in repos/$2, which is on $3: set $4=$3 in $dws/.chirat/config"
+}
+git -C "$dws/repos/app" branch -q -m main dev
+dcfg '# no key'
+dd "$dws"
+line "W2: one clone: the workspace key is the hint" "$(dmiss main app dev default_branch)"
+git -C "$dws/repos/app" worktree add -q "$dws/repos/app-fix" -b fix
+dd "$dws"
+line "W2: one clone and a linked worktree: same hint" "$(dmiss main app dev default_branch)"
+no_line "W2: a linked worktree is skipped" '^warn default_branch.*app-fix'
+dcfg default_branch.app=trunk
+dd "$dws"
+line "W2: one clone with a key of its own: that key is the hint" "$(dmiss trunk app dev default_branch.app)"
+git clone -q "$tmp/docsrc" "$dws/repos/lib"
+dcfg '# no key'
+dd "$dws"
+eq "W2: two clones, a missing branch exits 0" 0 $?
+line "W2: two clones: the per-repo hint" "$(dmiss main app dev default_branch.app)"
+no_line "W2: two clones: the other one is fine" '^warn default_branch.*repos/lib'
+no_line "W2: no ok line after a warn" '^ok   default_branch'
+dcfg default_branch.app=dev
+dd "$dws"
+eq "W2: the hint applied exits 0" 0 $?
+line "W2: the mixed ok line" "ok   default_branch: main (app: dev)"
+no_line "W2: no warn with the key set, worktree included" '^warn default_branch'
+git clone -q "$tmp/docsrc" "$dws/repos/app-x"
+git -C "$dws/repos/app-x" branch -q -m main next
+dcfg default_branch.app-x=next default_branch.app=dev
+dd "$dws"
+line "W2: three clones, the differing ones in byte order" "ok   default_branch: main (app: dev, app-x: next)"
+dcfg default_branch.app-x=next default_branch.app=dev default_branch.ap=dev \
+  default_branch.my-app.v2=dev default_branch.empty= default_branch.app-fix=fix
+dd "$dws"
+eq "W2: an orphan key exits 0" 0 $?
+line "W2: an orphan key" "warn default_branch.ap: no clone repos/ap"
+line "W2: an orphan key with a dotted name" "warn default_branch.my-app.v2: no clone repos/my-app.v2"
+line "W2: a worktree's name is an orphan key" "warn default_branch.app-fix: no clone repos/app-fix"
+no_line "W2: an empty value gets no warning" '^warn default_branch\.empty'
+line "W2: an orphan key leaves the ok line" "ok   default_branch: main (app: dev, app-x: next)"
+git -C "$dws/repos/app-x" branch -q -m next dev
+rm -rf "$dws/repos/lib"
+dcfg default_branch.app=dev default_branch.app-x=dev
+dd "$dws"
+line "W2: every clone on the same branch" "ok   default_branch: dev"
+rm -rf "$dws/repos/app-x"
+git -C "$dws/repos/app" worktree remove "$dws/repos/app-fix"
+git -C "$dws/repos/app" branch -q -m dev main
+mv "$dws/repos/app" "$tmp/docapp"
+dcfg default_branch.app=dev
+dd "$dws"
+line "W2: an orphan key without any clone" "warn default_branch.app: no clone repos/app"
+mv "$tmp/docapp" "$dws/repos/app"
+dcfg '# no key'
+
 mkdir -p "$dh/plain"
 dd "$dh/plain"
 eq "doctor ws: not a workspace exits 1" 1 $?
@@ -1583,6 +1646,36 @@ has "legacy run log: status warns" "$tmp/st.out" "warn: legacy run log at docs/s
 git -C "$ws3/repos/demo" merge -q --no-edit feat/t
 XDG_CONFIG_HOME=$tmp/cfg2 "$watch" status ws3 >"$tmp/st.out" 2>&1
 has "default_branch=trunk: merged branch → next is the waiting prompt" "$tmp/st.out" "next: wait (1 pending)"
+
+# W1: two clones on different branches, one per-repo key
+ws4=$tmp/ws4
+mkdir -p "$ws4/docs/plans" "$ws4/docs/status" "$ws4/.chirat"
+for spec in app:dev lib:main; do
+  r4=$ws4/repos/${spec%%:*} b4=${spec#*:}
+  mkdir -p "$r4"
+  git -C "$r4" init -q -b "$b4"
+  git -C "$r4" commit -q --allow-empty -m base
+  git -C "$r4" checkout -q -b "feat/${spec%%:*}"
+  git -C "$r4" commit -q --allow-empty -m work
+  git -C "$r4" checkout -q "$b4"
+done
+cfgprompt "$ws4/docs/plans/two.prompt-1.md" "done" feat/app
+"$rp" set "$ws4/docs/plans/two.prompt-1.md" repo app
+cfgprompt "$ws4/docs/plans/two.prompt-2.md" "done" feat/lib
+"$rp" set "$ws4/docs/plans/two.prompt-2.md" repo lib
+printf '%s\n' 'default_branch.app=dev' >"$ws4/.chirat/config"
+mkdir -p "$tmp/cfg4/chirat"
+printf '%s\n' "$ws4" >"$tmp/cfg4/chirat/workspaces"
+st4() { XDG_CONFIG_HOME=$tmp/cfg4 "$watch" status ws4 2>&1 | grep '^  next:'; }
+app4="  next: review two.prompt-1 (feat/app, (no status file)), then merge; releases nothing"
+lib4="  next: review two.prompt-2 (feat/lib, (no status file)), then merge; releases nothing"
+eq "W1: an unmerged branch in each clone is reviewed" "$app4
+$lib4" "$(st4 | sort)"
+git -C "$ws4/repos/app" merge -q --no-edit feat/app
+eq "W1: app merged into dev: its line is gone" "$lib4" "$(st4)"
+git -C "$ws4/repos/lib" merge -q --no-edit feat/lib
+eq "W1: lib merged into main: nothing to review" "  next: queue empty" "$(st4)"
+
 rmdir "$ws3/docs/status/runs"
 XDG_CONFIG_HOME=$tmp/cfg2 "$watch" status ws3 >"$tmp/st.out" 2>&1
 has "legacy: only LATEST left" "$tmp/st.out" "move it: git mv docs/status/LATEST .chirat/LATEST"
