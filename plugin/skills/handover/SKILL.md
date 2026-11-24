@@ -15,9 +15,12 @@ side) can pick up without re-deriving context. There is no prompt file.
 Workspace root = the directory that contains `docs/` and `repos/` (normally
 the current directory; if you are inside `repos/<x>/`, it is two levels up).
 Read `<ws>/.chirat/config` if it exists (`key=value` lines, `#` comments);
-`plans_dir`, `status_dir`, `default_branch` default to `docs/plans`,
-`docs/status`, `main`. Write `<status_dir>/YYYY-MM-DD-<topic>.md` there, with
-today's date.
+`plans_dir`, `status_dir` default to `docs/plans`, `docs/status`.
+`<default_branch>` is a non-empty `default_branch.<repo>` from
+`<ws>/.chirat/config`, else `default_branch`, else `main`.
+Here `<repo>` is the folder name under `repos/`; resolve it separately for
+each repository you report on. Write
+`<status_dir>/YYYY-MM-DD-<topic>.md` there, with today's date.
 
 `<topic>`: `$ARGUMENTS` if given; otherwise the current branch of the repo
 you worked in, with `/` replaced by `-`; otherwise `session`. If that file

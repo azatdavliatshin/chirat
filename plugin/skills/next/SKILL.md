@@ -23,9 +23,10 @@ repository, or no repository at all — never the code repository):
 - `.chirat/` — chirat's own state (run log, lock); never write there yourself
 
 Read `<ws>/.chirat/config` if it exists (`key=value` lines, `#` comments);
-`plans_dir`, `status_dir`, `default_branch` default to `docs/plans`,
-`docs/status`, `main`. Use those names wherever this text says
-`<plans_dir>`, `<status_dir>`, `<default_branch>`.
+`plans_dir`, `status_dir` default to `docs/plans`, `docs/status`. Use those
+names wherever this text says `<plans_dir>`, `<status_dir>`. Run
+`chirat-prompt default-branch . <repo>` once for the prompt's `repo:` and use
+its output wherever this text says `<default_branch>`.
 
 Front matter keys:
 

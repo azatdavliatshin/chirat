@@ -18,8 +18,9 @@
 #   --repo        clone <url> into repos/<basename without .git> after the first
 #                 commit; repeatable. A failed clone warns and the run goes on
 #   --branch      clone that branch and set default_branch=<name> in
-#                 .chirat/config. default_branch is per workspace, not per repo:
-#                 one --branch applies to every --repo
+#                 .chirat/config; one --branch applies to every --repo. Without
+#                 it, a clone that is not on main gets its own line,
+#                 default_branch.<repo>=<its branch>, left uncommitted
 #   --project     notify_open=claude://claude.ai/project/<uuid> in .chirat/config;
 #                 takes the uuid or https://claude.ai/project/<uuid>
 #
@@ -185,7 +186,7 @@ if [ "$no_commit" = 0 ]; then
   fi
 fi
 
-failed=() rules=""
+failed=() cloned=() rules=""
 if [ ${#repos[@]} -gt 0 ]; then
   clone_args=(-q)
   [ -z "$branch" ] || clone_args+=(--branch "$branch")
@@ -197,6 +198,7 @@ if [ ${#repos[@]} -gt 0 ]; then
       failed+=("$url")
       continue
     fi
+    cloned+=("$name")
     for rf in AGENTS.md CLAUDE.md; do
       if [ -e "$ws/repos/$name/$rf" ]; then
         rules+="- \`repos/$name/\` — its own rules file \`repos/$name/$rf\` is canonical; read it first."$'\n'
@@ -219,6 +221,20 @@ if [ -n "$rules" ]; then
   esac
 fi
 
+# A clone on another branch than main gets its own key. The lines come after
+# the bootstrap commit and stay uncommitted.
+branch_notes=()
+if [ -z "$branch" ]; then
+  for name in ${cloned[@]+"${cloned[@]}"}; do
+    # Nothing for an unborn or detached HEAD: there is no branch to name.
+    git -C "$ws/repos/$name" rev-parse --verify -q HEAD >/dev/null || continue
+    b=$(git -C "$ws/repos/$name" symbolic-ref -q --short HEAD) || continue
+    [ "$b" != main ] || continue
+    printf 'default_branch.%s=%s\n' "$name" "$b" >>"$ws/.chirat/config"
+    branch_notes+=("repos/$name is on $b; wrote default_branch.$name=$b to .chirat/config (uncommitted)")
+  done
+fi
+
 n=0
 step() { n=$((n + 1)); printf '  %d. %s\n' "$n" "$1"; }
 cmd() { printf '       %s\n' "$1"; }
@@ -230,6 +246,7 @@ case $commit_state in
   *) state="nothing committed yet" ;;
 esac
 echo "Created workspace: $ws (git repository, branch main, $state)"
+for line in ${branch_notes[@]+"${branch_notes[@]}"}; do note "$line"; done
 echo
 echo "Next steps:"
 
@@ -250,7 +267,7 @@ esac
 if [ ${#repos[@]} -eq 0 ]; then
   step "Clone your repositories, one folder each (a prompt's repo: is the folder name):"
   cmd "git clone URL \"$ws_q/repos/NAME\""
-  note "If the repo's main branch is not main, set default_branch= in \"$ws_q/.chirat/config\"."
+  note "If the repo's main branch is not main, set default_branch= in \"$ws_q/.chirat/config\" (default_branch.NAME= for one of several)."
 elif [ ${#failed[@]} -gt 0 ]; then
   step "Clone what failed above, one folder each (a prompt's repo: is the folder name):"
   for url in "${failed[@]}"; do

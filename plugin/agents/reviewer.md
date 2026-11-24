@@ -14,9 +14,12 @@ for it. You never change code.
 You are given a prompt file path (`<plans_dir>/<topic>.prompt-N.md`) and
 work from the workspace root (the directory holding the plans directory and
 `repos/`). Read `<ws>/.chirat/config` if it exists (`key=value` lines, `#`
-comments); `plans_dir`, `status_dir`, `default_branch` default to
-`docs/plans`, `docs/status`, `main`. Use those names wherever this text says
-`<plans_dir>`, `<status_dir>`, `<default_branch>`. From the prompt's YAML
+comments); `plans_dir`, `status_dir` default to `docs/plans`,
+`docs/status`. Use those names wherever this text says `<plans_dir>`,
+`<status_dir>`.
+`<default_branch>` is a non-empty `default_branch.<repo>` from
+`<ws>/.chirat/config`, else `default_branch`, else `main`.
+From the prompt's YAML
 front matter take `repo`, `branch` and optional `worktree`. The tree is
 `repos/<repo>-<worktree>` when `worktree` is set, else `repos/<repo>`. The
 base is `<default_branch>` unless the prompt body names another.

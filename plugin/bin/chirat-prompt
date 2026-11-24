@@ -9,6 +9,8 @@
 #   chirat-prompt waiting <workspace>         list pending prompts held back by after:
 #   chirat-prompt check <workspace> <file>    exit 0 if <file>'s after: is satisfied
 #   chirat-prompt lint <workspace>            list pending/running files with a bad name
+#   chirat-prompt default-branch <workspace> <repo>
+#                                             print the default branch of repos/<repo>
 #
 # A change of `status` by `set` appends one line to
 # <workspace>/.chirat/status.log (who called, so an unexpected flip can
@@ -55,15 +57,19 @@
 # before the branch is looked at. Any other value leaves the prompt unmet.
 #
 # Optional <workspace>/.chirat/config (`key=value` lines, `#` comments, no
-# quotes): plans_dir (default docs/plans), default_branch (default main).
-# Paths are relative to the workspace root. Unknown keys are ignored; a line
-# without `=` is a warning on stderr.
+# quotes): plans_dir (default docs/plans), default_branch (default main) and
+# default_branch.<repo> (the branch of the clone repos/<repo>, which wins over
+# default_branch; <repo> is a prompt's `repo:`, dots included, also when the
+# prompt has `worktree:`). <default_branch> above means the branch resolved for
+# the prompt's `repo:`; `default-branch` prints it without checking that the
+# branch or the clone exists. Paths are relative to the workspace root. Unknown
+# keys and empty values are ignored; a line without `=` is a warning on stderr.
 
 set -euo pipefail
 export LC_ALL=C # byte-order suffix comparison and [a-z] without locale surprises
 
 usage() {
-  sed -n '4,11p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '4,13p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 64
 }
 
@@ -94,6 +100,16 @@ chirat_config() {
     done <"$f"
   fi
   printf '%s\n' "$val"
+}
+
+# default_branch <ws> <repo>: default_branch.<repo>, else default_branch, else
+# main. The same function lives in bin/chirat-watch.
+default_branch() {
+  local db
+  db=$(chirat_config "$1" default_branch main)
+  # A malformed line has been warned about by the call above.
+  [ -z "$2" ] || db=$(chirat_config "$1" "default_branch.$2" "$db" 2>/dev/null)
+  printf '%s\n' "$db"
 }
 
 has_front_matter() {
@@ -266,7 +282,6 @@ result_prompt() {
 # satisfied. Rules in the header.
 after_unmet() {
   local ws=$1 f=$2 after repo r p db pd mode commit
-  db=$(chirat_config "$ws" default_branch main 2>/dev/null)
   pd=$(chirat_config "$ws" plans_dir docs/plans 2>/dev/null)
   after=$(cmd_get "$f" after 2>/dev/null) || return 0
   [ -n "$after" ] || return 0
@@ -277,6 +292,7 @@ after_unmet() {
     *) echo "after_mode: unknown value '$mode' (merged | done)"; return 1 ;;
   esac
   repo=$(cmd_get "$f" repo 2>/dev/null) || repo=""
+  db=$(default_branch "$ws" "$repo" 2>/dev/null)
   r=$ws/repos/$repo
   if [ -z "$repo" ] || ! git -C "$r" rev-parse --git-dir >/dev/null 2>&1; then
     echo "repos/$repo is not a git repository"
@@ -400,6 +416,7 @@ case $1 in
   waiting) [ $# -eq 2 ] || usage; cmd_waiting "$2" ;;
   check) [ $# -eq 3 ] || usage; cmd_check "$2" "$3" ;;
   lint) [ $# -eq 2 ] || usage; cmd_lint "$2" ;;
+  default-branch) [ $# -eq 3 ] || usage; default_branch "$2" "$3" ;;
   -h | --help) usage ;;
   *) usage ;;
 esac
