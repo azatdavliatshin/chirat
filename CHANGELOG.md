@@ -5,6 +5,23 @@ All notable changes are listed here, in the
 
 ## [Unreleased]
 
+### Added
+
+- `default_branch.<repo>` in `.chirat/config`: the default branch of the clone
+  `repos/<repo>`, else `default_branch`, else `main`. Clones of one workspace
+  no longer have to share a branch name; a workspace without the new key
+  behaves as before.
+- `chirat-prompt default-branch <ws> <repo>` prints the resolved branch.
+- `chirat-init --repo` without `--branch` writes `default_branch.<repo>` for
+  each clone that is not on `main` (left uncommitted, one note per line).
+
+### Changed
+
+- `doctor <ws>` checks each clone against its own default branch and skips
+  linked worktrees. Its hint is now the per-repo key (the workspace key when
+  there is only one clone), the `ok` line lists the clones whose branch
+  differs, and a key without a clone is a `warn`.
+
 ## [0.3.0] — 2026-11-23
 
 ### Added

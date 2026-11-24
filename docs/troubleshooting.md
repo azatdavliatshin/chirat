@@ -11,7 +11,10 @@ status`:
 
 - *It waits for a branch.* Its `after:` is unmet: the queue line says
   `waiting after=<branch>`, `chirat-prompt waiting <ws>` says why, and the
-  log has a `waiting` line (at most every 10 minutes). Merge the branch.
+  log has a `waiting` line (at most every 10 minutes). Merge the branch. If
+  the reason is `branch main not found in repos/<repo>`, that clone has another
+  default branch: set `default_branch.<repo>=<branch>` in `.chirat/config`
+  ([configuration](configuration.md#workspace-config)).
 - *It is held by the cap.* Another workspace is running and `--max-parallel`
   (default 1) is reached: the `next:` line says `wait (1 pending; limit 1,
   running: <workspace>)` and the log has a `held` line for this wait. Every

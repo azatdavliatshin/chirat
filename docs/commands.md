@@ -28,7 +28,7 @@ recommended form. It never overwrites an existing directory, never edits
 | `--description <text>` | the paragraph at the top of the workspace `CLAUDE.md` |
 | `--no-commit` | leave the template uncommitted |
 | `--repo <url>` | clone into `repos/<basename without .git>`, after the first commit; repeatable. A failed clone warns, exit stays 0, and the manual `git clone` line is printed. A clone with its own `AGENTS.md` or `CLAUDE.md` gets a pointer under `## The code repository` in the workspace `CLAUDE.md` |
-| `--branch <name>` | with `--repo`: clone that branch and set `default_branch=<name>`. Applies to every `--repo` ([per workspace](configuration.md#workspace-config)) |
+| `--branch <name>` | with `--repo`: clone that branch and set `default_branch=<name>`. Applies to every `--repo`. Without it, a clone that is not on `main` gets a line `default_branch.<repo>=<its branch>` in `.chirat/config`, left uncommitted ([configuration](configuration.md#workspace-config)) |
 | `--project <uuid-or-url>` | set `notify_open=claude://claude.ai/project/<uuid>`; takes the uuid or `https://claude.ai/project/<uuid>`; anything else is refused before anything is created |
 
 If the first commit fails (a global `commit.gpgsign=true` without a usable key,
@@ -78,7 +78,8 @@ part.
 | `identity` | `ok` / `FAIL` | `user.email` (and `user.name`, and `core.sshCommand` when `<ws>/.gitconfig` sets them) as git really sees it, in the workspace and in the first clone, must come *from* `<ws>/.gitconfig` (`git config --show-origin`): the same address in `~/.gitconfig` does not pass. The proof that the include works, and that the `--ssh-key` is in effect; `warn` when git is too old for `--show-origin` |
 | `workspaces` | `ok` / `FAIL` | the workspace is listed in `~/.config/chirat/workspaces` |
 | `repos` | `ok` / `warn` | at least one clone in `repos/`; a workspace may start without one |
-| `default_branch` | `ok` / `warn` | the configured branch exists locally in each clone; `warn` names the clone's current branch as the likely value |
+| `default_branch` | `ok` / `warn` | the branch resolved for each clone exists there locally (linked worktrees are skipped); `warn` gives the line to set, with the clone's current branch as the likely value: `default_branch.<repo>`, or `default_branch` in a workspace with one clone. `ok` lists the clones whose branch differs: `main (backend: master)` |
+| `default_branch.<repo>` | `warn` | a key for which there is no clone `repos/<repo>` (a typo, say) |
 | `notify_open` | `ok` / `warn` | set, with no placeholder left |
 
 `includeIf` can be `ok` while `identity` is `FAIL`: git itself does not follow a
@@ -171,3 +172,4 @@ install` and while the plugin is enabled.
 | `waiting <ws>` | list pending prompts held back by `after:`, and why |
 | `check <ws> <file>` | exit 0 if the file's `after:` is satisfied (the reason on stdout when not; the `after_mode: done` warning on stderr when it is) |
 | `lint <ws>` | list `pending`/`running` files whose name does not match the pattern, as `<file>\t<reason>`; exit 1 if any; renaming the file is enough |
+| `default-branch <ws> <repo>` | print the default branch of `repos/<repo>` ([configuration](configuration.md#workspace-config)); does not check that the branch or the clone exists |

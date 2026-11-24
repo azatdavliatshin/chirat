@@ -94,6 +94,9 @@ default_branch=master
 
 `default_branch` is what a run branches from and what `after:` and the merge
 hints compare against ([configuration](configuration.md#workspace-config)).
+Several clones with different branches need no manual edit after `chirat-init
+--repo`; otherwise set `default_branch.<repo>=<branch>` for each one that
+differs.
 
 `chirat-init` can do all of this in step 2: `--repo URL` clones (repeat it for
 several), `--branch NAME` also sets `default_branch`

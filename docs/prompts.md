@@ -26,7 +26,7 @@ is asked to carry out.
 | `repo` | folder under `repos/` | required |
 | `branch` | branch name | required |
 | `worktree` | suffix | optional; work in `repos/<repo>-<suffix>` |
-| `after` | branch name | optional; wait until that branch is merged into `default_branch` of `repos/<repo>` (see below). A dependent prompt is enqueued `pending` with `after:`, never parked as `blocked`; `/chirat:next <file>` with an unmet `after:` ends `blocked`, so an explicit path cannot bypass it |
+| `after` | branch name | optional; wait until that branch is merged into the [default branch](configuration.md#workspace-config) of `repos/<repo>` (see below). A dependent prompt is enqueued `pending` with `after:`, never parked as `blocked`; `/chirat:next <file>` with an unmet `after:` ends `blocked`, so an explicit path cannot bypass it |
 | `after_mode` | `merged` (default) \| `done` | optional; `done` means "satisfied as soon as the prompt that built `after`'s branch is `done`" — for squash merges and prompts from before `commit:` existed; `chirat-prompt check` / `waiting` and the watcher warn that this proves no merge. Any other value: unmet |
 | `commit` | full sha | written when a run ends `done`, `blocked` or `failed`: the head of `branch` in `repos/<repo>` (`/chirat:next` records it before the final status; the watcher fills or corrects it, and removes it when the branch is gone). `after:` reads it once the branch is deleted |
 
@@ -52,19 +52,19 @@ The body can define checkpoints — points at which Claude Code commits on the
 prompt's `branch` and, if the prompt says so, stops. A run commits only at
 the checkpoints the prompt defines; it never pushes, never tags and does not
 touch the default branch. With no `worktree`, the run works in `repos/<repo>`
-itself: it creates `branch` from `default_branch` (or checks it out), and
-after the run returns the repository to `default_branch` if the tree is clean.
+itself: it creates `branch` from the repo's default branch (or checks it out),
+and after the run returns the repository to that branch if the tree is clean.
 If the tree was dirty, or the run failed before it could switch back, the
 repository stays on the prompt's branch and the status file says so.
 With `worktree: <suffix>`, the run works in `repos/<repo>-<suffix>`, created
-from `default_branch` on first use, and leaves it as is.
+from the repo's default branch on first use, and leaves it as is.
 
 ## `after:` and merges
 
 While the branch exists, `git merge-base --is-ancestor` decides. Once it is
 deleted, only the recorded result can: the prompt that built it (same `repo:`
 and `branch:`; the last in queue order if several) carries `commit:`, and
-that commit must be in `default_branch`. Without it the dependency stays
+that commit must be in the repo's default branch. Without it the dependency stays
 unmet — `chirat-prompt waiting` says `branch X is gone and no result commit
 is recorded; merge it or set \`after_mode: done\``. A branch that no prompt
 built is a planning error (warning).

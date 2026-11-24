@@ -34,15 +34,23 @@ are ignored and a line without `=` is a warning.
 |---|---|---|
 | `plans_dir` | `docs/plans` | where prompt files live |
 | `status_dir` | `docs/status` | where status files are written and looked up |
-| `default_branch` | `main` | what `after:` and the review/merge hints compare against; `chirat-init --branch` sets it |
+| `default_branch` | `main` | what a run branches from, and what `after:` and the review/merge hints compare against; `chirat-init --branch` sets it |
+| `default_branch.<repo>` | `default_branch` | the same for the clone `repos/<repo>`; `chirat-init --repo` sets it for a clone that is not on `main` |
 | `notify_open` | empty | URL or path opened when the notification is clicked (needs `terminal-notifier` 3.x): `claude://claude.ai/project/<uuid>` opens a Project, `claude://claude.ai/chat/<uuid>` a conversation (see [support.claude.com/en/articles/14729294](https://support.claude.com/en/articles/14729294)); a value containing `'` is refused; `chirat-init --project` sets the Project form |
 
 The config is read per run; no restart is needed.
 
-`default_branch` is per workspace, not per repository. Known limitation: every
-clone in a workspace has to share one integration branch, and `chirat-init
---branch` applies to all its `--repo`s. For repositories with different
-branches, use one workspace each.
+A repository's default branch is `default_branch.<repo>`, else
+`default_branch`, else `main`. `<repo>` is the folder name under `repos/`, the
+same string as a prompt's `repo:` (dots included; with `worktree:` still the
+repository's, not the worktree folder's). `chirat-prompt default-branch <ws>
+<repo>` prints the result. An empty value is ignored. Here `backend` is on
+`master` and every other clone on `main`:
+
+```
+default_branch=main
+default_branch.backend=master
+```
 
 ## Several GitHub accounts
 
