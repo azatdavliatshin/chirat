@@ -5,6 +5,8 @@ All notable changes are listed here, in the
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-11-24
+
 ### Fixed
 
 - A run that ended at the same moment as another could be logged as
@@ -242,7 +244,8 @@ were internal.
   upgrade path from relay.
 - The default permission mode is `auto` instead of `acceptEdits`.
 
-[Unreleased]: https://github.com/azatdavliatshin/chirat/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/azatdavliatshin/chirat/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.3.2
 [0.3.1]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.3.1
 [0.3.0]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.3.0
 [0.2.3]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.2.3
