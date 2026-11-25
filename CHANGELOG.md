@@ -12,6 +12,10 @@ All notable changes are listed here, in the
 
 ### Changed
 
+- First-screen output: `chirat-init` says which parent folder it defaulted to,
+  shows how to start a repository when there is none, and prints the plugin
+  step as terminal commands (without the `install` line when `chirat-watch` is
+  already on `PATH`); `chirat-watch install` ends with the next command to run.
 - `doctor` warns when `chirat-init` is not on `PATH`.
 
 ### Fixed

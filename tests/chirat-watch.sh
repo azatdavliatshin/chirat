@@ -737,11 +737,16 @@ eq "install links chirat-init" "$root/bin/chirat-init" "$(readlink "$inst/chirat
 eq "installed chirat-init --help exits 0" 0 $?
 has "installed chirat-init --help prints the help" "$tmp/out2" "<name>   folder name of the workspace"
 has "install hints at PATH when needed" "$tmp/out" "is not on PATH"
+eq "install off PATH: closing line, chirat-init by full path" \
+  "next: \"$root/bin/chirat-init\" NAME --git-name \"Your Name\" --git-email you@example.com" "$(tail -n 1 "$tmp/out")"
+if grep -q '^ok: ' "$tmp/out"; then ko "install off PATH: no ok line"; else ok "install off PATH: no ok line"; fi
 "$watch" install "$inst" >"$tmp/out" 2>&1
 eq "install is repeatable" 0 $?
 eq "installed symlink finds the plugin" "$("$watch" --version)" "$("$inst/chirat-watch" --version)"
 PATH=$inst:$PATH "$watch" install "$inst" >"$tmp/out" 2>&1
 if grep -qF "not on PATH" "$tmp/out"; then ko "no PATH hint when dir is on PATH"; else ok "no PATH hint when dir is on PATH"; fi
+eq "install on PATH: closing line" \
+  "ok: $("$watch" --version) on PATH; next: chirat-init NAME --git-name \"Your Name\" --git-email you@example.com" "$(tail -n 1 "$tmp/out")"
 rm "$inst/chirat-prompt"
 echo "mine" >"$inst/chirat-prompt"
 "$watch" install "$inst" >"$tmp/out" 2>"$tmp/stderr"

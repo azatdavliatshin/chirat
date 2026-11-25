@@ -63,7 +63,7 @@ What the permission mode means for you: [safety](safety.md#permissions).
 | `tail [-f] [ws]` | the run in progress: assistant text and tool calls, one line each, from Claude Code's transcripts under `~/.claude/projects/`; no tool output; times in UTC. With several runs live and no `ws`, it refuses and lists one `chirat-watch tail <name>` per line |
 | `doctor [--online] [ws]` | one `ok` / `warn` / `FAIL` line per setup check; `--online` also makes a real `claude -p` call, where an expired login shows up; exit 1 on any `FAIL`, 0 otherwise (`warn` does not count; same with and without `ws`). Without `ws`, one more line per registered workspace naming its `FAIL`s (`mvg: includeIf FAIL, identity FAIL`); such a `FAIL` exits 1 too. With `ws`, [that workspace's setup](#doctor-ws) too |
 | `restart [--force]` | stop the watcher and start `--tmux` again with the same flags (`--max-parallel` included); refused while any run is live unless `--force` (every run's prompt goes back to `pending`) |
-| `install [dir]` | symlink `chirat-watch`, `chirat-prompt` and `chirat-init` into `dir` (default `~/.local/bin`); replaces symlinks, refuses anything else, hints at `PATH` |
+| `install [dir]` | symlink `chirat-watch`, `chirat-prompt` and `chirat-init` into `dir` (default `~/.local/bin`); replaces symlinks, refuses anything else, hints at `PATH`, ends with the `chirat-init` command to run next |
 | `[ws…]` | workspace paths, or a bare name: `demo` selects the configured path ending in `/demo` |
 
 ### `doctor <ws>`

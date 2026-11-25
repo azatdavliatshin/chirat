@@ -112,6 +112,8 @@ if [ -n "$project" ]; then
   [[ $uuid =~ $uuid_re ]] || die "--project: not a project uuid or https://claude.ai/project/<uuid> url: $project"
 fi
 
+parent_note=""
+[ -n "$parent" ] || parent_note=" — parent ~/code, pass a second argument to choose another"
 parent=${parent:-$HOME/code}
 parent=${parent/#\~/$HOME}
 mkdir -p "$parent"
@@ -250,7 +252,7 @@ case $commit_state in
   failed) state="nothing committed yet, files staged" ;;
   *) state="nothing committed yet" ;;
 esac
-echo "Created workspace: $ws (git repository, branch main, $state)"
+echo "Created workspace: $ws (git repository, branch main, $state)$parent_note"
 for line in ${branch_notes[@]+"${branch_notes[@]}"}; do note "$line"; done
 echo
 echo "Next steps:"
@@ -273,6 +275,7 @@ if [ ${#repos[@]} -eq 0 ]; then
   step "Clone your repositories, one folder each (a prompt's repo: is the folder name):"
   cmd "git clone URL \"$ws_q/repos/NAME\""
   note "If the repo's main branch is not main, set default_branch= in \"$ws_q/.chirat/config\" (default_branch.NAME= for one of several)."
+  note "No repository yet? git init -b main \"$ws_q/repos/NAME\" && git -C \"$ws_q/repos/NAME\" commit --allow-empty -m \"chore: init\""
 elif [ ${#failed[@]} -gt 0 ]; then
   step "Clone what failed above, one folder each (a prompt's repo: is the folder name):"
   for url in "${failed[@]}"; do
@@ -280,11 +283,15 @@ elif [ ${#failed[@]} -gt 0 ]; then
   done
 fi
 
-step "Once per machine, put chirat-watch and chirat-prompt on your PATH:"
-cmd "\"$(q "$here")/chirat-watch\" install"
-note "then, inside Claude Code:"
-cmd "/plugin marketplace add $root"
-cmd "/plugin install chirat@chirat"
+if command -v chirat-watch >/dev/null 2>&1; then
+  step "Once per machine (chirat-watch is already on your PATH here): the plugin, if not installed yet:"
+else
+  step "Once per machine, put chirat-watch, chirat-prompt and chirat-init on your PATH:"
+  cmd "\"$(q "$here")/chirat-watch\" install"
+  note "then the plugin:"
+fi
+cmd "claude plugin marketplace add \"$(q "$root")\" && claude plugin install chirat@chirat"
+note "or, inside a Claude Code session: /plugin marketplace add $root, then /plugin install chirat@chirat"
 
 step "Register the workspace with the watcher:"
 if [ -n "${XDG_CONFIG_HOME:-}" ]; then

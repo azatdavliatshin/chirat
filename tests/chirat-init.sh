@@ -17,6 +17,13 @@ export HOME=$tmp/home GIT_CONFIG_NOSYSTEM=1
 unset XDG_CONFIG_HOME
 mkdir -p "$HOME"
 
+# PATH without any chirat-watch, so that what is installed on this machine
+# does not decide which "once per machine" step is printed.
+nopath=""
+while IFS= read -r d; do
+  [ -z "$d" ] || [ -x "$d/chirat-watch" ] || nopath=$nopath${nopath:+:}$d
+done < <(printf '%s\n' "$PATH" | tr ':' '\n')
+
 pass=0
 fail=0
 
@@ -59,7 +66,7 @@ has "-h states the --branch limitation" "$tmp/help.out" "one --branch applies to
 
 key=$tmp/id_demo
 echo "fake key" >"$key"
-out=$("$init" demo "$tmp" --git-name "Demo User" --git-email demo@example.com \
+out=$(PATH=$nopath "$init" demo "$tmp" --git-name "Demo User" --git-email demo@example.com \
   --ssh-key "$key" --description "A & B, \\1 backrefs, {{not a placeholder}}" 2>"$tmp/stderr")
 eq "init exits 0" 0 $?
 ws=$tmp/demo
@@ -147,7 +154,7 @@ not_says() { # not_says <name> <text> <fixed string>
   case $2 in *"$3"*) ko "$1" "[$3] in: $2" ;; *) ok "$1" ;; esac
 }
 placeholders() { # placeholders <text>: command lines with < or >, the >> of the register step aside
-  printf '%s\n' "$1" | sed 's/^ *//' | grep -E '^(git|mkdir|gh|chirat-watch|echo) ' | sed 's/ >> / /g' | grep '[<>]'
+  printf '%s\n' "$1" | sed 's/^ *//' | grep -E '^(git|mkdir|gh|chirat-watch|claude|echo) ' | sed 's/ >> / /g' | grep '[<>]'
 }
 
 says "output: header says one commit" "$out" "Created workspace: $ws (git repository, branch main, 1 commit)"
@@ -156,7 +163,12 @@ says "output: mkdir -p before registering" "$out" "mkdir -p ~/.config/chirat && 
 says "output: doctor closes the steps" "$out" "chirat-watch doctor \"$ws\""
 says "output: clone step" "$out" "git clone URL \"$ws/repos/NAME\""
 says "output: default_branch hint" "$out" "set default_branch= in \"$ws/.chirat/config\""
-says "output: plugin install" "$out" "/plugin install chirat@chirat"
+says "output: plugin, terminal form" "$out" "       claude plugin marketplace add \"$root\" && claude plugin install chirat@chirat"
+says "output: plugin install" "$out" "or, inside a Claude Code session: /plugin marketplace add $root, then /plugin install chirat@chirat"
+says "output: no chirat-watch on PATH, full step" "$out" "Once per machine, put chirat-watch, chirat-prompt and chirat-init on your PATH:"
+says "output: no chirat-watch on PATH, install line" "$out" "\"$root/bin/chirat-watch\" install"
+says "output: new repository note" "$out" "No repository yet? git init -b main \"$ws/repos/NAME\" && git -C \"$ws/repos/NAME\" commit --allow-empty -m \"chore: init\""
+not_says "output: no parent note with [dir]" "$out" "pass a second argument"
 says "output: notify_open hint without --project" "$out" "set notify_open= in \"$ws/.chirat/config\""
 says "output: OWNER explained" "$out" "OWNER = your GitHub user or organization"
 says "output: remote add" "$out" "git -C \"$ws\" remote add origin git@github.com:OWNER/demo.git"
@@ -168,6 +180,33 @@ not_says "output: no commit step after the commit" "$out" "First commit"
 eq "output: no placeholder in a command line" "" "$(placeholders "$out")"
 order=$(printf '%s\n' "$out" | grep -oE 'includeIf\.|git clone URL|install$|mkdir -p|root folder|chirat-watch doctor' | tr '\n' ' ')
 eq "output: steps in order" "includeIf. git clone URL install mkdir -p root folder chirat-watch doctor " "$order"
+
+# chirat-watch already on PATH: no install line, the plugin step stays
+mkdir -p "$tmp/fakebin"
+printf '#!/bin/sh\n' >"$tmp/fakebin/chirat-watch"
+chmod +x "$tmp/fakebin/chirat-watch"
+pout=$(PATH=$tmp/fakebin:$nopath "$init" onpath "$tmp" --git-name "O" --git-email o@example.com 2>&1)
+says "on PATH: heading" "$pout" "Once per machine (chirat-watch is already on your PATH here): the plugin, if not installed yet:"
+not_says "on PATH: no install line" "$pout" "chirat-watch\" install"
+not_says "on PATH: no full heading" "$pout" "on your PATH:"
+says "on PATH: plugin, terminal form" "$pout" "       claude plugin marketplace add \"$root\" && claude plugin install chirat@chirat"
+says "on PATH: plugin, session form" "$pout" "or, inside a Claude Code session: /plugin marketplace add $root, then /plugin install chirat@chirat"
+eq "on PATH: no placeholder in a command line" "" "$(placeholders "$pout")"
+order=$(printf '%s\n' "$pout" | grep -oE 'includeIf\.|git clone URL|install$|claude plugin marketplace|mkdir -p|root folder|chirat-watch doctor' | tr '\n' ' ')
+eq "on PATH: steps in order" "includeIf. git clone URL claude plugin marketplace mkdir -p root folder chirat-watch doctor " "$order"
+
+# no [dir]: the default parent is named, on the first line
+pout=$("$init" nodir --git-name "O" --git-email o@example.com 2>&1)
+eq "no [dir]: parent note on the Created line" \
+  "Created workspace: $HOME/code/nodir (git repository, branch main, 1 commit) — parent ~/code, pass a second argument to choose another" \
+  "$(printf '%s\n' "$pout" | grep '^Created workspace')"
+
+# the new-repository note is a command that works once the identity is there
+eval "$(printf '%s\n' "$pout" | grep 'git config --global --add includeIf')"
+eval "$(printf '%s\n' "$pout" | sed -n 's/^ *No repository yet? //p' | sed 's/NAME/app/g')" >/dev/null 2>&1
+eq "new repository note: pasted, one commit on main" "main 1" \
+  "$(git -C "$HOME/code/nodir/repos/app" symbolic-ref --short HEAD) $(git -C "$HOME/code/nodir/repos/app" rev-list --count HEAD)"
+rm -rf "$HOME/.gitconfig" "$HOME/code"
 
 # --- pasted lines work, also in a path with spaces -----------------------
 
@@ -249,6 +288,7 @@ eq "--repo checks out the default" main "$(git -C "$tmp/r1/repos/app" symbolic-r
 has "without --branch default_branch stays commented" "$tmp/r1/.chirat/config" "# default_branch=main"
 not_says "--repo ok: no clone step" "$rout" "git clone"
 not_says "--repo ok: no clone wording" "$rout" "Clone "
+not_says "--repo ok: no new-repository note" "$rout" "No repository yet?"
 if grep -q '^## The code repository' "$tmp/r1/CLAUDE.md"; then ko "no rules file: no section"; else ok "no rules file: no section"; fi
 eq "--repo: still one commit" 1 "$(git -C "$tmp/r1" rev-list --count HEAD)"
 
@@ -256,6 +296,7 @@ bad=$tmp/remotes/missing.git
 rout=$("$init" r2 "$tmp" --git-name "R" --git-email r@example.com --repo "$bad" 2>&1)
 eq "bad url exits 0" 0 $?
 says "bad url warns" "$rout" "warning: clone failed: $bad"
+not_says "bad url: no new-repository note" "$rout" "No repository yet?"
 says "bad url: manual clone line" "$rout" "git clone \"$bad\" \"$tmp/r2/repos/missing\""
 exists "bad url: the workspace is complete" -f "$tmp/r2/CLAUDE.md"
 

@@ -77,7 +77,8 @@
 #   --version     print the version and exit
 #   install [dir] symlink chirat-watch, chirat-prompt and chirat-init into dir
 #                 (default ~/.local/bin); refuses to replace anything that is
-#                 not a symlink, hints at PATH if dir is not on it
+#                 not a symlink, hints at PATH if dir is not on it, ends with
+#                 the next command to run
 #   status [ws…]  read-only report: watcher, tmux session, log, and per
 #                 workspace the queue, the lock, the last run and a `next:`
 #                 line (what the human does next); exit 1 when anything is
@@ -375,7 +376,7 @@ version() {
 }
 
 install() { # install [dir]: symlink the three commands into dir
-  local dir=${1:-$HOME/.local/bin} src name target
+  local dir=${1:-$HOME/.local/bin} src name target lead="" init=chirat-init
   dir=${dir/#\~/$HOME}
   mkdir -p "$dir" || die "cannot create $dir"
   for src in "$here/chirat-watch" "$chirat_prompt" "$chirat_init"; do
@@ -388,9 +389,12 @@ install() { # install [dir]: symlink the three commands into dir
     echo "$target -> $src"
   done
   case ":$PATH:" in
-    *":${dir%/}:"*) ;;
-    *) echo "chirat-watch: $dir is not on PATH; add: export PATH=\"$dir:\$PATH\"" ;;
+    *":${dir%/}:"*) lead="ok: chirat-watch $(version) on PATH; " ;;
+    *)
+      echo "chirat-watch: $dir is not on PATH; add: export PATH=\"$dir:\$PATH\""
+      init=\"$(printf '%s' "$chirat_init" | sed 's/[\\"$`]/\\&/g')\" ;;
   esac
+  echo "${lead}next: $init NAME --git-name \"Your Name\" --git-email you@example.com"
 }
 
 if [ "${1:-}" = install ]; then
