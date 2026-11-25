@@ -73,7 +73,7 @@ In your terminal:
 
 ```bash
 git clone https://github.com/azatdavliatshin/chirat ~/code/chirat-src
-~/code/chirat-src/bin/chirat-watch install   # chirat-watch, chirat-prompt → ~/.local/bin
+~/code/chirat-src/bin/chirat-watch install   # chirat-watch, chirat-prompt, chirat-init → ~/.local/bin
 ```
 
 Make sure `~/.local/bin` is on your `PATH` (`install` says if not). Then

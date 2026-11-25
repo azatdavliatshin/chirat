@@ -732,6 +732,10 @@ inst=$tmp/inst/bin
 eq "install exits 0" 0 $?
 eq "install links chirat-watch" "$watch" "$(readlink "$inst/chirat-watch")"
 eq "install links chirat-prompt" "$rp" "$(readlink "$inst/chirat-prompt")"
+eq "install links chirat-init" "$root/bin/chirat-init" "$(readlink "$inst/chirat-init")"
+"$inst/chirat-init" --help >"$tmp/out2" 2>&1
+eq "installed chirat-init --help exits 0" 0 $?
+has "installed chirat-init --help prints the help" "$tmp/out2" "<name>   folder name of the workspace"
 has "install hints at PATH when needed" "$tmp/out" "is not on PATH"
 "$watch" install "$inst" >"$tmp/out" 2>&1
 eq "install is repeatable" 0 $?
@@ -744,6 +748,14 @@ echo "mine" >"$inst/chirat-prompt"
 eq "install refuses to overwrite a regular file" 1 $?
 has "install says why" "$tmp/stderr" "not a symlink"
 eq "install left the regular file alone" mine "$(cat "$inst/chirat-prompt")"
+# a checkout without bin/chirat-init: refused before anything is linked
+mkdir -p "$tmp/noinit/bin" "$tmp/noinit/plugin/bin"
+cp "$watch" "$tmp/noinit/bin/"
+cp "$rp" "$tmp/noinit/plugin/bin/"
+"$tmp/noinit/bin/chirat-watch" install "$tmp/noinit/inst" >"$tmp/out" 2>"$tmp/stderr"
+eq "install without chirat-init exits 1" 1 $?
+has "install without chirat-init says why" "$tmp/stderr" "chirat-init not found next to this script: $tmp/noinit/bin/chirat-init"
+absent "install without chirat-init links nothing" "$tmp/noinit/inst"
 
 # --- status / recover / restart ------------------------------------------------
 
@@ -1022,6 +1034,7 @@ has "doctor: claude" "$tmp/doc.out" "ok   claude: "
 has "doctor: plugin" "$tmp/doc.out" "ok   plugin: chirat installed"
 has "doctor: workspace" "$tmp/doc.out" "ok   workspace $ws"
 has "doctor: chirat-prompt" "$tmp/doc.out" "ok   chirat-prompt: $tmp/inst/chirat-prompt"
+has "doctor: chirat-init" "$tmp/doc.out" "ok   chirat-init: $tmp/inst/chirat-init"
 has "doctor: state dir" "$tmp/doc.out" "ok   state dir: "
 has "doctor: watcher line" "$tmp/doc.out" "ok   watcher: not running"
 has "doctor: osascript warn" "$tmp/doc.out" 'warn notifications via osascript'
@@ -1078,6 +1091,11 @@ PATH=$tmp/bin:/usr/bin:/bin "$watch" doctor >"$tmp/doc.out" 2>&1
 eq "doctor: chirat-prompt off PATH exits 1" 1 $?
 has "doctor: install hint" "$tmp/doc.out" "FAIL chirat-prompt: not on PATH: run \`$watch install\`"
 has "doctor: PATH export" "$tmp/doc.out" "export PATH="
+mv "$tmp/inst/chirat-init" "$tmp/chirat-init.link"
+doc
+eq "doctor: chirat-init off PATH exits 0" 0 $?
+has "doctor: chirat-init off PATH warns with the fix" "$tmp/doc.out" "warn chirat-init: not on PATH: run \`$watch install\`"
+mv "$tmp/chirat-init.link" "$tmp/inst/chirat-init"
 mkdir -p "$tmp/elsewhere"
 printf '#!/bin/sh\n' >"$tmp/elsewhere/chirat-prompt"; chmod +x "$tmp/elsewhere/chirat-prompt"
 PATH=$tmp/elsewhere:$dpath "$watch" doctor >"$tmp/doc.out" 2>&1

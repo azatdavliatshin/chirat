@@ -54,7 +54,12 @@ warn() {
   echo "chirat-init: warning: $*" >&2
 }
 
-here=$(cd "$(dirname "$0")" && pwd)
+self=$0
+while [ -L "$self" ]; do # installed as a symlink: find the real script
+  link=$(readlink "$self")
+  case $link in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
+done
+here=$(cd "$(dirname "$self")" && pwd)
 root=$(dirname "$here")
 template=$root/template
 [ -d "$template" ] || die "template not found: $template"

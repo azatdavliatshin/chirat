@@ -5,6 +5,14 @@ All notable changes are listed here, in the
 
 ## [Unreleased]
 
+### Added
+
+- `chirat-watch install` also links `chirat-init`.
+
+### Changed
+
+- `doctor` warns when `chirat-init` is not on `PATH`.
+
 ## [0.3.2] — 2026-11-24
 
 ### Fixed

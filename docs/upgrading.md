@@ -13,6 +13,9 @@ with `chirat-watch restart` (see below). **The plugin** is a cache snapshot,
 not a link to the clone: after pulling a version that touches `plugin/`, run
 `claude plugin update chirat@chirat`.
 
+Coming from 0.3.2 or earlier, run `chirat-watch install` once more to get
+`chirat-init` on `PATH`.
+
 ## Stopping and restarting the watcher
 
 `chirat-watch restart` stops the watcher and starts `--tmux` again with the

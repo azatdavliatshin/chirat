@@ -31,18 +31,19 @@ Project). Read [safety](safety.md) first: runs use your machine, your
 
 ```bash
 git clone https://github.com/azatdavliatshin/chirat ~/code/chirat-src
-~/code/chirat-src/bin/chirat-watch install   # chirat-watch, chirat-prompt → ~/.local/bin
+~/code/chirat-src/bin/chirat-watch install   # chirat-watch, chirat-prompt, chirat-init → ~/.local/bin
 ```
 
-`install` symlinks the two commands into `~/.local/bin` and hints if that
+`install` symlinks the three commands into `~/.local/bin` and hints if that
 directory is not on your `PATH`; add it to your shell profile if so, then
 open a new terminal. Check: `chirat-watch --version`. Until `PATH` is set,
-use `~/code/chirat-src/bin/chirat-watch` by full path.
+use `~/code/chirat-src/bin/chirat-watch` and
+`~/code/chirat-src/bin/chirat-init` by full path.
 
 ## 2. Create a workspace (terminal)
 
 ```bash
-~/code/chirat-src/bin/chirat-init demo-workspace --git-name "Your Name" --git-email you@example.com
+chirat-init demo-workspace --git-name "Your Name" --git-email you@example.com
 ```
 
 This creates `~/code/demo-workspace` (a private git repository on `main`, with

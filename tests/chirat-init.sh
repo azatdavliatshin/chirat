@@ -122,6 +122,22 @@ else
   ko ".claude/ is ignored by the workspace repo" "$(git -C "$ws" status --porcelain --ignored)"
 fi
 
+# --- started through a symlink ---------------------------------------------
+
+mkdir -p "$tmp/inst"
+ln -s "$init" "$tmp/inst/chirat-init"
+ln -s chirat-init "$tmp/inst/chirat-init-2" # relative, two hops
+"$tmp/inst/chirat-init" --help >"$tmp/help2.out" 2>&1
+eq "symlink: --help is the same text" "$(cat "$tmp/help.out")" "$(cat "$tmp/help2.out")"
+"$tmp/inst/chirat-init" >"$tmp/usage.out" 2>&1
+eq "symlink: usage exits 64" 64 $?
+has "symlink: usage printed" "$tmp/usage.out" "chirat-init <name> [dir] --git-name"
+"$tmp/inst/chirat-init-2" viasym "$tmp" --git-name "V" --git-email v@example.com >/dev/null 2>&1
+eq "symlink: init exits 0" 0 $?
+exists "symlink: template files are there" -f "$tmp/viasym/docs/WORKFLOW.md"
+exists "symlink: .chirat/config is there" -f "$tmp/viasym/.chirat/config"
+has "symlink: {{NAME}} filled" "$tmp/viasym/CLAUDE.md" "# viasym — AI workspace"
+
 # --- output --------------------------------------------------------------
 
 says() { # says <name> <text> <fixed string>

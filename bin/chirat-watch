@@ -74,9 +74,9 @@
 #   --tmux        start chirat-watch (with the remaining flags) in a detached
 #                 tmux session named `chirat`; refuses if it already exists
 #   --version     print the version and exit
-#   install [dir] symlink chirat-watch and chirat-prompt into dir (default
-#                 ~/.local/bin); refuses to replace anything that is not a
-#                 symlink, hints at PATH if dir is not on it
+#   install [dir] symlink chirat-watch, chirat-prompt and chirat-init into dir
+#                 (default ~/.local/bin); refuses to replace anything that is
+#                 not a symlink, hints at PATH if dir is not on it
 #   status [ws…]  read-only report: watcher, tmux session, log, and per
 #                 workspace the queue, the lock, the last run and a `next:`
 #                 line (what the human does next); exit 1 when anything is
@@ -338,6 +338,7 @@ done
 here=$(cd "$(dirname "$self")" && pwd)
 root=$(dirname "$here")
 chirat_prompt=$root/plugin/bin/chirat-prompt
+chirat_init=$here/chirat-init
 config=${XDG_CONFIG_HOME:-$HOME/.config}/chirat/workspaces
 log=${XDG_STATE_HOME:-$HOME/.local/state}/chirat/watch.log
 session=chirat
@@ -371,11 +372,11 @@ version() {
     "$root/plugin/.claude-plugin/plugin.json" 2>/dev/null | head -n 1
 }
 
-install() { # install [dir]: symlink the two commands into dir
+install() { # install [dir]: symlink the three commands into dir
   local dir=${1:-$HOME/.local/bin} src name target
   dir=${dir/#\~/$HOME}
   mkdir -p "$dir" || die "cannot create $dir"
-  for src in "$here/chirat-watch" "$chirat_prompt"; do
+  for src in "$here/chirat-watch" "$chirat_prompt" "$chirat_init"; do
     name=${src##*/}
     target=$dir/$name
     if [ -e "$target" ] && [ ! -L "$target" ]; then
@@ -393,6 +394,7 @@ install() { # install [dir]: symlink the two commands into dir
 if [ "${1:-}" = install ]; then
   [ $# -le 2 ] || usage
   [ -x "$chirat_prompt" ] || die "chirat-prompt not found next to this script: $chirat_prompt"
+  [ -x "$chirat_init" ] || die "chirat-init not found next to this script: $chirat_init"
   install "${2:-}"
   exit 0
 fi
@@ -2182,10 +2184,16 @@ cmd_doctor() {
   fi
 
   # 6: our own commands
-  for p in chirat-prompt chirat-watch; do
-    want=$here/chirat-watch
+  for p in chirat-prompt chirat-watch chirat-init; do
+    want=$here/$p
     [ "$p" = chirat-prompt ] && want=$chirat_prompt
     if ! pr_path=$(command -v "$p" 2>/dev/null) || [ -z "$pr_path" ]; then
+      # Nothing the watcher does needs chirat-init, and an install made by
+      # 0.3.2 or earlier has no link for it.
+      if [ "$p" = chirat-init ]; then
+        warn "$p: not on PATH: run \`$here/chirat-watch install\`"
+        continue
+      fi
       fail "$p: not on PATH: run \`$here/chirat-watch install\` and add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\""
       continue
     fi
