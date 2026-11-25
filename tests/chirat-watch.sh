@@ -1291,6 +1291,51 @@ has "doctor ws: no such path FAIL" "$tmp/dd.out" "no such directory"
 dd "$dws" extra
 eq "doctor: two paths is a usage error" 64 $?
 
+# a bare name: the registered workspace, unless a folder of that name is here
+dd_in() { # dd_in <cwd> <arg>: dd from that directory
+  (cd "$1" && HOME=$dh XDG_CONFIG_HOME="" PATH=$dpath "$watch" doctor "$2") >"$tmp/dd.out" 2>&1
+}
+mkdir -p "$dh/empty" "$dh/folder/dw"
+dd_in "$dh/empty" "$dws"
+cp "$tmp/dd.out" "$tmp/dd.path"
+dd_in "$dh/empty" dw
+eq "doctor name: exits 0" 0 $?
+eq "doctor name: same output as the full path" "$(cat "$tmp/dd.path")" "$(cat "$tmp/dd.out")"
+dd_in "$dws/repos" dw
+eq "doctor name: from inside the workspace too" "$(cat "$tmp/dd.path")" "$(cat "$tmp/dd.out")"
+dd_in "$dh/folder" dw
+eq "doctor name: a folder here wins, exit 1" 1 $?
+has "doctor name: a folder here wins" "$tmp/dd.out" "FAIL workspace $dh/folder/dw: not a workspace (no .chirat/)"
+dd_in "$dh/code" dw
+eq "doctor name: the workspace folder itself, relative" 0 $?
+dd_in "$dh/empty" nope
+eq "doctor name: unknown exits 1" 1 $?
+eq "doctor name: unknown is one FAIL" "FAIL workspace nope: no registered workspace with that name in $dh/.config/chirat/workspaces, and no such directory here; pass a path" "$(grep '^FAIL' "$tmp/dd.out")"
+has "doctor name: unknown, the machine checks run" "$tmp/dd.out" "ok   claude: "
+if grep -qF "$dh/empty" "$tmp/dd.out"; then ko "doctor name: unknown, no path under cwd" "$(cat "$tmp/dd.out")"; else ok "doctor name: unknown, no path under cwd"; fi
+dd_in "$dh/empty" nope/dw
+eq "doctor name: a path that is not there exits 1" 1 $?
+has "doctor name: a path with / is never a name" "$tmp/dd.out" "FAIL workspace nope/dw: no such directory"
+mkdir -p "$dh/other/dw/.chirat"
+printf '%s\n%s\n' "$dws" "$dh/other/dw" >"$dh/.config/chirat/workspaces"
+dd_in "$dh/empty" dw
+eq "doctor name: ambiguous exits 1" 1 $?
+eq "doctor name: ambiguous is one FAIL naming both" "FAIL workspace dw: several registered workspaces with that name: $dws, $dh/other/dw; pass a path" "$(grep '^FAIL' "$tmp/dd.out")"
+if grep -q '^ok   workspace\|includeIf' "$tmp/dd.out"; then ko "doctor name: ambiguous, no workspace checks" "$(cat "$tmp/dd.out")"; else ok "doctor name: ambiguous, no workspace checks"; fi
+mv "$dh/.config/chirat/workspaces" "$dh/workspaces.away"
+dd_in "$dh/empty" dw
+eq "doctor name: no config exits 1" 1 $?
+has "doctor name: no config, nothing registered" "$tmp/dd.out" "FAIL workspace dw: no registered workspace with that name"
+mv "$dh/workspaces.away" "$dh/.config/chirat/workspaces"
+# a path listed twice is one workspace, not an ambiguous name
+printf '%s\n%s/\n' "$dws" "$dws" >"$dh/.config/chirat/workspaces"
+dd_in "$dh/empty" dw
+eq "doctor name: listed twice exits 0" 0 $?
+eq "doctor name: listed twice, one workspace line" 1 "$(grep -c "^ok   workspace $dws" "$tmp/dd.out")"
+dd
+eq "doctor: listed twice, one summary line" 1 "$(grep -c '^dw: ' "$tmp/dd.out")"
+printf '%s\n' "$dws" >"$dh/.config/chirat/workspaces"
+
 # without an argument: one line per registered workspace, exit as before
 dws2=$dh/code/mvg
 mkdir -p "$dws2/.chirat" "$dws2/docs/plans" "$dws2/repos"
@@ -1966,6 +2011,26 @@ eq_log "T3: two log lines, no held line" 2 "$(wc -l <"$log" | tr -d ' ')"
 if log_parses; then ok "T3: every log line parses"; else ko "T3: every log line parses" "$(cat "$log")"; fi
 stop_watcher "$wpid"
 absent "T3: locks gone" "$(plock r1)"
+
+# T3b: a workspace listed twice is one workspace: its run takes one slot of
+# the cap, and status, tail and --dry-run show it once.
+mkpws d1 d2
+pprompt d1 demo.prompt-1.md 4; pprompt d2 demo.prompt-1.md 1
+printf '%s\n%s/  # again\n%s\n' "$par/d1" "$par/d1" "$par/d2" >"$XDG_CONFIG_HOME/chirat/workspaces"
+preset
+eq "T3b: dry run previews it once" 1 "$("$watch" --once --dry-run 2>/dev/null | grep -c "^cd $par/d1 ")"
+"$watch" --interval 1000 --max-parallel 2 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude_in d1 demo.prompt-1.md
+wait_claude_in d2 demo.prompt-1.md
+if [ -d "$(plock d1)" ] && [ "$(pst d2 demo.prompt-1.md)" != pending ]; then ok "T3b: the other workspace gets the second slot"; else ko "T3b: the other workspace gets the second slot" "$(cat "$log")"; fi
+until_true 150 runs_at_least 1
+eq "T3b: one section in status" 1 "$("$watch" status | grep -cx "$par/d1")"
+"$watch" tail >"$tmp/out2" 2>&1
+eq "T3b: tail sees one run" "no transcript yet" "$(cat "$tmp/out2")"
+until_true 150 runs_at_least 2
+eq_log "T3b: two log lines, no held line" 2 "$(wc -l <"$log" | tr -d ' ')"
+stop_watcher "$wpid"
 
 # T4: --max-parallel 2, three workspaces: the third is held, then runs.
 mkpws s1 s2 s3

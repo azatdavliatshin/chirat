@@ -6,7 +6,8 @@
 #   chirat-watch logs [-n N] [-f] [ws…] | tail [-f] [ws] | doctor [--online] [ws]
 #
 # Config: ~/.config/chirat/workspaces ($XDG_CONFIG_HOME honoured) — one absolute
-# workspace path per line, `#` comments, leading `~` expanded.
+# workspace path per line, `#` comments, leading `~` expanded; a path listed
+# twice counts once.
 #
 # Every --interval seconds (default 60) each workspace is asked for its next
 # pending prompt (`chirat-prompt next`). For a hit, chirat-watch takes the lock
@@ -107,8 +108,9 @@
 #                 forms: 1 on any FAIL, machine check or workspace; warn does
 #                 not count; 0 otherwise. Without ws: one more line per
 #                 registered workspace, naming its FAILs (`mvg: includeIf FAIL,
-#                 identity FAIL`, or `mvg: ok`). With ws (`~` allowed): that
-#                 workspace's setup too — FAIL includeIf (in ~/.gitconfig or a
+#                 identity FAIL`, or `mvg: ok`). With ws (`~` allowed; a bare
+#                 name (`aat`) matches `*/aat` unless a folder `aat` exists
+#                 here): that workspace's setup too — FAIL includeIf (in ~/.gitconfig or a
 #                 file it includes; `gitdir:<ws>/`, path = <ws>/.gitconfig, ~
 #                 and symlinks resolved), FAIL identity (git's user.email, and
 #                 user.name / core.sshCommand when <ws>/.gitconfig sets them,
@@ -458,8 +460,9 @@ state_dir=$(dirname "$log")
 now_iso() { date +%Y-%m-%dT%H:%M:%S%z; }
 now_stamp() { date +%Y%m%d-%H%M%S; }
 
+# workspaces: the configured paths, each once (the first occurrence)
 workspaces() {
-  local line
+  local line nl=$'\n' seen=$'\n'
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%%#*}
     line="${line#"${line%%[![:space:]]*}"}"
@@ -467,6 +470,8 @@ workspaces() {
     [ -n "$line" ] || continue
     line=${line/#\~/$HOME}
     line=${line%/}
+    case $seen in *"$nl$line$nl"*) continue ;; esac
+    seen=$seen$line$nl
     printf '%s\n' "$line"
   done <"$config"
 }
@@ -1430,19 +1435,38 @@ pass() {
 
 # --- status / recover / restart ---------------------------------------------
 
-# select_ws [name…]: the configured workspaces, or only those a name matches
-# (the full path, or a bare name that matches */name)
-select_ws() {
-  local a w found
-  if [ $# -eq 0 ]; then workspaces; return; fi
+# ws_match <ws> <name…>: success when no names are given or one matches ws
+# (the full path, or a bare name `aat` that matches `*/aat`)
+ws_match() {
+  local w=$1 a
+  shift
+  [ $# -gt 0 ] || return 0
   for a in "$@"; do
     a=${a/#\~/$HOME}
     a=${a%/}
-    found=0
-    while IFS= read -r w; do
-      case $w in "$a" | */"$a") printf '%s\n' "$w"; found=1 ;; esac
-    done < <(workspaces)
-    [ "$found" = 1 ] || die "no workspace matching '$a' in $config"
+    case $w in "$a" | */"$a") return 0 ;; esac
+  done
+  return 1
+}
+
+# ws_named <name>: the configured workspaces that name matches, or nothing
+ws_named() {
+  local w
+  while IFS= read -r w; do
+    ws_match "$w" "$1" && printf '%s\n' "$w"
+  done < <(workspaces)
+}
+
+# select_ws [name…]: the configured workspaces, or only those a name matches
+select_ws() {
+  local a found
+  if [ $# -eq 0 ]; then workspaces; return; fi
+  for a in "$@"; do
+    found=$(ws_named "$a")
+    a=${a/#\~/$HOME}
+    a=${a%/}
+    [ -n "$found" ] || die "no workspace matching '$a' in $config"
+    printf '%s\n' "$found"
   done
 }
 
@@ -1802,20 +1826,6 @@ cmd_restart() {
   watcher_line
 }
 
-# ws_match <ws> <name…>: success when no names are given or one matches ws
-# (a bare name `aat` matches `*/aat`)
-ws_match() {
-  local w=$1 a
-  shift
-  [ $# -gt 0 ] || return 0
-  for a in "$@"; do
-    a=${a/#\~/$HOME}
-    a=${a%/}
-    case $w in "$a" | */"$a") return 0 ;; esac
-  done
-  return 1
-}
-
 cmd_logs() {
   local n=20 follow=0 names=() w
   while [ $# -gt 0 ]; do
@@ -2102,7 +2112,7 @@ doctor_workspace() {
 }
 
 cmd_doctor() {
-  local online=0 bad=0 p ws n=0 cl="" dir real want pr_path v wl lm no tgt_real target="" out fails
+  local online=0 bad=0 p ws n=0 cl="" dir real want pr_path v wl lm no tgt_real target="" tgt_fail="" found="" out fails
   while [ $# -gt 0 ]; do
     case $1 in
       --online) online=1 ;;
@@ -2144,8 +2154,21 @@ cmd_doctor() {
   fi
 
   # 4: config
+  # A bare name that is no directory here: the registered workspace of that name.
+  case $target in
+    '' | */*) ;;
+    *)
+      if [ ! -d "${target/#\~/$HOME}" ]; then
+        [ ! -f "$config" ] || found=$(ws_named "$target")
+        case $found in
+          '') tgt_fail="workspace $target: no registered workspace with that name in $config, and no such directory here; pass a path" ;;
+          *$'\n'*) tgt_fail="workspace $target: several registered workspaces with that name: ${found//$'\n'/, }; pass a path" ;;
+          *) target=$found ;;
+        esac
+      fi ;;
+  esac
   tgt_real=""
-  [ -z "$target" ] || tgt_real=$(real_path "$target")
+  [ -z "$target" ] || [ -n "$tgt_fail" ] || tgt_real=$(real_path "$target")
   while IFS= read -r lm; do warn "$lm"; done < <(legacy_global)
   if [ ! -f "$config" ]; then
     fail "config: $config missing"
@@ -2248,7 +2271,9 @@ cmd_doctor() {
   if wl=$(watcher_line); then ok "$wl"; else fail "${wl#STALE: }"; fi
 
   # 9: one workspace in full, or one line per registered workspace
-  if [ -n "$target" ]; then
+  if [ -n "$tgt_fail" ]; then
+    fail "$tgt_fail"
+  elif [ -n "$target" ]; then
     ws=$(real_path "$target")
     if [ ! -d "$ws" ]; then fail "workspace $ws: no such directory"
     elif [ ! -d "$ws/.chirat" ]; then fail "workspace $ws: not a workspace (no .chirat/)"

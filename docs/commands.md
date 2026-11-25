@@ -37,7 +37,8 @@ say) it warns, leaves the files staged, prints the command to retry and exits 0.
 ## `chirat-watch`
 
 `chirat-watch` polls the workspaces in `~/.config/chirat/workspaces` (or under
-`$XDG_CONFIG_HOME`; one absolute path per line, `#` comments, `~` expanded).
+`$XDG_CONFIG_HOME`; one absolute path per line, `#` comments, `~` expanded; a path listed twice
+counts once).
 For a pending prompt it runs, from the workspace root:
 
 ```
@@ -67,8 +68,10 @@ What the permission mode means for you: [safety](safety.md#permissions).
 
 ### `doctor <ws>`
 
-Runs the machine checks, then these for the workspace (`~` allowed; a path
-without `.chirat/` is a `FAIL`). A `FAIL` on `includeIf` or `workspaces` prints
+Runs the machine checks, then these for the workspace: a path (`~` allowed),
+or a bare name: `demo` selects the configured path ending in `/demo`, unless a
+folder `demo` exists in the current directory. A path without `.chirat/` is a
+`FAIL`, and so is a name that matches no configured path, or several. A `FAIL` on `includeIf` or `workspaces` prints
 the command that fixes it. Only the asked workspace is listed in the machine
 part.
 

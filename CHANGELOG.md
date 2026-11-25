@@ -8,10 +8,18 @@ All notable changes are listed here, in the
 ### Added
 
 - `chirat-watch install` also links `chirat-init`.
+- `doctor <name>` accepts a registered workspace by bare name, like `status`.
 
 ### Changed
 
 - `doctor` warns when `chirat-init` is not on `PATH`.
+
+### Fixed
+
+- A workspace listed twice in `workspaces` is read once. Its run counted twice
+  against `--max-parallel` (so another workspace could be held with a slot
+  free), `tail` refused with "several runs in progress", and `status`,
+  `doctor`, `restart` and `--dry-run` showed it twice.
 
 ## [0.3.2] — 2026-11-24
 
