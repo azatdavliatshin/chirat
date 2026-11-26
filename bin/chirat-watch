@@ -1786,16 +1786,14 @@ cmd_recover() {
   return "$refused"
 }
 
-cmd_restart() {
-  local force=0 list ws pid="" t secs flags=() f _ live="" nlive=0
-  case ${1:-} in --force) force=1; shift ;; esac
-  [ $# -eq 0 ] || usage
-  command -v tmux >/dev/null 2>&1 || die "tmux not installed"
+# refuse_live <verb> <force>: unless force is 1, refuse (exit 1) while any run
+# is live or in setup, naming every one
+refuse_live() {
+  local list ws t secs live="" nlive=0
+  [ "$2" = 0 ] || return 0
   list=$(workspaces)
-  # Refused while any run is live: every one is named.
   while IFS= read -r ws; do
     [ -n "$ws" ] || continue
-    [ "$force" = 0 ] || break
     lock_classify "$ws"
     case $lk_state in live | setup) ;; *) continue ;; esac
     secs=0
@@ -1805,57 +1803,101 @@ cmd_restart() {
     nlive=$((nlive + 1))
   done <<<"$list"
   if [ -n "$live" ]; then
-    if [ "$nlive" = 1 ]; then die "refusing to restart: $live; --force stops it and puts the prompt back to pending"
-    else die "refusing to restart: $live; --force stops them and puts the prompts back to pending"; fi
+    if [ "$nlive" = 1 ]; then die "refusing to $1: $live; --force stops it and puts the prompt back to pending"
+    else die "refusing to $1: $live; --force stops them and puts the prompts back to pending"; fi
   fi
+}
 
+# read_kept_flags: the recorded watcher's flags (watcher.flags) into kept_flags
+kept_flags=()
+read_kept_flags() {
+  local f
+  kept_flags=()
   if [ -f "$state_dir/watcher.flags" ]; then
-    while IFS= read -r f; do [ -n "$f" ] && flags+=("$f"); done <"$state_dir/watcher.flags"
+    while IFS= read -r f; do [ -n "$f" ] && kept_flags+=("$f"); done <"$state_dir/watcher.flags"
   fi
+  return 0
+}
+
+# find_watcher: the pid of the recorded watcher, or else of the tmux session's
+# pane, if it is running; nothing otherwise
+find_watcher() {
+  local pid
   pid=$(watcher_alive)
   if [ -z "$pid" ] && tmux_has_session; then
     pid=$(tmux list-panes -t "=$session" -F '#{pane_pid}' 2>/dev/null | head -n 1)
     [ -n "$pid" ] && alive "$pid" || pid=""
   fi
-  if [ -n "$pid" ]; then
-    echo "stopping watcher $pid"
-    kill -TERM "$pid" 2>/dev/null
-    if ! wait_gone "$pid" $((stop_grace + 10)); then
-      echo "chirat-watch: watcher $pid did not stop within $((stop_grace + 10)) s, sending KILL" >&2
-      kill -KILL "$pid" 2>/dev/null
-      wait_gone "$pid" 5
-      # The killed watcher could not clean up, but its runners survive it:
-      # each gets TERM and stops its own run (prompt back to `pending`, lock
-      # released). Only a lock whose runner is already gone has its claude
-      # group stopped directly — gone, or left for the next watcher.
-      while IFS= read -r ws; do
-        [ -n "$ws" ] || continue
-        lock_read "$ws"
-        [ "$lk_wpid" = "$pid" ] || continue
-        if [ -n "$lk_rpid" ] && alive "$lk_rpid"; then
-          kill -TERM "$lk_rpid" 2>/dev/null
-          if ! wait_gone "$lk_rpid" $((stop_grace + 10)); then
-            echo "chirat-watch: $ws: runner $lk_rpid did not stop within $((stop_grace + 10)) s; lock and prompt left as they are" >&2
-          elif lock_held "$ws/.chirat/lock"; then
-            echo "chirat-watch: $ws: runner $lk_rpid stopped but kept the lock (claude's group survived or cannot be inspected; see the run's .err)" >&2
-          else
-            echo "chirat-watch: $ws: stopped runner $lk_rpid; its prompt is pending again" >&2
-          fi
-          continue
-        fi
-        [ -n "$lk_cpid" ] || continue
-        stop_group "$lk_cpid"
-        case $? in
-          0) echo "chirat-watch: $ws: stopped claude's process group $lk_cpid; the next pass recovers the lock" >&2 ;;
-          *) echo "chirat-watch: $ws: claude's process group $lk_cpid is still alive or cannot be inspected; lock and prompt left as they are" >&2 ;;
-        esac
-      done <<<"$list"
+  [ -z "$pid" ] || printf '%s\n' "$pid"
+}
+
+# stop_ws_run <ws>: after lock_read, stop the run of a lock whose watcher is
+# gone. Its runner gets TERM and stops its own run (prompt back to `pending`,
+# lock released). Only a lock whose runner is already gone has its claude
+# group stopped directly — gone, or left for the next watcher.
+stop_ws_run() {
+  local ws=$1
+  if [ -n "$lk_rpid" ] && alive "$lk_rpid"; then
+    kill -TERM "$lk_rpid" 2>/dev/null
+    if ! wait_gone "$lk_rpid" $((stop_grace + 10)); then
+      echo "chirat-watch: $ws: runner $lk_rpid did not stop within $((stop_grace + 10)) s; lock and prompt left as they are" >&2
+    elif lock_held "$ws/.chirat/lock"; then
+      echo "chirat-watch: $ws: runner $lk_rpid stopped but kept the lock (claude's group survived or cannot be inspected; see the run's .err)" >&2
+    else
+      echo "chirat-watch: $ws: stopped runner $lk_rpid; its prompt is pending again" >&2
     fi
+    return 0
+  fi
+  [ -n "$lk_cpid" ] || return 0
+  stop_group "$lk_cpid"
+  case $? in
+    0) echo "chirat-watch: $ws: stopped claude's process group $lk_cpid; the next pass recovers the lock" >&2 ;;
+    *) echo "chirat-watch: $ws: claude's process group $lk_cpid is still alive or cannot be inspected; lock and prompt left as they are" >&2 ;;
+  esac
+}
+
+# halt_watcher <pid>: TERM the watcher and wait; one that does not stop gets
+# KILL, and then the runs it left behind are stopped by stop_ws_run (the
+# killed watcher could not clean up, but its runners survive it)
+halt_watcher() {
+  local pid=$1 list ws
+  echo "stopping watcher $pid"
+  kill -TERM "$pid" 2>/dev/null
+  wait_gone "$pid" $((stop_grace + 10)) && return 0
+  echo "chirat-watch: watcher $pid did not stop within $((stop_grace + 10)) s, sending KILL" >&2
+  kill -KILL "$pid" 2>/dev/null
+  wait_gone "$pid" 5
+  list=$(workspaces)
+  while IFS= read -r ws; do
+    [ -n "$ws" ] || continue
+    lock_read "$ws"
+    [ "$lk_wpid" = "$pid" ] || continue
+    stop_ws_run "$ws"
+  done <<<"$list"
+  return 0
+}
+
+# kill_leftover_session: the tmux session, if it is still there
+kill_leftover_session() {
+  if tmux_has_session; then tmux kill-session -t "=$session"; fi
+  return 0
+}
+
+cmd_restart() {
+  local force=0 pid _
+  case ${1:-} in --force) force=1; shift ;; esac
+  [ $# -eq 0 ] || usage
+  command -v tmux >/dev/null 2>&1 || die "tmux not installed"
+  refuse_live restart "$force"
+  read_kept_flags
+  pid=$(find_watcher)
+  if [ -n "$pid" ]; then
+    halt_watcher "$pid"
   else
     echo "no watcher running; starting one"
   fi
-  tmux_has_session && tmux kill-session -t "=$session"
-  "$here/chirat-watch" --tmux ${flags[@]+"${flags[@]}"} || exit $?
+  kill_leftover_session
+  "$here/chirat-watch" --tmux ${kept_flags[@]+"${kept_flags[@]}"} || exit $?
   for _ in 1 2 3 4 5 6; do
     watcher_alive >/dev/null && break
     sleep 0.5
