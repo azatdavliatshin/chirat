@@ -16,7 +16,7 @@ Project). Read [safety](safety.md) first: runs use your machine, your
   works on both.
 - Bash 3.2 or newer (macOS's default is enough), `git`, and `claude` (Claude
   Code) installed and logged in.
-- Optional: `tmux` (for `--tmux`; `--once` needs none), `jq` (the commit
+- Optional: `tmux` (for `chirat-watch start`; `--once` needs none), `jq` (the commit
   guard and `chirat-watch tail` fall back to `python3` without it),
   `terminal-notifier` 3.x (macOS notifications, see
   [configuration](configuration.md#notifications)), `shellcheck` for
@@ -203,7 +203,7 @@ chirat-watch --once              # runs one pass over all workspaces, then exits
 
 The run takes minutes; `chirat-watch tail -f` in another terminal shows what
 Claude Code is doing. For daily use start the watcher in the background with
-`chirat-watch --tmux` (`tmux attach -t chirat` to look at it) and leave
+`chirat-watch start` (`tmux attach -t chirat` to look at it) and leave
 `--once` behind.
 
 ## 10. Read the result and merge (terminal)

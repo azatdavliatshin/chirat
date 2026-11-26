@@ -19,11 +19,10 @@ status`:
   (default 1) is reached: the `next:` line says `wait (1 pending; limit 1,
   running: <workspace>)` and the log has a `held` line for this wait. Every
   live run counts, also one a previous watcher started. It starts when a
-  slot frees. To run several workspaces at once, stop the watcher and start
-  it with the flag — `chirat-watch --tmux --max-parallel 2` — `restart`
-  keeps it from then on.
+  slot frees. To run several workspaces at once:
+  `chirat-watch restart --max-parallel 2`; later restarts keep it.
 - *No watcher is running.* `watcher: not running` (or `STALE`); start it
-  with `chirat-watch --tmux`.
+  with `chirat-watch start`.
 
 Also: the workspace is not in `~/.config/chirat/workspaces` (`chirat-watch
 doctor <ws>`), or the file name does not match the pattern (`chirat-prompt

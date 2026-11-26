@@ -9,6 +9,19 @@ All notable changes are listed here, in the
 
 - `chirat-watch install` also links `chirat-init`.
 - `doctor <name>` accepts a registered workspace by bare name, like `status`.
+- `chirat-watch stop [--force]`: stops the watcher with the same check as
+  `restart` (refused while a run is live, every run named), says what it
+  stopped and prints the command that starts it again with the same flags;
+  `--force` also stops runs whose watcher is gone, and the exit status says
+  whether everything stopped.
+- `chirat-watch start [--interval N] [--max-parallel N] [--permission-mode M]`:
+  the tmux start as a subcommand; refused while a watcher runs, and fails when
+  `tmux new-session` fails or the watcher does not come up. `--tmux` keeps
+  working as before, except that a failed `new-session` is no longer reported
+  as running.
+- `restart` takes `--interval`, `--max-parallel` and `--permission-mode`: a
+  flag given replaces the kept one of that name, the others stay; bad values
+  are reported before anything is stopped.
 
 ### Changed
 

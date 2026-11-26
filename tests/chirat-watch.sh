@@ -827,15 +827,18 @@ absent "install without chirat-init links nothing" "$tmp/noinit/inst"
 # Fake tmux: has-session succeeds for names in $FAKE_TMUX_SESSIONS, new-session
 # records and (unless FAKE_TMUX_RUN=0) runs its command in the background,
 # list-panes prints $FAKE_TMUX_PANE_PID, a session killed (and logged) is gone, everything is appended to $FAKE_TMUX_LOG.
+# FAKE_TMUX_FAIL=N makes new-session start nothing and exit N; FAKE_TMUX_KEEP=1
+# makes a killed session stay.
 cat >"$tmp/bin/tmux" <<'EOT'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_TMUX_LOG"
 case $1 in
   has-session)
-    ! grep -qxF "kill-session -t ${3}" "$FAKE_TMUX_LOG" || exit 1 # killed since it was listed
+    [ "${FAKE_TMUX_KEEP:-0}" = 1 ] || ! grep -qxF "kill-session -t ${3}" "$FAKE_TMUX_LOG" || exit 1 # killed since it was listed
     for s in ${FAKE_TMUX_SESSIONS:-}; do [ "$s" = "${3#=}" ] && exit 0; done
     exit 1 ;;
   new-session)
+    [ -z "${FAKE_TMUX_FAIL:-}" ] || exit "$FAKE_TMUX_FAIL"
     [ "${FAKE_TMUX_RUN:-1}" = 0 ] || nohup bash -c "${*: -1}" </dev/null >/dev/null 2>&1 &
     exit 0 ;;
   list-panes) [ -z "${FAKE_TMUX_PANE_PID:-}" ] || echo "$FAKE_TMUX_PANE_PID"; exit 0 ;;
@@ -1005,6 +1008,311 @@ wait "$spid" 2>/dev/null
 if kill -0 "$spid" 2>/dev/null; then ko "restart: pane process stopped"; else ok "restart: pane process stopped"; fi
 has "restart: leftover session killed" "$FAKE_TMUX_LOG" "kill-session -t =chirat"
 has "restart: new session started" "$FAKE_TMUX_LOG" "new-session -d -s chirat"
+
+# --- start / stop / restart with flags ---------------------------------------
+# Every call goes through the fake tmux above; nothing here reaches a real one.
+
+wfile=$XDG_STATE_HOME/chirat/watcher.pid
+ffile=$XDG_STATE_HOME/chirat/watcher.flags
+nosess() { if grep -q "$1" "$FAKE_TMUX_LOG"; then ko "$2" "$(cat "$FAKE_TMUX_LOG")"; else ok "$2"; fi; }
+lacks() { # lacks <name> <file> <fixed string>
+  if grep -qF -- "$3" "$2"; then ko "$1" "[$3] in $2:"$'\n'"$(cat "$2")"; else ok "$1"; fi
+}
+dead_pid() { sh -c 'exit 0' & local d=$!; wait "$d"; echo "$d"; }
+# fake_watcher <flag…>: a process that stands in for a recorded watcher
+fake_watcher() {
+  sleep 100 &
+  fwpid=$!
+  echo "$fwpid" >"$wfile"
+  if [ $# -gt 0 ]; then printf '%s\n' "$@" >"$ffile"; else : >"$ffile"; fi
+}
+
+# start: the flags reach new-session; a second start is refused
+: >"$FAKE_TMUX_LOG"
+"$watch" start --interval 1000 --max-parallel 2 >"$tmp/out" 2>"$tmp/stderr"
+eq "start exits 0" 0 $?
+has "start: new-session with the flags given" "$FAKE_TMUX_LOG" "--interval 1000 --max-parallel 2"
+has "start: prints the watcher line" "$tmp/out" "watcher: alive (pid "
+cp "$tmp/out" "$tmp/start.out"
+wpid=$(cat "$wfile")
+: >"$FAKE_TMUX_LOG"
+FAKE_TMUX_SESSIONS=chirat "$watch" start >"$tmp/out" 2>"$tmp/stderr"
+eq "start: refused while a watcher runs" 1 $?
+has "start: refusal shows the watcher line" "$tmp/stderr" "watcher: alive (pid $wpid, flags: --interval 1000 --max-parallel 2"
+has "start: refusal points at restart" "$tmp/stderr" "chirat-watch restart"
+nosess new-session "start: refusal started nothing"
+"$watch" start --once >"$tmp/out" 2>"$tmp/stderr"
+eq "start --once is a usage error" 64 $?
+"$watch" start --dry-run >"$tmp/out" 2>"$tmp/stderr"
+eq "start --dry-run is a usage error" 64 $?
+"$watch" start --max-parallel 0 >"$tmp/out" 2>"$tmp/stderr"
+eq "start: bad --max-parallel exits 1" 1 $?
+
+# stop with a watcher and no run
+: >"$FAKE_TMUX_LOG"
+FAKE_TMUX_SESSIONS=chirat "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+eq "stop exits 0" 0 $?
+if gone "$wpid"; then ok "stop: the watcher is gone"; else ko "stop: the watcher is gone"; fi
+has "stop: says what it stopped, with the flags" "$tmp/out" "stopped watcher $wpid (flags: --interval 1000 --max-parallel 2)"
+has "stop: the command that starts it again" "$tmp/out" "start again with: chirat-watch start --interval 1000 --max-parallel 2"
+has "stop: session killed" "$FAKE_TMUX_LOG" "kill-session -t =chirat"
+nosess new-session "stop: starts nothing"
+cp "$tmp/out" "$tmp/stop.out"
+"$watch" start >/dev/null 2>&1
+wpid=$(cat "$wfile")
+"$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+eq "stop (no flags) exits 0" 0 $?
+gone "$wpid"
+has "stop: flags none" "$tmp/out" "stopped watcher $wpid (flags: none)"
+eq "stop: flags none starts again with the bare start" "start again with: chirat-watch start" "$(grep '^start again with:' "$tmp/out")"
+
+# stop with no watcher, with and without a leftover session
+: >"$FAKE_TMUX_LOG"
+"$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+eq "stop without a watcher exits 0" 0 $?
+has "stop: says no watcher" "$tmp/out" "no watcher running"
+nosess kill-session "stop: no session, nothing killed"
+FAKE_TMUX_SESSIONS=chirat "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+eq "stop: leftover session, exits 0" 0 $?
+has "stop: leftover session killed" "$FAKE_TMUX_LOG" "kill-session -t =chirat"
+lacks "stop: nothing claimed stopped" "$tmp/out" "stopped watcher"
+
+# start that does not start
+: >"$FAKE_TMUX_LOG"
+FAKE_TMUX_SESSIONS=chirat "$watch" start >"$tmp/out" 2>"$tmp/stderr"
+eq "start: session without a watcher is refused" 1 $?
+has "start: names the session" "$tmp/stderr" "tmux session 'chirat' exists but no live watcher is recorded"
+has "start: points at stop" "$tmp/stderr" "chirat-watch stop"
+nosess new-session "start: no new-session then"
+FAKE_TMUX_FAIL=3 "$watch" start >"$tmp/out" 2>"$tmp/stderr"
+eq "start: failed new-session's status passed on" 3 $?
+lacks "start: no running line" "$tmp/out" "running in tmux"
+lacks "start: no watcher line" "$tmp/out" "watcher:"
+cp "$tmp/stderr" "$tmp/startfail.err"
+FAKE_TMUX_RUN=0 "$watch" start >"$tmp/out" 2>"$tmp/stderr"
+eq "start: session but no watcher pid exits 1" 1 $?
+has "start: says the watcher did not start" "$tmp/stderr" "watcher did not start; look at it with: tmux attach -t chirat; log: $log"
+lacks "start: no watcher line then" "$tmp/out" "watcher:"
+cp "$tmp/stderr" "$tmp/startnone.err"
+
+# --tmux keeps its old checks: no pid wait (dry-run, once), but a failed
+# new-session is passed on, also through restart
+FAKE_TMUX_RUN=0 "$watch" --tmux --dry-run >"$tmp/out" 2>"$tmp/stderr"
+eq "--tmux --dry-run exits 0 without a pid file" 0 $?
+has "--tmux --dry-run: today's message" "$tmp/out" "chirat-watch running in tmux session 'chirat'"
+FAKE_TMUX_RUN=0 "$watch" --tmux --once >"$tmp/out" 2>"$tmp/stderr"
+eq "--tmux --once exits 0 without a pid file" 0 $?
+has "--tmux --once: today's message" "$tmp/out" "chirat-watch running in tmux session 'chirat'"
+FAKE_TMUX_FAIL=3 "$watch" --tmux >"$tmp/out" 2>"$tmp/stderr"
+eq "--tmux: failed new-session's status passed on" 3 $?
+lacks "--tmux: no running line then" "$tmp/out" "running in tmux"
+FAKE_TMUX_FAIL=3 "$watch" restart >"$tmp/out" 2>"$tmp/stderr"
+eq "restart: failed new-session exits non-zero" 3 $?
+lacks "restart: no watcher line then" "$tmp/out" "watcher:"
+
+# stop verifies: a session that stays, a watcher that stays
+"$watch" start >/dev/null 2>&1
+wpid=$(cat "$wfile")
+: >"$FAKE_TMUX_LOG"
+FAKE_TMUX_SESSIONS=chirat FAKE_TMUX_KEEP=1 "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+eq "stop: session still there exits 1" 1 $?
+has "stop: names the session" "$tmp/stderr" "tmux session 'chirat' is still there"
+lacks "stop: no stopped line (session)" "$tmp/out" "stopped watcher"
+lacks "stop: no start again line (session)" "$tmp/out" "start again with:"
+cp "$tmp/stderr" "$tmp/stopkeep.err"
+gone "$wpid"
+"$watch" start >/dev/null 2>&1
+wpid=$(cat "$wfile")
+CHIRAT_STOP_GRACE=0 CHIRAT_TEST_SPARE_PID=$wpid "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+eq "stop: watcher still there exits 1" 1 $?
+has "stop: names the watcher" "$tmp/stderr" "watcher $wpid is still running"
+lacks "stop: no stopped line (watcher)" "$tmp/out" "stopped watcher"
+lacks "stop: no start again line (watcher)" "$tmp/out" "start again with:"
+cp "$tmp/stderr" "$tmp/stopspare.err"
+kill -TERM "$wpid"; gone "$wpid"
+
+# the start again line is quoted and works
+fake_watcher --permission-mode "a b"
+"$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+eq "stop: quoted flags, exits 0" 0 $?
+wait "$fwpid" 2>/dev/null
+line=$(sed -n 's/^start again with: //p' "$tmp/out")
+eval "set -- $line"
+eq "stop: start again line evaluates to the kept arguments" "4|chirat-watch|start|--permission-mode|a b" "$#|$1|$2|$3|$4"
+set --
+cp "$tmp/out" "$tmp/stopquote.out"
+fake_watcher --once --interval 5
+"$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+wait "$fwpid" 2>/dev/null
+eq "stop: --once kept, the bare form" "run again with: chirat-watch --once --interval 5" "$(grep 'again with:' "$tmp/out")"
+lacks "stop: --once kept, no start line" "$tmp/out" "chirat-watch start"
+cp "$tmp/out" "$tmp/stoponce.out"
+fake_watcher --once
+: >"$FAKE_TMUX_LOG"
+FAKE_TMUX_SESSIONS=chirat "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+wait "$fwpid" 2>/dev/null
+eq "stop: --once kept with a session, --tmux first" "run again with: chirat-watch --tmux --once" "$(grep 'again with:' "$tmp/out")"
+rm -f "$wfile" "$ffile"
+
+# A live run under a watcher: restart with a bad flag value and plain stop
+# are refused and touch nothing; stop --force stops it, starts nothing.
+"$rp" set "$pf" status pending
+: >"$FAKE_TMUX_LOG"
+env FAKE_MODE=sleep "$watch" --interval 1000 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude "$pf"
+cpid=$(cat "$ws/.chirat/lock/claude.pid")
+"$watch" restart --interval --force >"$tmp/out" 2>"$tmp/stderr"
+eq "restart --interval --force: bad --interval, not --force" 1 $?
+has "restart --interval --force: the --interval message" "$tmp/stderr" "--interval needs a whole number of seconds"
+"$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+eq "stop: refused during a live run" 1 $?
+has "stop: names the prompt" "$tmp/stderr" "refusing to stop: ops/docs/plans/demo.prompt-1.md is running (claude $cpid"
+has "stop: refusal names --force" "$tmp/stderr" "--force stops it and puts the prompt back to pending"
+cp "$tmp/stderr" "$tmp/stoprefuse.err"
+if kill -0 "$wpid" 2>/dev/null && kill -0 "$cpid" 2>/dev/null; then ok "refusals and the bad flag stopped nothing"; else ko "refusals and the bad flag stopped nothing"; fi
+eq "refusals and the bad flag: no tmux call that changes anything" "" "$(grep -E 'kill-session|new-session' "$FAKE_TMUX_LOG")"
+eq "refusals: prompt still running" running "$("$rp" get "$pf" status)"
+"$watch" stop --force >"$tmp/out" 2>"$tmp/stderr"
+eq "stop --force exits 0" 0 $?
+wait "$wpid"
+eq "stop --force: watcher exited 130" 130 $?
+eq "stop --force: prompt back to pending" pending "$("$rp" get "$pf" status)"
+absent "stop --force: lock released" "$ws/.chirat/lock"
+has "stop --force: stopped line" "$tmp/out" "stopped watcher $wpid (flags: --interval 1000)"
+nosess new-session "stop --force: no new-session"
+cp "$tmp/out" "$tmp/stopforce.out"
+
+# A run whose watcher is gone (the T14 situation): stop refuses, stop --force
+# stops the runner.
+env FAKE_MODE=sleep "$watch" --interval 1000 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude "$pf"
+rpid=$(cat "$ws/.chirat/lock/runner.pid")
+kill -9 "$wpid"
+wait "$wpid" 2>/dev/null
+: >"$FAKE_TMUX_LOG"
+"$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+eq "orphan: stop refused" 1 $?
+has "orphan: stop names the run" "$tmp/stderr" "ops/docs/plans/demo.prompt-1.md is running"
+if kill -0 "$rpid" 2>/dev/null; then ok "orphan: runner still alive after the refusal"; else ko "orphan: runner still alive after the refusal"; fi
+"$watch" stop --force >"$tmp/out" 2>"$tmp/stderr"
+eq "orphan: stop --force exits 0" 0 $?
+if gone "$rpid"; then ok "orphan: runner stopped"; else ko "orphan: runner stopped"; fi
+eq "orphan: prompt pending" pending "$("$rp" get "$pf" status)"
+absent "orphan: lock released" "$ws/.chirat/lock"
+has "orphan: says no watcher" "$tmp/out" "no watcher running"
+has "orphan: and what it stopped" "$tmp/stderr" "$ws: stopped runner $rpid; its prompt is pending again"
+nosess new-session "orphan: no new-session"
+cat "$tmp/out" "$tmp/stderr" >"$tmp/stoporphan.out"
+rm -f "$wfile" "$ffile"
+
+# orphan_lock <runner pid> [claude pid]: a lock whose watcher is dead
+orphan_lock() {
+  local l=$ws/.chirat/lock
+  mkdir -p "$l"
+  dead_pid >"$l/watcher.pid"
+  echo "$1" >"$l/runner.pid"
+  [ -z "${2:-}" ] || echo "$2" >"$l/claude.pid"
+  echo docs/plans/demo.prompt-1.md >"$l/prompt"
+  echo demo.prompt-1.20260101-000000 >"$l/run"
+  echo 2026-01-01T00:00:00+0000 >"$l/started"
+  "$rp" set "$pf" status running
+}
+clear_lock() { rm -rf "$ws/.chirat/lock"; "$rp" set "$pf" status pending; }
+# A runner that ignores TERM, claude alive: stop --force exits 1.
+bash -c 'trap "" TERM; while :; do sleep 0.2; done' &
+hr=$!
+sleep 100 &
+hc=$!
+orphan_lock "$hr" "$hc"
+CHIRAT_STOP_GRACE=0 "$watch" stop --force >"$tmp/out" 2>"$tmp/stderr"
+eq "orphan, runner ignores TERM: stop --force exits 1" 1 $?
+has "orphan, runner ignores TERM: still running" "$tmp/stderr" "$ws/docs/plans/demo.prompt-1.md is still running (claude $hc)"
+cp "$tmp/stderr" "$tmp/stopstill.err"
+kill -9 "$hr" "$hc" 2>/dev/null; wait "$hr" "$hc" 2>/dev/null
+clear_lock
+
+# The same during setup: a live runner, no claude.pid.
+sleep 100 &
+hr=$!
+orphan_lock "$hr"
+"$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+eq "setup: stop refused" 1 $?
+has "setup: stop names it" "$tmp/stderr" "ops/docs/plans/demo.prompt-1.md is running (runner $hr"
+"$watch" stop --force >"$tmp/out" 2>"$tmp/stderr"
+eq "setup: stop --force exits 0 once the runner is gone" 0 $?
+wait "$hr" 2>/dev/null
+if kill -0 "$hr" 2>/dev/null; then ko "setup: runner got TERM"; else ok "setup: runner got TERM"; fi
+has "setup: the lock it kept is named" "$tmp/stderr" "$ws: lock left for recovery (runner $hr dead, docs/plans/demo.prompt-1.md)"
+cp "$tmp/stderr" "$tmp/stopsetup.err"
+clear_lock
+bash -c 'trap "" TERM; while :; do sleep 0.2; done' &
+hr=$!
+orphan_lock "$hr"
+CHIRAT_STOP_GRACE=0 "$watch" stop --force >"$tmp/out" 2>"$tmp/stderr"
+eq "setup, runner ignores TERM: stop --force exits 1" 1 $?
+has "setup, runner ignores TERM: still running" "$tmp/stderr" "$ws/docs/plans/demo.prompt-1.md is still running (runner $hr)"
+kill -9 "$hr" 2>/dev/null; wait "$hr" 2>/dev/null
+clear_lock
+
+# The KILL fallback with a lock whose runner is gone: claude's group is
+# stopped, the lock is left for recovery and the prompt is not pending yet.
+env FAKE_MODE=sleep "$watch" --interval 1000 >"$tmp/out" 2>"$tmp/stderr" &
+wpid=$!
+wait_claude "$pf"
+rpid=$(cat "$ws/.chirat/lock/runner.pid") cpid=$(cat "$ws/.chirat/lock/claude.pid")
+kill -STOP "$wpid"
+kill -9 "$rpid"
+CHIRAT_STOP_GRACE=0 "$watch" stop --force >"$tmp/out" 2>"$tmp/stderr"
+eq "KILL fallback, runner gone: stop --force exits 0" 0 $?
+wait "$wpid" 2>/dev/null
+has "KILL fallback: the watcher was killed" "$tmp/stderr" "did not stop within 10 s, sending KILL"
+has "KILL fallback: claude's group stopped" "$tmp/stderr" "stopped claude's process group $cpid"
+has "KILL fallback: left for recovery" "$tmp/stderr" "$ws: lock left for recovery (claude $cpid dead, docs/plans/demo.prompt-1.md); the next chirat-watch start recovers it"
+lacks "KILL fallback: not claimed pending" "$tmp/stderr" "pending again"
+eq "KILL fallback: prompt not pending yet" running "$("$rp" get "$pf" status)"
+cat "$tmp/out" "$tmp/stderr" >"$tmp/stopkill.out"
+"$watch" recover >/dev/null 2>&1
+eq "KILL fallback: recover puts it back" pending "$("$rp" get "$pf" status)"
+"$rp" set "$pf" status "done"
+rm -f "$wfile" "$ffile"
+
+# restart replaces the kept flag of the same name; --force on either side
+"$watch" --interval 1000 --max-parallel 2 >/dev/null 2>&1 &
+wpid=$!
+until_true 50 test -s "$wfile"
+: >"$FAKE_TMUX_LOG"
+"$watch" restart --max-parallel 0 >"$tmp/out" 2>"$tmp/stderr"
+eq "restart --max-parallel 0 exits 1" 1 $?
+"$watch" restart --interval x >"$tmp/out" 2>"$tmp/stderr"
+eq "restart --interval x exits 1" 1 $?
+if kill -0 "$wpid" 2>/dev/null; then ok "restart, bad values: old watcher still alive"; else ko "restart, bad values: old watcher still alive"; fi
+eq "restart, bad values: no kill-session, no new-session" "" "$(grep -E 'kill-session|new-session' "$FAKE_TMUX_LOG")"
+"$watch" restart --max-parallel 3 >"$tmp/out" 2>"$tmp/stderr"
+eq "restart --max-parallel 3 exits 0" 0 $?
+wait "$wpid"
+has "restart --max-parallel 3: kept --interval, new cap" "$FAKE_TMUX_LOG" "--interval 1000 --max-parallel 3"
+lacks "restart --max-parallel 3: old cap gone" "$FAKE_TMUX_LOG" "--max-parallel 2"
+has "restart --max-parallel 3: new watcher line" "$tmp/out" "flags: --interval 1000 --max-parallel 3, parallel: 3"
+cp "$tmp/out" "$tmp/restartflags.out"
+: >"$FAKE_TMUX_LOG"
+wpid=$(cat "$wfile")
+"$watch" restart --force --max-parallel 4 >"$tmp/out" 2>"$tmp/stderr"
+eq "restart --force --max-parallel 4 exits 0" 0 $?
+gone "$wpid"
+has "restart --force first: replaced" "$FAKE_TMUX_LOG" "--interval 1000 --max-parallel 4"
+: >"$FAKE_TMUX_LOG"
+wpid=$(cat "$wfile")
+"$watch" restart --max-parallel 5 --force >"$tmp/out" 2>"$tmp/stderr"
+eq "restart --max-parallel 5 --force exits 0" 0 $?
+gone "$wpid"
+has "restart --force last: replaced" "$FAKE_TMUX_LOG" "--interval 1000 --max-parallel 5"
+wpid=$(cat "$wfile")
+"$watch" stop >/dev/null 2>&1
+eq "stop after the restarts exits 0" 0 $?
+gone "$wpid"
+rm -f "$wfile" "$ffile"
 
 # --- logs ------------------------------------------------------------------
 

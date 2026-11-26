@@ -2,8 +2,8 @@
 # chirat-watch — poll workspaces for pending prompts and run them headless.
 #
 #   chirat-watch [--once] [--dry-run] [--interval N] [--max-parallel N] [--permission-mode M] [--tmux] [--version]
-#   chirat-watch install [dir] | status [ws…] | recover [--dry-run] [ws…] | restart [--force]
-#   chirat-watch logs [-n N] [-f] [ws…] | tail [-f] [ws] | doctor [--online] [ws]
+#   chirat-watch start [flags] | stop [--force] | restart [--force] [flags] | install [dir] | status [ws…]
+#   chirat-watch recover [--dry-run] [ws…] | logs [-n N] [-f] [ws…] | tail [-f] [ws] | doctor [--online] [ws]
 #
 # Config: ~/.config/chirat/workspaces ($XDG_CONFIG_HOME honoured) — one absolute
 # workspace path per line, `#` comments, leading `~` expanded; a path listed
@@ -73,7 +73,9 @@
 #   --permission-mode M  claude permission mode, passed through verbatim;
 #                 default `auto`, or $CHIRAT_PERMISSION_MODE (flag wins)
 #   --tmux        start chirat-watch (with the remaining flags) in a detached
-#                 tmux session named `chirat`; refuses if it already exists
+#                 tmux session named `chirat`; refuses if it already exists;
+#                 the older spelling of `start`, which also takes --once and
+#                 --dry-run and does not wait for the watcher's pid
 #   --version     print the version and exit
 #   install [dir] symlink chirat-watch, chirat-prompt and chirat-init into dir
 #                 (default ~/.local/bin); refuses to replace anything that is
@@ -87,10 +89,26 @@
 #                 the stale-lock recovery below, on demand; --dry-run only
 #                 prints what would be done; refuses a workspace whose lock
 #                 is live
-#   restart [--force]
+#   start [--interval N] [--max-parallel N] [--permission-mode M]
+#                 start the watcher in the tmux session `chirat` and print its
+#                 `watcher:` line; refused while a watcher is running (use
+#                 restart) or while the session exists without a live watcher
+#                 (use stop); exit 1 when it did not record its pid in 3 s
+#   stop [--force]
+#                 stop the watcher (TERM, KILL after the grace period) and
+#                 kill the tmux session; refused while any run is live
+#                 (setup included) unless --force, which also stops runs left
+#                 by a watcher that is gone; prints the flags it ran with and
+#                 the command that starts it again. Exit 1 when the watcher
+#                 or the session is still there afterwards, or when a forced
+#                 stop left a run live; a lock left for recovery is named
+#   restart [--force] [--interval N] [--max-parallel N] [--permission-mode M]
 #                 stop the watcher and start `chirat-watch --tmux` again with
-#                 the same flags (the cap included); refused while any run is
-#                 live unless --force (every prompt then goes back to `pending`)
+#                 the same flags (the cap included), each flag given replacing
+#                 the kept one of that name; flags are checked before anything
+#                 is stopped; refused while any run is live unless --force
+#                 (prompts then go back to `pending` where the run could be
+#                 stopped)
 #
 #   logs [-n N] [-f] [ws…]
 #                 last N (default 20) lines of watch.log as stored, only those
@@ -440,8 +458,32 @@ fi
 
 sub="" sub_args=()
 case ${1:-} in
-  status | recover | restart | logs | tail | doctor) sub=$1; shift; sub_args=("$@"); set -- ;;
+  start | stop | status | recover | restart | logs | tail | doctor) sub=$1; shift; sub_args=("$@"); set -- ;;
 esac
+
+# check_flag <flag> <value>: exit with the usual message when the value of
+# --interval, --max-parallel or --permission-mode is bad
+check_flag() {
+  case $1 in
+    --interval) case $2 in '' | *[!0-9]*) die "--interval needs a whole number of seconds" ;; esac ;;
+    --max-parallel)
+      case $2 in '' | *[!0-9]*) die "--max-parallel needs a whole number, 1 or more" ;; esac
+      [ "$2" -ge 1 ] || die "--max-parallel needs a whole number, 1 or more" ;;
+    --permission-mode) [ -n "$2" ] || die "--permission-mode needs a value" ;;
+  esac
+  return 0
+}
+
+# tmux_launch [flag…]: chirat-watch with these flags in a new detached tmux
+# session; the status of `tmux new-session`, reported when it fails
+tmux_launch() {
+  local cmd rc
+  cmd=$(printf '%q ' "$here/chirat-watch" "$@")
+  tmux new-session -d -s "$session" -n watch "$cmd"
+  rc=$?
+  [ "$rc" = 0 ] || echo "chirat-watch: tmux new-session failed (exit $rc)" >&2
+  return "$rc"
+}
 
 once=0 dry_run=0 interval=60 max_parallel=1 use_tmux=0
 mode=${CHIRAT_PERMISSION_MODE:-auto}
@@ -452,16 +494,15 @@ while [ $# -gt 0 ]; do
     --dry-run) dry_run=1; pass_through+=("$1"); shift ;;
     --interval)
       [ $# -ge 2 ] || usage
-      case $2 in '' | *[!0-9]*) die "--interval needs a whole number of seconds" ;; esac
+      check_flag "$1" "$2"
       interval=$2; pass_through+=("$1" "$2"); shift 2 ;;
     --max-parallel)
       [ $# -ge 2 ] || usage
-      case $2 in '' | *[!0-9]*) die "--max-parallel needs a whole number, 1 or more" ;; esac
-      [ "$2" -ge 1 ] || die "--max-parallel needs a whole number, 1 or more"
+      check_flag "$1" "$2"
       max_parallel=$2; pass_through+=("$1" "$2"); shift 2 ;;
     --permission-mode)
       [ $# -ge 2 ] || usage
-      [ -n "$2" ] || die "--permission-mode needs a value"
+      check_flag "$1" "$2"
       mode=$2; pass_through+=("$1" "$2"); shift 2 ;;
     --tmux) use_tmux=1; shift ;;
     --version) echo "chirat-watch $(version)"; exit 0 ;;
@@ -485,8 +526,7 @@ if [ "$use_tmux" = 1 ]; then
   if tmux has-session -t "=$session" 2>/dev/null; then
     die "tmux session '$session' already exists; attach with: tmux attach -t $session"
   fi
-  cmd=$(printf '%q ' "$here/chirat-watch" ${pass_through[@]+"${pass_through[@]}"})
-  tmux new-session -d -s "$session" -n watch "$cmd"
+  tmux_launch ${pass_through[@]+"${pass_through[@]}"} || exit $?
   echo "chirat-watch running in tmux session '$session'; attach with: tmux attach -t $session"
   exit 0
 fi
@@ -1859,13 +1899,15 @@ stop_ws_run() {
 # halt_watcher <pid>: TERM the watcher and wait; one that does not stop gets
 # KILL, and then the runs it left behind are stopped by stop_ws_run (the
 # killed watcher could not clean up, but its runners survive it)
+# (Test only: CHIRAT_TEST_SPARE_PID=<pid> sends that pid no signal, to stand
+# for a watcher that survives the stop.)
 halt_watcher() {
   local pid=$1 list ws
   echo "stopping watcher $pid"
-  kill -TERM "$pid" 2>/dev/null
+  [ "${CHIRAT_TEST_SPARE_PID:-}" = "$pid" ] || kill -TERM "$pid" 2>/dev/null
   wait_gone "$pid" $((stop_grace + 10)) && return 0
   echo "chirat-watch: watcher $pid did not stop within $((stop_grace + 10)) s, sending KILL" >&2
-  kill -KILL "$pid" 2>/dev/null
+  [ "${CHIRAT_TEST_SPARE_PID:-}" = "$pid" ] || kill -KILL "$pid" 2>/dev/null
   wait_gone "$pid" 5
   list=$(workspaces)
   while IFS= read -r ws; do
@@ -1883,13 +1925,169 @@ kill_leftover_session() {
   return 0
 }
 
+# stop_orphans [<pid>]: stop every live or setup run whose recorded watcher is
+# not alive (stop_ws_run), except the runs of watcher <pid>, which
+# halt_watcher has already handled
+stop_orphans() {
+  local list ws
+  list=$(workspaces)
+  while IFS= read -r ws; do
+    [ -n "$ws" ] || continue
+    lock_classify "$ws"
+    case $lk_state in live | setup) ;; *) continue ;; esac
+    [ -z "${1:-}" ] || [ "$lk_wpid" != "$1" ] || continue
+    [ -n "$lk_wpid" ] && alive "$lk_wpid" && continue
+    stop_ws_run "$ws"
+  done <<<"$list"
+  return 0
+}
+
+# report_left: after a forced stop, one line per workspace whose lock is still
+# there; 1 when a run is still live or in setup
+report_left() {
+  local list ws rc=0
+  list=$(workspaces)
+  while IFS= read -r ws; do
+    [ -n "$ws" ] || continue
+    lock_classify "$ws"
+    case $lk_state in
+      none) ;;
+      live | setup)
+        echo "chirat-watch: $ws/${lk_rel:--} is still running ($(lock_owner))" >&2
+        rc=1 ;;
+      *) echo "chirat-watch: $ws: lock left for recovery (${lk_state#stale }, ${lk_rel:--}); the next chirat-watch start recovers it, chirat-watch recover --dry-run shows it" >&2 ;;
+    esac
+  done <<<"$list"
+  return "$rc"
+}
+
+# again_line <had session>: how to get the stopped watcher back with its kept
+# flags, every argument shell-quoted. `start` takes neither --once nor
+# --dry-run, so with those it is the bare form (--tmux first when the watcher
+# had a tmux session).
+again_line() {
+  local f q="" bare=0
+  for f in ${kept_flags[@]+"${kept_flags[@]}"}; do
+    case $f in --once | --dry-run) bare=1 ;; esac
+    q="$q $(printf '%q' "$f")"
+  done
+  if [ "$bare" = 1 ]; then
+    if [ "$1" = 1 ]; then q=" --tmux$q"; fi
+    echo "run again with: chirat-watch$q"
+  else
+    echo "start again with: chirat-watch start$q"
+  fi
+}
+
+cmd_stop() {
+  local force=0 pid had=0 bad=0 flags
+  while [ $# -gt 0 ]; do
+    case $1 in --force) force=1; shift ;; *) usage ;; esac
+  done
+  command -v tmux >/dev/null 2>&1 || die "tmux not installed"
+  refuse_live stop "$force"
+  read_kept_flags
+  pid=$(find_watcher)
+  tmux_has_session && had=1
+  if [ -n "$pid" ]; then
+    halt_watcher "$pid"
+  else
+    echo "no watcher running"
+  fi
+  [ "$force" = 0 ] || stop_orphans "$pid"
+  kill_leftover_session
+  # Only what is verified counts as stopped.
+  if [ -n "$pid" ] && alive "$pid"; then
+    echo "chirat-watch: watcher $pid is still running" >&2
+    bad=1
+  fi
+  if tmux_has_session; then
+    echo "chirat-watch: tmux session '$session' is still there" >&2
+    bad=1
+  fi
+  if [ "$bad" = 0 ] && [ -n "$pid" ]; then
+    flags=$(printf '%s ' ${kept_flags[@]+"${kept_flags[@]}"})
+    flags=${flags% }
+    echo "stopped watcher $pid (flags: ${flags:-none})"
+    again_line "$had"
+  fi
+  if [ "$force" = 1 ]; then report_left || bad=1; fi
+  return "$bad"
+}
+
+cmd_start() {
+  local args=() _ wl
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --interval | --max-parallel | --permission-mode)
+        [ $# -ge 2 ] || usage
+        check_flag "$1" "$2"
+        args+=("$1" "$2"); shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  command -v tmux >/dev/null 2>&1 || die "tmux not installed"
+  if watcher_alive >/dev/null; then
+    wl=$(watcher_line)
+    die "a watcher is already running ($wl); to start it with other flags: chirat-watch restart [flags]"
+  fi
+  if tmux_has_session; then
+    die "tmux session '$session' exists but no live watcher is recorded; clear it with: chirat-watch stop"
+  fi
+  tmux_launch ${args[@]+"${args[@]}"} || exit $?
+  for _ in 1 2 3 4 5 6; do
+    watcher_alive >/dev/null && break
+    sleep 0.5
+  done
+  if ! watcher_alive >/dev/null; then
+    die "watcher did not start; look at it with: tmux attach -t $session; log: $log"
+  fi
+  watcher_line
+}
+
+# merge_flags <interval> <max-parallel> <permission-mode>: each value given
+# (not empty) replaces the kept flag of that name in kept_flags, or is added
+merge_flags() {
+  local out=() i=0 n=${#kept_flags[@]} f v names=(--interval --max-parallel --permission-mode) vals=("$1" "$2" "$3") seen=("" "" "") k
+  while [ "$i" -lt "$n" ]; do
+    f=${kept_flags[$i]}
+    k=""
+    case $f in --interval) k=0 ;; --max-parallel) k=1 ;; --permission-mode) k=2 ;; esac
+    if [ -n "$k" ] && [ $((i + 1)) -lt "$n" ]; then
+      v=${kept_flags[$((i + 1))]}
+      if [ -n "${vals[$k]}" ]; then v=${vals[$k]}; seen[k]=1; fi
+      out+=("$f" "$v")
+      i=$((i + 2))
+    else
+      out+=("$f")
+      i=$((i + 1))
+    fi
+  done
+  for k in 0 1 2; do
+    [ -n "${vals[$k]}" ] && [ -z "${seen[$k]}" ] && out+=("${names[$k]}" "${vals[$k]}")
+  done
+  kept_flags=(${out[@]+"${out[@]}"})
+}
+
 cmd_restart() {
-  local force=0 pid _
-  case ${1:-} in --force) force=1; shift ;; esac
-  [ $# -eq 0 ] || usage
+  local force=0 pid _ g_interval="" g_parallel="" g_mode=""
+  # Left to right: a flag that takes a value takes the next argument, whatever
+  # it is, so `--interval --force` is a bad --interval, not --force.
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --force) force=1; shift ;;
+      --interval | --max-parallel | --permission-mode)
+        [ $# -ge 2 ] || usage
+        check_flag "$1" "$2"
+        case $1 in --interval) g_interval=$2 ;; --max-parallel) g_parallel=$2 ;; *) g_mode=$2 ;; esac
+        shift 2 ;;
+      *) usage ;;
+    esac
+  done
   command -v tmux >/dev/null 2>&1 || die "tmux not installed"
   refuse_live restart "$force"
   read_kept_flags
+  merge_flags "$g_interval" "$g_parallel" "$g_mode"
   pid=$(find_watcher)
   if [ -n "$pid" ]; then
     halt_watcher "$pid"

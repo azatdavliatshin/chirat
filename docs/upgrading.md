@@ -18,12 +18,25 @@ Coming from 0.3.2 or earlier, run `chirat-watch install` once more to get
 
 ## Stopping and restarting the watcher
 
-`chirat-watch restart` stops the watcher and starts `--tmux` again with the
-same flags. It is refused while any run is live; `--force` sends the stop
-signals anyway and every run's prompt goes back to `pending`. Prefer waiting
-for the runs to end. Stopping by `tmux kill-session` or Ctrl-C triggers the
-same interruption handling for each run: TERM to `claude`'s whole process
-group, a wait of up to `CHIRAT_STOP_GRACE` seconds (default 15), KILL, and
+`chirat-watch stop` stops the watcher and kills its tmux session, then
+prints the flags it ran with and the command that starts it again
+(`start again with: chirat-watch start --max-parallel 3`). It is refused while
+any run is live, and names every one; `--force` sends the stop signals anyway
+and puts each prompt back to `pending` where the run could be stopped — also
+a run whose watcher is already gone. A run that does not stop, or a lock left
+for the next start's recovery, gets its own line; a forced stop that left a
+run live exits 1. Prefer waiting for the runs to end.
+
+`chirat-watch restart` stops the watcher the same way and starts it again
+with the same flags; refused the same way, and with `--force` a run whose
+watcher is already gone is left running for the new watcher. A flag given to
+it replaces the kept one of that name: `chirat-watch restart --max-parallel 3`
+keeps the other flags and changes the cap. A bad value is reported before
+anything is stopped.
+
+Stopping by `tmux kill-session` or Ctrl-C has none of these checks: it
+interrupts a live run without saying so. It triggers the same interruption
+handling for each run: TERM to `claude`'s whole process group, a wait of up to `CHIRAT_STOP_GRACE` seconds (default 15), KILL, and
 another wait; only when nothing of the group is left does the prompt go back
 to `pending`, the lock get released and `interrupted` get logged. If anything
 survives, or the group cannot be inspected, that prompt and lock stay as they
@@ -38,9 +51,8 @@ still runs one prompt at a time, but two workspaces with ready prompts now
 take turns instead of the first in the config always going first, and a run
 that finishes starts the next pass at once. A workspace held back by the cap
 says so in `status` (`next: wait (1 pending; limit 1, running: …)`) and in the
-log (`held`). To run several workspaces at once, stop the watcher and start it
-with the flag — `chirat-watch --tmux --max-parallel 2` — `restart` keeps it
-from then on. Parallel runs share the subscription's rate limits, which is why
+log (`held`). To run several workspaces at once:
+`chirat-watch restart --max-parallel 2`; later restarts keep it. Parallel runs share the subscription's rate limits, which is why
 the default is 1. A lock left by a 0.2.x watcher (no `runner.pid`) is still
 read and recovered.
 
@@ -76,7 +88,7 @@ workspace that still has `.relay/`.
    `claude plugin marketplace remove chirat && claude plugin marketplace
    add azatdavliatshin/chirat`.
 8. `chirat-watch doctor --online`, then start the watcher:
-   `chirat-watch --tmux`.
+   `chirat-watch start`.
 
 ## From 0.x
 

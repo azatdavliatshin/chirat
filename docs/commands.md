@@ -55,14 +55,16 @@ What the permission mode means for you: [safety](safety.md#permissions).
 | `--interval N` | seconds between passes (default 60); a finished run starts the next pass at once |
 | `--max-parallel N` | at most N runs at the same time, still at most one per workspace (whole number ≥ 1, default 1); kept by `restart`. Parallel runs share the subscription's rate limits, which is why the default is 1 |
 | `--permission-mode M` | `claude` permission mode, passed through (default `auto`) |
-| `--tmux` | start the watcher in a detached tmux session `chirat`; refuses if it exists |
+| `--tmux` | the older spelling of `start`: start the watcher in a detached tmux session `chirat`; refuses if it exists. Also takes `--once` and `--dry-run`, and does not wait for the watcher's pid |
 | `--version` | print the version |
 | `status [ws…]` | read-only: watcher, tmux session, log, and per workspace the queue, lock, last run and a `next:` line; exit 1 when something is `STALE` (a `running` prompt without a lock, as an interactive `/chirat:next` leaves, is only `warn:`). Reads `watcher.pid` and `watcher.flags`, which a running watcher keeps next to `watch.log` |
 | `recover [--dry-run] [ws…]` | stale-lock recovery on demand; refuses a workspace whose lock is live |
 | `logs [-n N] [-f] [ws…]` | the last N (default 20) lines of `watch.log`; `-f` follows |
 | `tail [-f] [ws]` | the run in progress: assistant text and tool calls, one line each, from Claude Code's transcripts under `~/.claude/projects/`; no tool output; times in UTC. With several runs live and no `ws`, it refuses and lists one `chirat-watch tail <name>` per line |
 | `doctor [--online] [ws]` | one `ok` / `warn` / `FAIL` line per setup check; `--online` also makes a real `claude -p` call, where an expired login shows up; exit 1 on any `FAIL`, 0 otherwise (`warn` does not count; same with and without `ws`). Without `ws`, one more line per registered workspace naming its `FAIL`s (`mvg: includeIf FAIL, identity FAIL`); such a `FAIL` exits 1 too. With `ws`, [that workspace's setup](#doctor-ws) too |
-| `restart [--force]` | stop the watcher and start `--tmux` again with the same flags (`--max-parallel` included); refused while any run is live unless `--force` (every run's prompt goes back to `pending`) |
+| `start [--interval N] [--max-parallel N] [--permission-mode M]` | start the watcher in the detached tmux session `chirat` and print its `watcher:` line. Refused while a watcher is running (use `restart`), and while the session exists without a live watcher (`stop` clears it); exit 1 with `watcher did not start` when it does not record its pid within 3 s |
+| `stop [--force]` | stop the watcher and kill the tmux session; prints `stopped watcher <pid> (flags: …)` and the command that starts it again with those flags. Refused while any run is live, every one named, unless `--force`: prompts are put back to `pending` where the run could be stopped, also runs left by a watcher that is gone; a lock that is left (a run that did not stop, or a stale lock for the next start's recovery) gets one line. Exit 1 when the watcher or the session is still there afterwards, or when a forced stop left a run live. More: [upgrading](upgrading.md#stopping-and-restarting-the-watcher) |
+| `restart [--force] [--interval N] [--max-parallel N] [--permission-mode M]` | stop the watcher and start `--tmux` again with the same flags (`--max-parallel` included); a flag given replaces the kept one of that name (`restart --max-parallel 3`), the others stay; to go back to a default, give it. Flags are checked before anything is stopped. Refused while any run is live unless `--force` (prompts are put back to `pending` where the run could be stopped) |
 | `install [dir]` | symlink `chirat-watch`, `chirat-prompt` and `chirat-init` into `dir` (default `~/.local/bin`); replaces symlinks, refuses anything else, hints at `PATH`, ends with the `chirat-init` command to run next |
 | `[ws…]` | workspace paths, or a bare name: `demo` selects the configured path ending in `/demo` |
 
@@ -142,7 +144,7 @@ script header. More:
 
 ### Locks and stopping
 
-Run with `--tmux`, not one Ctrl-C away from an interrupted run.
+Run with `chirat-watch start`, not one Ctrl-C away from an interrupted run.
 `.chirat/lock` keeps two watchers off one workspace and records who holds it:
 `watcher.pid` (the watcher), `runner.pid` (the run's own process) and
 `claude.pid` (also the id of `claude`'s process group), plus the prompt, the
