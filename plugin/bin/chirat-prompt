@@ -66,6 +66,7 @@
 # keys and empty values are ignored; a line without `=` is a warning on stderr.
 
 set -euo pipefail
+unset CDPATH # `cd` must resolve against the working directory only, and print nothing
 export LC_ALL=C # byte-order suffix comparison and [a-z] without locale surprises
 
 usage() {

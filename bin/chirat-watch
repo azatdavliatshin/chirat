@@ -331,6 +331,7 @@
 # but nothing here is macOS-only.
 
 set -uo pipefail
+unset CDPATH # `cd` must resolve against the working directory only, and print nothing
 
 self=$0
 tab=$'\t'

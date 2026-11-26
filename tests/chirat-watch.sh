@@ -773,6 +773,21 @@ if grep -qF "on PATH is" "$tmp/out"; then ko "install via symlinked PATH: no win
 eq "install via symlinked PATH: closing line" \
   "ok: $("$watch" --version) on PATH; next: chirat-init NAME --git-name \"Your Name\" --git-email you@example.com" "$(tail -n 1 "$tmp/out")"
 rm "$tmp/inst-link"
+# CDPATH with a decoy of the same relative name: the PATH entry is the caller's
+mkdir -p "$tmp/cdw/inst" "$tmp/decoy/inst"
+(cd "$tmp/cdw" && CDPATH=$tmp/decoy PATH=inst:$PATH "$watch" install "$tmp/cdw/inst" >"$tmp/out" 2>&1)
+eq "install under CDPATH exits 0" 0 $?
+eq "install under CDPATH: closing line" \
+  "ok: $("$watch" --version) on PATH; next: chirat-init NAME --git-name \"Your Name\" --git-email you@example.com" "$(tail -n 1 "$tmp/out")"
+if grep -qF "not on PATH" "$tmp/out"; then ko "install under CDPATH: no PATH hint" "$(cat "$tmp/out")"; else ok "install under CDPATH: no PATH hint"; fi
+if grep -qF "on PATH is" "$tmp/out"; then ko "install under CDPATH: no winner line" "$(cat "$tmp/out")"; else ok "install under CDPATH: no winner line"; fi
+eq "install under CDPATH: nothing written into the decoy" "" "$(ls -A "$tmp/decoy/inst")"
+# a script started by a relative path resolves its own folder without CDPATH
+mkdir -p "$tmp/rel" "$tmp/decoy/bin"
+ln -s "$root/bin" "$tmp/rel/bin"; ln -s "$root/plugin" "$tmp/rel/plugin"
+(cd "$tmp/rel" && CDPATH=$tmp/decoy bin/chirat-watch --version >"$tmp/out" 2>&1)
+eq "relative start under CDPATH: --version is one line" "chirat-watch $(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$root/plugin/.claude-plugin/plugin.json")" "$(cat "$tmp/out")"
+rm -rf "$tmp/cdw" "$tmp/decoy" "$tmp/rel"
 # a link to a directory is replaced itself, never written through
 for n in chirat-init chirat-prompt; do
   mkdir -p "$tmp/elsewhere-$n"

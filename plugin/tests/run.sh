@@ -395,6 +395,18 @@ cp "$lf" "$tmp/loose/p.md"
 eq "set outside docs/plans succeeds" "done" "$("$rp" get "$tmp/loose/p.md" status)"
 if grep -q "not logged" "$tmp/err"; then ok "set outside docs/plans warns"; else ko "set outside docs/plans warns" "$(cat "$tmp/err")"; fi
 eq "status.log: untouched by the loose file" 1 "$(wc -l <"$slog" | tr -d ' ')"
+# a relative path under an exported CDPATH that leads to another docs/plans
+mkdir -p "$tmp/decoy/docs/plans"
+prompt cd.prompt-1.md pending 202601010000
+lines_before=$(wc -l <"$slog" | tr -d ' ')
+(cd "$ws" && CDPATH=$tmp/decoy "$rp" set docs/plans/cd.prompt-1.md status running >"$tmp/cd.out" 2>"$tmp/cd.err")
+eq "CDPATH: relative set exits 0" 0 $?
+eq "CDPATH: relative set changes the status" running "$("$rp" get "$ws/docs/plans/cd.prompt-1.md" status)"
+eq "CDPATH: status.log gained one line" $((lines_before + 1)) "$(wc -l <"$slog" | tr -d ' ')"
+eq "CDPATH: the line is for that file, pending to running" \
+  "docs/plans/cd.prompt-1.md pending running" "$(tail -n 1 "$slog" | cut -f2-4 | tr '\t' ' ')"
+if grep -q "not logged" "$tmp/cd.err" "$tmp/cd.out"; then ko "CDPATH: no 'not logged' warning" "$(cat "$tmp/cd.err")"; else ok "CDPATH: no 'not logged' warning"; fi
+eq "CDPATH: nothing appeared under the decoy" "" "$(find "$tmp/decoy/docs/plans" "$tmp/decoy/.chirat" -type f 2>/dev/null)"
 
 # --- .chirat/config in chirat-prompt; guard and .chirat/ -----------------------
 

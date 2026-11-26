@@ -34,6 +34,7 @@
 # Never overwrites an existing directory, never edits ~/.gitconfig, asks nothing.
 
 set -euo pipefail
+unset CDPATH # `cd` must resolve against the working directory only, and print nothing
 
 usage() {
   sed -n '4,6p' "$0" | sed 's/^# \{0,1\}//' >&2

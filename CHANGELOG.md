@@ -26,6 +26,7 @@ All notable changes are listed here, in the
   `doctor`, `restart` and `--dry-run` showed it twice.
 - `install` no longer writes through a symlink that points to a directory: the
   link itself is replaced.
+- An exported `CDPATH` no longer changes how the commands resolve paths.
 
 ## [0.3.2] — 2026-11-24
 

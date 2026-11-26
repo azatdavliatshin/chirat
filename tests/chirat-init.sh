@@ -138,6 +138,14 @@ ln -s chirat-init "$tmp/inst/chirat-init-2" # relative, two hops
 eq "symlink: --help is the same text" "$(cat "$tmp/help.out")" "$(cat "$tmp/help2.out")"
 "$tmp/inst/chirat-init" >"$tmp/usage.out" 2>&1
 eq "symlink: usage exits 64" 64 $?
+
+# --- started by a relative path under CDPATH -------------------------------
+
+mkdir -p "$tmp/rel" "$tmp/decoy/bin"
+ln -s "$root/bin" "$tmp/rel/bin"; ln -s "$root/template" "$tmp/rel/template"
+(cd "$tmp/rel" && CDPATH=$tmp/decoy bin/chirat-init --help >"$tmp/help3.out" 2>&1)
+eq "relative start under CDPATH: --help exits 0" 0 $?
+eq "relative start under CDPATH: same help text, no stray path line" "$(cat "$tmp/help.out")" "$(cat "$tmp/help3.out")"
 has "symlink: usage printed" "$tmp/usage.out" "chirat-init <name> [dir] --git-name"
 "$tmp/inst/chirat-init-2" viasym "$tmp" --git-name "V" --git-email v@example.com >/dev/null 2>&1
 eq "symlink: init exits 0" 0 $?
