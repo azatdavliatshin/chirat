@@ -375,9 +375,27 @@ version() {
     "$root/plugin/.claude-plugin/plugin.json" 2>/dev/null | head -n 1
 }
 
+# real_path <path>: `~` expanded, symlinks resolved, no trailing slash. A path
+# whose parent does not exist comes back as given.
+real_path() {
+  local p=${1/#\~/$HOME} d
+  p=${p%/}
+  if [ -d "$p" ]; then
+    (cd -P "$p" && pwd -P)
+  else
+    d=$(dirname "$p")
+    if [ -d "$d" ]; then
+      printf '%s/%s\n' "$(cd -P "$d" && pwd -P)" "$(basename "$p")"
+    else
+      printf '%s\n' "$p"
+    fi
+  fi
+}
+
 install() { # install [dir]: symlink the three commands into dir
-  local dir=${1:-$HOME/.local/bin} src name target lead="" init=chirat-init
+  local dir=${1:-$HOME/.local/bin} src name target lead="" init=chirat-init e p onpath=""
   dir=${dir/#\~/$HOME}
+  [ "$dir" = / ] || dir=${dir%/}
   mkdir -p "$dir" || die "cannot create $dir"
   for src in "$here/chirat-watch" "$chirat_prompt" "$chirat_init"; do
     name=${src##*/}
@@ -385,15 +403,29 @@ install() { # install [dir]: symlink the three commands into dir
     if [ -e "$target" ] && [ ! -L "$target" ]; then
       die "$target exists and is not a symlink, not overwriting"
     fi
-    ln -sf "$src" "$target" || die "cannot link $target"
+    # Remove the old link first: `ln -sf` onto a link to a directory would
+    # follow it and write inside that directory.
+    rm -f "$target" || die "cannot replace $target"
+    ln -s "$src" "$target" || die "cannot link $target"
     echo "$target -> $src"
   done
-  case ":$PATH:" in
-    *":${dir%/}:"*) lead="ok: chirat-watch $(version) on PATH; " ;;
-    *)
-      echo "chirat-watch: $dir is not on PATH; add: export PATH=\"$dir:\$PATH\""
-      init=\"$(printf '%s' "$chirat_init" | sed 's/[\\"$`]/\\&/g')\" ;;
-  esac
+  # On PATH and winning: compare resolved directories, not spellings.
+  while IFS= read -r -d : e; do
+    [ "$(real_path "${e:-.}")" = "$(real_path "$dir")" ] && onpath=1
+  done <<<"$PATH:"
+  if [ -z "$onpath" ]; then
+    echo "chirat-watch: $dir is not on PATH; add: export PATH=\"$dir:\$PATH\""
+  else
+    lead="ok: chirat-watch $(version) on PATH; "
+    hash -r
+    for name in chirat-watch chirat-init; do
+      p=$(command -v "$name") || p=""
+      [ -n "$p" ] && [ "$(real_path "$p")" = "$(real_path "$dir/$name")" ] && continue
+      echo "chirat-watch: $name on PATH is ${p:-missing}, not $dir/$name"
+      lead=""
+    done
+  fi
+  [ -n "$lead" ] || init=\"$(printf '%s' "$chirat_init" | sed 's/[\\"$`]/\\&/g')\"
   echo "${lead}next: $init NAME --git-name \"Your Name\" --git-email you@example.com"
 }
 
@@ -1945,23 +1977,6 @@ cmd_tail() {
     tail -n +1 -f "$best" | transcript_filter
   else
     transcript_filter <"$best"
-  fi
-}
-
-# real_path <path>: `~` expanded, symlinks resolved, no trailing slash. A path
-# whose parent does not exist comes back as given.
-real_path() {
-  local p=${1/#\~/$HOME} d
-  p=${p%/}
-  if [ -d "$p" ]; then
-    (cd -P "$p" && pwd -P)
-  else
-    d=$(dirname "$p")
-    if [ -d "$d" ]; then
-      printf '%s/%s\n' "$(cd -P "$d" && pwd -P)" "$(basename "$p")"
-    else
-      printf '%s\n' "$p"
-    fi
   fi
 }
 

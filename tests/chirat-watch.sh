@@ -747,6 +747,51 @@ PATH=$inst:$PATH "$watch" install "$inst" >"$tmp/out" 2>&1
 if grep -qF "not on PATH" "$tmp/out"; then ko "no PATH hint when dir is on PATH"; else ok "no PATH hint when dir is on PATH"; fi
 eq "install on PATH: closing line" \
   "ok: $("$watch" --version) on PATH; next: chirat-init NAME --git-name \"Your Name\" --git-email you@example.com" "$(tail -n 1 "$tmp/out")"
+# another copy earlier on PATH: no ok line, the winner is named, full path
+mkdir -p "$tmp/other"
+printf '#!/bin/sh\n' >"$tmp/other/chirat-watch"; chmod +x "$tmp/other/chirat-watch"
+PATH=$tmp/other:$inst:$PATH "$watch" install "$inst" >"$tmp/out" 2>&1
+eq "install shadowed chirat-watch exits 0" 0 $?
+if grep -q '^ok: ' "$tmp/out"; then ko "install shadowed chirat-watch: no ok line" "$(cat "$tmp/out")"; else ok "install shadowed chirat-watch: no ok line"; fi
+has "install shadowed chirat-watch: names the winner" "$tmp/out" "chirat-watch on PATH is $tmp/other/chirat-watch, not $inst/chirat-watch"
+eq "install shadowed chirat-watch: chirat-init by full path" \
+  "next: \"$root/bin/chirat-init\" NAME --git-name \"Your Name\" --git-email you@example.com" "$(tail -n 1 "$tmp/out")"
+mv "$tmp/other/chirat-watch" "$tmp/other/chirat-init"
+PATH=$tmp/other:$inst:$PATH "$watch" install "$inst" >"$tmp/out" 2>&1
+eq "install shadowed chirat-init exits 0" 0 $?
+if grep -q '^ok: ' "$tmp/out"; then ko "install shadowed chirat-init: no ok line" "$(cat "$tmp/out")"; else ok "install shadowed chirat-init: no ok line"; fi
+has "install shadowed chirat-init: names the winner" "$tmp/out" "chirat-init on PATH is $tmp/other/chirat-init, not $inst/chirat-init"
+if grep -qF "chirat-watch on PATH is" "$tmp/out"; then ko "install shadowed chirat-init: chirat-watch not named" "$(cat "$tmp/out")"; else ok "install shadowed chirat-init: chirat-watch not named"; fi
+eq "install shadowed chirat-init: chirat-init by full path" \
+  "next: \"$root/bin/chirat-init\" NAME --git-name \"Your Name\" --git-email you@example.com" "$(tail -n 1 "$tmp/out")"
+rm -r "$tmp/other"
+# PATH names dir through a symlink, install gets the physical path with a slash
+ln -s "$inst" "$tmp/inst-link"
+PATH=$tmp/inst-link:$PATH "$watch" install "$inst/" >"$tmp/out" 2>&1
+eq "install via symlinked PATH exits 0" 0 $?
+if grep -qF "on PATH is" "$tmp/out"; then ko "install via symlinked PATH: no winner line" "$(cat "$tmp/out")"; else ok "install via symlinked PATH: no winner line"; fi
+eq "install via symlinked PATH: closing line" \
+  "ok: $("$watch" --version) on PATH; next: chirat-init NAME --git-name \"Your Name\" --git-email you@example.com" "$(tail -n 1 "$tmp/out")"
+rm "$tmp/inst-link"
+# a link to a directory is replaced itself, never written through
+for n in chirat-init chirat-prompt; do
+  mkdir -p "$tmp/elsewhere-$n"
+  echo theirs >"$tmp/elsewhere-$n/$n"
+  rm "$inst/$n"
+  ln -s "$tmp/elsewhere-$n" "$inst/$n"
+done
+"$watch" install "$inst" >"$tmp/out" 2>&1
+eq "install over links to directories exits 0" 0 $?
+eq "install replaced the chirat-init link to a directory" "$root/bin/chirat-init" "$(readlink "$inst/chirat-init")"
+eq "install replaced the chirat-prompt link to a directory" "$rp" "$(readlink "$inst/chirat-prompt")"
+for n in chirat-init chirat-prompt; do
+  if [ -f "$tmp/elsewhere-$n/$n" ] && [ ! -L "$tmp/elsewhere-$n/$n" ] && [ "$(cat "$tmp/elsewhere-$n/$n")" = theirs ]; then
+    ok "install left the file behind the $n link alone"
+  else
+    ko "install left the file behind the $n link alone" "$(ls -l "$tmp/elsewhere-$n")"
+  fi
+done
+rm -r "$tmp/elsewhere-chirat-init" "$tmp/elsewhere-chirat-prompt"
 rm "$inst/chirat-prompt"
 echo "mine" >"$inst/chirat-prompt"
 "$watch" install "$inst" >"$tmp/out" 2>"$tmp/stderr"
@@ -1914,6 +1959,17 @@ preset() { # preset: empty log, no .seen files, no watcher pid files
 }
 pst() { "$rp" get "$par/$1/docs/plans/$2" status; }
 plock() { printf '%s\n' "$par/$1/.chirat/lock"; }
+# foreign_lock <ws name> <runner pid> <prompt>: a live lock this watcher did not
+# start — <runner pid> (a helper process) stands in for its runner.
+foreign_lock() {
+  local l=$par/$1/.chirat/lock
+  mkdir -p "$l"
+  echo $$ >"$l/watcher.pid"
+  echo "$2" >"$l/runner.pid"
+  echo "docs/plans/$3" >"$l/prompt"
+  echo "${3%.md}.20260101-000000" >"$l/run"
+  echo 2026-01-01T00:00:00+0000 >"$l/started"
+}
 wait_claude_in() { # wait_claude_in <ws name> <file>: until it runs and claude.pid is there
   local _
   for _ in $(seq 1 100); do
@@ -2031,11 +2087,21 @@ wait_claude_in d2 demo.prompt-1.md
 if [ -d "$(plock d1)" ] && [ "$(pst d2 demo.prompt-1.md)" != pending ]; then ok "T3b: the other workspace gets the second slot"; else ko "T3b: the other workspace gets the second slot" "$(cat "$log")"; fi
 until_true 150 runs_at_least 1
 eq "T3b: one section in status" 1 "$("$watch" status | grep -cx "$par/d1")"
-"$watch" tail >"$tmp/out2" 2>&1
-eq "T3b: tail sees one run" "no transcript yet" "$(cat "$tmp/out2")"
 until_true 150 runs_at_least 2
 eq_log "T3b: two log lines, no held line" 2 "$(wc -l <"$log" | tr -d ' ')"
 stop_watcher "$wpid"
+# T3b, tail: no run, nothing waited for — one live lock made by hand in a
+# workspace listed twice is one run.
+mkpws t1
+pcfg t1 t1
+sleep 300 &
+hpid=$!
+foreign_lock t1 "$hpid" demo.prompt-1.md
+"$watch" tail >"$tmp/out2" 2>&1
+eq "T3b: tail exits 0 on a workspace listed twice" 0 $?
+eq "T3b: tail sees one run" "no transcript yet" "$(cat "$tmp/out2")"
+kill "$hpid" 2>/dev/null; wait "$hpid" 2>/dev/null
+rm -r "$(plock t1)"
 
 # T4: --max-parallel 2, three workspaces: the third is held, then runs.
 mkpws s1 s2 s3
@@ -2273,18 +2339,6 @@ if kill -0 "$hpid" 2>/dev/null; then ok "T14: the process named by watcher.pid i
 absent "T14: it received no USR1" "$tmp/usr1"
 kill "$hpid" 2>/dev/null; wait "$hpid" 2>/dev/null
 rm -f "$XDG_STATE_HOME/chirat/watcher.pid"
-
-# foreign_lock <ws name> <runner pid> <prompt>: a live lock this watcher did not
-# start — <runner pid> (a helper process) stands in for its runner.
-foreign_lock() {
-  local l=$par/$1/.chirat/lock
-  mkdir -p "$l"
-  echo $$ >"$l/watcher.pid"
-  echo "$2" >"$l/runner.pid"
-  echo "docs/plans/$3" >"$l/prompt"
-  echo "${3%.md}.20260101-000000" >"$l/run"
-  echo 2026-01-01T00:00:00+0000 >"$l/started"
-}
 
 # T15: a stop that arrives in the fork gap (CHIRAT_TEST_FORK_GAP widens it):
 # the watcher records the runner before it stops, so the runner is stopped,

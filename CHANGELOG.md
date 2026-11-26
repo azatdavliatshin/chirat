@@ -24,6 +24,8 @@ All notable changes are listed here, in the
   against `--max-parallel` (so another workspace could be held with a slot
   free), `tail` refused with "several runs in progress", and `status`,
   `doctor`, `restart` and `--dry-run` showed it twice.
+- `install` no longer writes through a symlink that points to a directory: the
+  link itself is replaced.
 
 ## [0.3.2] — 2026-11-24
 
