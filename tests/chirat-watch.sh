@@ -1325,12 +1325,41 @@ rm -f "$wfile" "$ffile"
 mkdir -p "$tmp/nt"
 for _f in "$tmp/bin"/*; do [ "${_f##*/}" = tmux ] || ln -sf "$_f" "$tmp/nt/"; done
 nt_path=$tmp/nt
+# A directory that holds tmux is replaced by a shadow of it (a link to every
+# entry but tmux), so what shares the directory with tmux (env, bash on
+# ubuntu) stays; a directory reached twice (/bin -> /usr/bin) counts once.
+nt_seen=:
+nt_n=0
 IFS=: read -ra _pd <<<"$clean_path"
-for _d in "${_pd[@]}"; do [ -x "$_d/tmux" ] || nt_path=$nt_path:$_d; done
+for _d in "${_pd[@]}"; do
+  if [ ! -x "$_d/tmux" ]; then
+    nt_path=$nt_path:$_d
+    continue
+  fi
+  _real=$(cd -P "$_d" && pwd -P) || continue
+  case $nt_seen in *":$_real:"*) continue ;; esac
+  nt_seen=$nt_seen$_real:
+  nt_n=$((nt_n + 1))
+  mkdir -p "$tmp/nt-shadow$nt_n"
+  (
+    shopt -s dotglob nullglob
+    for _e in "$_real"/*; do
+      [ "${_e##*/}" = tmux ] || ln -s "$_e" "$tmp/nt-shadow$nt_n/"
+    done
+  )
+  nt_path=$nt_path:$tmp/nt-shadow$nt_n
+done
 if PATH=$nt_path command -v tmux >/dev/null 2>&1; then ko "no tmux: none on the test PATH"; else ok "no tmux: none on the test PATH"; fi
+nt_missing=""
+for _c in env bash ps git sed awk date sleep cat stat tr head tail dirname basename mkdir rm mv kill pgrep; do
+  PATH=$nt_path command -v "$_c" >/dev/null 2>&1 || nt_missing="$nt_missing $_c"
+done
+eq "no tmux: the tools the watcher needs are on that PATH" "" "${nt_missing# }"
 PATH=$nt_path "$watch" --interval 1000 >/dev/null 2>&1 &
 wpid=$!
-until_true 50 test -s "$wfile"
+until_true 100 test -s "$ffile"
+if [ "$(cat "$wfile" 2>/dev/null)" = "$wpid" ] && kill -0 "$wpid" 2>/dev/null &&
+  [ "$(cat "$ffile" 2>/dev/null)" = "$(printf '%s\n' --interval 1000)" ]; then ok "no tmux: the watcher started"; else ko "no tmux: the watcher started" "pid [$(cat "$wfile" 2>/dev/null)] want [$wpid], flags [$(cat "$ffile" 2>/dev/null)]"; fi
 PATH=$nt_path "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
 eq "no tmux: stop exits 0" 0 $?
 wait "$wpid" 2>/dev/null
@@ -1342,7 +1371,9 @@ lacks "no tmux: not refused for tmux" "$tmp/stderr" "tmux not installed"
 cp "$tmp/out" "$tmp/stopnotmux.out"
 PATH=$nt_path "$watch" >/dev/null 2>&1 &
 wpid=$!
-until_true 50 test -s "$wfile"
+until_true 100 test -f "$ffile"
+if [ "$(cat "$wfile" 2>/dev/null)" = "$wpid" ] && kill -0 "$wpid" 2>/dev/null &&
+  [ -f "$ffile" ] && [ ! -s "$ffile" ]; then ok "no tmux, no flags: the watcher started"; else ko "no tmux, no flags: the watcher started" "pid [$(cat "$wfile" 2>/dev/null)] want [$wpid], flags [$(cat "$ffile" 2>/dev/null)]"; fi
 PATH=$nt_path "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
 eq "no tmux, no flags: stop exits 0" 0 $?
 wait "$wpid" 2>/dev/null
