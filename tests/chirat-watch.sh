@@ -1164,6 +1164,15 @@ wait "$fwpid" 2>/dev/null
 eq "stop: --once kept with a session, --tmux first" "run again with: chirat-watch --tmux --once" "$(grep 'again with:' "$tmp/out")"
 rm -f "$wfile" "$ffile"
 
+# The again line reads the kept flags as pairs: --once as the value of
+# --permission-mode is not the --once flag.
+fake_watcher --permission-mode --once
+"$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+wait "$fwpid" 2>/dev/null
+eq "stop: --once as a value, the start form" "start again with: chirat-watch start --permission-mode --once" "$(grep 'again with:' "$tmp/out")"
+rm -f "$wfile" "$ffile"
+
+
 # A live run under a watcher: restart with a bad flag value and plain stop
 # are refused and touch nothing; stop --force stops it, starts nothing.
 "$rp" set "$pf" status pending
@@ -1309,6 +1318,37 @@ cat "$tmp/out" "$tmp/stderr" >"$tmp/stopkill.out"
 "$watch" recover >/dev/null 2>&1
 eq "KILL fallback: recover puts it back" pending "$("$rp" get "$pf" status)"
 "$rp" set "$pf" status "done"
+rm -f "$wfile" "$ffile"
+
+# stop without tmux on PATH: a foreground watcher is stopped, and the again
+# line is the foreground form.
+mkdir -p "$tmp/nt"
+for _f in "$tmp/bin"/*; do [ "${_f##*/}" = tmux ] || ln -sf "$_f" "$tmp/nt/"; done
+nt_path=$tmp/nt
+IFS=: read -ra _pd <<<"$clean_path"
+for _d in "${_pd[@]}"; do [ -x "$_d/tmux" ] || nt_path=$nt_path:$_d; done
+if PATH=$nt_path command -v tmux >/dev/null 2>&1; then ko "no tmux: none on the test PATH"; else ok "no tmux: none on the test PATH"; fi
+PATH=$nt_path "$watch" --interval 1000 >/dev/null 2>&1 &
+wpid=$!
+until_true 50 test -s "$wfile"
+PATH=$nt_path "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+eq "no tmux: stop exits 0" 0 $?
+wait "$wpid" 2>/dev/null
+if kill -0 "$wpid" 2>/dev/null; then ko "no tmux: the watcher is gone"; else ok "no tmux: the watcher is gone"; fi
+has "no tmux: stopped line" "$tmp/out" "stopped watcher $wpid (flags: --interval 1000)"
+eq "no tmux: the foreground again line" "run again with: chirat-watch --interval 1000" "$(grep 'again with:' "$tmp/out")"
+lacks "no tmux: no start form" "$tmp/out" "chirat-watch start"
+lacks "no tmux: not refused for tmux" "$tmp/stderr" "tmux not installed"
+cp "$tmp/out" "$tmp/stopnotmux.out"
+PATH=$nt_path "$watch" >/dev/null 2>&1 &
+wpid=$!
+until_true 50 test -s "$wfile"
+PATH=$nt_path "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+eq "no tmux, no flags: stop exits 0" 0 $?
+wait "$wpid" 2>/dev/null
+eq "no tmux, no flags: the bare again line" "run again with: chirat-watch" "$(grep 'again with:' "$tmp/out")"
+lacks "no tmux, no flags: no start form" "$tmp/out" "chirat-watch start"
+cat "$tmp/out" >>"$tmp/stopnotmux.out"
 rm -f "$wfile" "$ffile"
 
 # restart replaces the kept flag of the same name; --force on either side

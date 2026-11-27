@@ -12,8 +12,9 @@ All notable changes are listed here, in the
 - `chirat-watch stop [--force]`: stops the watcher with the same check as
   `restart` (refused while a run is live, every run named), says what it
   stopped and prints the command that starts it again with the same flags;
-  `--force` also stops runs whose watcher is gone, and the exit status says
-  whether everything stopped.
+  `--force` stops the watcher's runs, a run whose watcher is gone is named and
+  left alone, and the exit status says whether anything is still running.
+  Also stops a watcher started in the foreground, without tmux.
 - `chirat-watch start [--interval N] [--max-parallel N] [--permission-mode M]`:
   the tmux start as a subcommand; refused while a watcher runs, and fails when
   `tmux new-session` fails or the watcher does not come up. `--tmux` keeps

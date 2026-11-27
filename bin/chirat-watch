@@ -99,10 +99,12 @@
 #                 kill the tmux session; refused while any run is live
 #                 (setup included) unless --force, which stops the runs of
 #                 the watcher it stops; a run whose watcher is already gone
-#                 is named and left alone; prints the flags it ran with and
-#                 the command that starts it again. Exit 1 when the watcher
-#                 or the session is still there afterwards, or when a forced
-#                 stop left a run live; a lock left for recovery is named
+#                 is named and left alone. Also stops a watcher started in
+#                 the foreground (tmux is not needed then). Prints the flags
+#                 it ran with and the command that starts it again. Exit 1
+#                 when the watcher or the session is still there afterwards,
+#                 or when a forced stop left a run live; a lock left for
+#                 recovery is named
 #   restart [--force] [--interval N] [--max-parallel N] [--permission-mode M]
 #                 stop the watcher and start `chirat-watch --tmux` again with
 #                 the same flags (the cap included), each flag given replacing
@@ -1947,15 +1949,27 @@ report_left() {
 }
 
 # again_line <had session>: how to get the stopped watcher back with its kept
-# flags, every argument shell-quoted. `start` takes neither --once nor
-# --dry-run, so with those it is the bare form (--tmux first when the watcher
-# had a tmux session).
+# flags, every argument shell-quoted. The flags are read as pairs, as
+# merge_flags does: a value-taking flag takes the next element, so --once and
+# --dry-run count only in a flag position. `start` takes neither, so with
+# those it is the bare form (--tmux first when the watcher had a tmux
+# session); without tmux on PATH it is the bare form too, as `start` needs it.
 again_line() {
-  local f q="" bare=0
-  for f in ${kept_flags[@]+"${kept_flags[@]}"}; do
-    case $f in --once | --dry-run) bare=1 ;; esac
+  local f q="" bare=0 i=0 n=${#kept_flags[@]} val=0
+  while [ "$i" -lt "$n" ]; do
+    f=${kept_flags[$i]}
+    if [ "$val" = 1 ]; then
+      val=0
+    else
+      case $f in
+        --once | --dry-run) bare=1 ;;
+        --interval | --max-parallel | --permission-mode) val=1 ;;
+      esac
+    fi
     q="$q $(printf '%q' "$f")"
+    i=$((i + 1))
   done
+  command -v tmux >/dev/null 2>&1 || bare=1
   if [ "$bare" = 1 ]; then
     if [ "$1" = 1 ]; then q=" --tmux$q"; fi
     echo "run again with: chirat-watch$q"
@@ -1969,7 +1983,6 @@ cmd_stop() {
   while [ $# -gt 0 ]; do
     case $1 in --force) force=1; shift ;; *) usage ;; esac
   done
-  command -v tmux >/dev/null 2>&1 || die "tmux not installed"
   refuse_live stop "$force"
   read_kept_flags
   pid=$(find_watcher)

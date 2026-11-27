@@ -27,6 +27,9 @@ pre-staged.
 - **A time budget per run.** An optional `timeout:` in a prompt's front
   matter; on expiry the run stops and the prompt ends `failed` with the
   reason.
+- **Stopping through the watcher.** `stop` and `restart` ask the watcher,
+  which stops its own runs; a run ends by itself when its watcher is gone;
+  no process ids read back from files.
 
 ## Later — under consideration
 

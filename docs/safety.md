@@ -40,6 +40,33 @@ wins) and allow every command a run needs in the workspace's
 few more ([the list](configuration.md#permissions-in-a-new-workspace)), and
 denies `git push` and `npm publish`.
 
+## Stopping the watcher
+
+`stop` and `restart`, with or without `--force`, find the watcher by the id
+in `watcher.pid`, or, when no live watcher is recorded, by the process in the
+first pane of the tmux session `chirat`, and send it TERM, then KILL. With
+`--force`, if the watcher had to be killed, the runs it left are stopped by
+the ids in their locks (`runner.pid`, `claude.pid`). None of these ids is
+checked against the process that now has it. After a watcher died without
+cleaning up (kill -9, a crash, a reboot) a recorded id can belong to another
+program; and whatever runs in a session named `chirat` is taken for the
+watcher.
+
+In that situation, look first: `chirat-watch status`, and `ps -p <pid>` for
+the ids it shows. `chirat-watch recover` clears locks whose processes are
+gone; it skips a lock whose recorded id is alive, even when that id now
+belongs to something else, so it is not a remedy for a recycled id. Remove
+`<workspace>/.chirat/lock` (or `watcher.pid`) by hand once you have looked.
+
+- `stop` and `restart` without `--force` check for live runs and then stop
+  the watcher; a run that starts in that instant is interrupted and its
+  prompt goes back to `pending`.
+- `stop --force` stops the runs of the watcher it stops. A run whose watcher
+  is already gone is named, not stopped; end it yourself.
+
+The next release moves stopping into the watcher itself, which removes all
+of these ([roadmap](roadmap.md#next--040-the-review-loop)).
+
 ## Commit guard
 
 A `PreToolUse` hook on every Bash call. It also refuses push and publish:

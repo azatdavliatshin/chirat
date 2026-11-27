@@ -21,11 +21,16 @@ Coming from 0.3.2 or earlier, run `chirat-watch install` once more to get
 `chirat-watch stop` stops the watcher and kills its tmux session, then
 prints the flags it ran with and the command that starts it again
 (`start again with: chirat-watch start --max-parallel 3`). It is refused while
-any run is live, and names every one; `--force` sends the stop signals anyway
-and puts each prompt back to `pending` where the run could be stopped — also
-a run whose watcher is already gone. A run that does not stop, or a lock left
-for the next start's recovery, gets its own line; a forced stop that left a
-run live exits 1. Prefer waiting for the runs to end.
+any run is live, and names every one; `--force` stops the watcher anyway,
+with its runs, and puts each prompt back to `pending` where the run could be
+stopped. A run whose watcher is already gone is not stopped: it is named, and
+the forced stop exits 1 — end it yourself
+([safety](safety.md#stopping-the-watcher)). A run that does not stop, or a
+lock left for the next start's recovery, gets its own line. Prefer waiting
+for the runs to end. With no live watcher recorded, the process in the first
+pane of the tmux session `chirat` is taken for the watcher. `stop` also stops
+a watcher started in the foreground; without tmux on `PATH` the command it
+prints is the foreground one (`run again with: chirat-watch …`).
 
 `chirat-watch restart` stops the watcher the same way and starts it again
 with the same flags; refused the same way, and with `--force` a run whose
