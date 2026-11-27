@@ -69,6 +69,16 @@ gone() { # gone <pid>: wait up to 5 s until it no longer exists
   for _ in $(seq 1 50); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done
   return 1
 }
+until_true() { # until_true <tenths of a second> <command…>: poll until it succeeds
+  local n=$1
+  shift
+  while [ "$n" -gt 0 ]; do
+    "$@" && return 0
+    n=$((n - 1))
+    sleep 0.1
+  done
+  return 1
+}
 
 # --- fake claude -----------------------------------------------------------
 # Records argv (one per line) and $PWD, prints a JSON result, and acts on the
@@ -1183,12 +1193,12 @@ has "stop --force: stopped line" "$tmp/out" "stopped watcher $wpid (flags: --int
 nosess new-session "stop --force: no new-session"
 cp "$tmp/out" "$tmp/stopforce.out"
 
-# A run whose watcher is gone (the T14 situation): stop refuses, stop --force
-# stops the runner.
+# A run whose watcher is gone (the T14 situation): stop refuses, and stop
+# --force leaves it alone too: it is named, exit 1.
 env FAKE_MODE=sleep "$watch" --interval 1000 >"$tmp/out" 2>"$tmp/stderr" &
 wpid=$!
 wait_claude "$pf"
-rpid=$(cat "$ws/.chirat/lock/runner.pid")
+rpid=$(cat "$ws/.chirat/lock/runner.pid") cpid=$(cat "$ws/.chirat/lock/claude.pid")
 kill -9 "$wpid"
 wait "$wpid" 2>/dev/null
 : >"$FAKE_TMUX_LOG"
@@ -1197,14 +1207,17 @@ eq "orphan: stop refused" 1 $?
 has "orphan: stop names the run" "$tmp/stderr" "ops/docs/plans/demo.prompt-1.md is running"
 if kill -0 "$rpid" 2>/dev/null; then ok "orphan: runner still alive after the refusal"; else ko "orphan: runner still alive after the refusal"; fi
 "$watch" stop --force >"$tmp/out" 2>"$tmp/stderr"
-eq "orphan: stop --force exits 0" 0 $?
-if gone "$rpid"; then ok "orphan: runner stopped"; else ko "orphan: runner stopped"; fi
-eq "orphan: prompt pending" pending "$("$rp" get "$pf" status)"
-absent "orphan: lock released" "$ws/.chirat/lock"
+eq "orphan: stop --force exits 1" 1 $?
+if kill -0 "$rpid" 2>/dev/null && kill -0 "$cpid" 2>/dev/null; then ok "orphan: runner and claude alive after stop --force"; else ko "orphan: runner and claude alive after stop --force"; fi
+eq "orphan: prompt still running" running "$("$rp" get "$pf" status)"
 has "orphan: says no watcher" "$tmp/out" "no watcher running"
-has "orphan: and what it stopped" "$tmp/stderr" "$ws: stopped runner $rpid; its prompt is pending again"
+has "orphan: names the run it left" "$tmp/stderr" "$ws/docs/plans/demo.prompt-1.md is still running (claude $cpid); stop --force stops only the runs of the watcher it stops — see docs/safety.md"
+lacks "orphan: stopped no runner" "$tmp/stderr" "stopped runner"
 nosess new-session "orphan: no new-session"
 cat "$tmp/out" "$tmp/stderr" >"$tmp/stoporphan.out"
+kill -TERM "$rpid"
+gone "$rpid"
+eq "orphan: the test's TERM puts it back" pending "$("$rp" get "$pf" status)"
 rm -f "$wfile" "$ffile"
 
 # orphan_lock <runner pid> [claude pid]: a lock whose watcher is dead
@@ -1220,18 +1233,9 @@ orphan_lock() {
   "$rp" set "$pf" status running
 }
 clear_lock() { rm -rf "$ws/.chirat/lock"; "$rp" set "$pf" status pending; }
-# A runner that ignores TERM, claude alive: stop --force exits 1.
-bash -c 'trap "" TERM; while :; do sleep 0.2; done' &
-hr=$!
-sleep 100 &
-hc=$!
-orphan_lock "$hr" "$hc"
-CHIRAT_STOP_GRACE=0 "$watch" stop --force >"$tmp/out" 2>"$tmp/stderr"
-eq "orphan, runner ignores TERM: stop --force exits 1" 1 $?
-has "orphan, runner ignores TERM: still running" "$tmp/stderr" "$ws/docs/plans/demo.prompt-1.md is still running (claude $hc)"
-cp "$tmp/stderr" "$tmp/stopstill.err"
-kill -9 "$hr" "$hc" 2>/dev/null; wait "$hr" "$hc" 2>/dev/null
-clear_lock
+# sig_marker <file>: a process that writes each signal it gets to <file> and
+# keeps running
+sig_marker() { bash -c 'trap "echo TERM >>$0" TERM; trap "echo INT >>$0" INT; trap "echo HUP >>$0" HUP; while :; do sleep 0.2; done' "$1" & }
 
 # The same during setup: a live runner, no claude.pid.
 sleep 100 &
@@ -1241,11 +1245,11 @@ orphan_lock "$hr"
 eq "setup: stop refused" 1 $?
 has "setup: stop names it" "$tmp/stderr" "ops/docs/plans/demo.prompt-1.md is running (runner $hr"
 "$watch" stop --force >"$tmp/out" 2>"$tmp/stderr"
-eq "setup: stop --force exits 0 once the runner is gone" 0 $?
-wait "$hr" 2>/dev/null
-if kill -0 "$hr" 2>/dev/null; then ko "setup: runner got TERM"; else ok "setup: runner got TERM"; fi
-has "setup: the lock it kept is named" "$tmp/stderr" "$ws: lock left for recovery (runner $hr dead, docs/plans/demo.prompt-1.md)"
+eq "setup: stop --force exits 1" 1 $?
+if kill -0 "$hr" 2>/dev/null; then ok "setup: runner alive after stop --force"; else ko "setup: runner alive after stop --force"; fi
+has "setup: names the run it left" "$tmp/stderr" "$ws/docs/plans/demo.prompt-1.md is still running (runner $hr); stop --force stops only the runs of the watcher it stops — see docs/safety.md"
 cp "$tmp/stderr" "$tmp/stopsetup.err"
+kill -9 "$hr" 2>/dev/null; wait "$hr" 2>/dev/null
 clear_lock
 bash -c 'trap "" TERM; while :; do sleep 0.2; done' &
 hr=$!
@@ -1254,6 +1258,35 @@ CHIRAT_STOP_GRACE=0 "$watch" stop --force >"$tmp/out" 2>"$tmp/stderr"
 eq "setup, runner ignores TERM: stop --force exits 1" 1 $?
 has "setup, runner ignores TERM: still running" "$tmp/stderr" "$ws/docs/plans/demo.prompt-1.md is still running (runner $hr)"
 kill -9 "$hr" 2>/dev/null; wait "$hr" 2>/dev/null
+clear_lock
+
+# The mixed case: no recorded watcher, a live orphaned run and a session whose
+# pane is a process of this test. stop --force stops the pane's process and
+# closes the session; the orphaned runner and its claude get no signal.
+rm -f "$wfile" "$ffile" "$tmp/sig.r" "$tmp/sig.c" "$tmp/sig.p"
+sig_marker "$tmp/sig.r"
+hr=$!
+sig_marker "$tmp/sig.c"
+hc=$!
+bash -c 'trap "echo TERM >>$0; exit 0" TERM; while :; do sleep 0.2; done' "$tmp/sig.p" &
+hp=$!
+orphan_lock "$hr" "$hc"
+: >"$FAKE_TMUX_LOG"
+FAKE_TMUX_SESSIONS=chirat FAKE_TMUX_PANE_PID=$hp "$watch" stop --force >"$tmp/out" 2>"$tmp/stderr"
+eq "mixed: stop --force exits 1" 1 $?
+wait "$hp" 2>/dev/null
+eq "mixed: the pane's process got TERM" TERM "$(cat "$tmp/sig.p" 2>/dev/null)"
+if kill -0 "$hp" 2>/dev/null; then ko "mixed: the pane's process is gone"; else ok "mixed: the pane's process is gone"; fi
+has "mixed: session closed" "$FAKE_TMUX_LOG" "kill-session -t =chirat"
+has "mixed: stopped line for the pane's process" "$tmp/out" "stopped watcher $hp (flags: none)"
+sleep 0.5
+absent "mixed: the orphaned runner got no signal" "$tmp/sig.r"
+absent "mixed: its claude got no signal" "$tmp/sig.c"
+if kill -0 "$hr" 2>/dev/null && kill -0 "$hc" 2>/dev/null; then ok "mixed: runner and claude alive"; else ko "mixed: runner and claude alive"; fi
+has "mixed: names the run it left" "$tmp/stderr" "$ws/docs/plans/demo.prompt-1.md is still running (claude $hc); stop --force stops only the runs of the watcher it stops — see docs/safety.md"
+eq "mixed: prompt still running" running "$("$rp" get "$pf" status)"
+cat "$tmp/out" "$tmp/stderr" >"$tmp/stopmixed.out"
+kill -9 "$hr" "$hc" 2>/dev/null; wait "$hr" "$hc" 2>/dev/null
 clear_lock
 
 # The KILL fallback with a lock whose runner is gone: claude's group is
@@ -2297,16 +2330,6 @@ wait_claude_in() { # wait_claude_in <ws name> <file>: until it runs and claude.p
   local _
   for _ in $(seq 1 100); do
     [ "$(pst "$1" "$2")" = running ] && [ -s "$par/$1/.chirat/lock/claude.pid" ] && return 0
-    sleep 0.1
-  done
-  return 1
-}
-until_true() { # until_true <tenths of a second> <command…>: poll until it succeeds
-  local n=$1
-  shift
-  while [ "$n" -gt 0 ]; do
-    "$@" && return 0
-    n=$((n - 1))
     sleep 0.1
   done
   return 1

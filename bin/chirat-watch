@@ -97,8 +97,9 @@
 #   stop [--force]
 #                 stop the watcher (TERM, KILL after the grace period) and
 #                 kill the tmux session; refused while any run is live
-#                 (setup included) unless --force, which also stops runs left
-#                 by a watcher that is gone; prints the flags it ran with and
+#                 (setup included) unless --force, which stops the runs of
+#                 the watcher it stops; a run whose watcher is already gone
+#                 is named and left alone; prints the flags it ran with and
 #                 the command that starts it again. Exit 1 when the watcher
 #                 or the session is still there afterwards, or when a forced
 #                 stop left a run live; a lock left for recovery is named
@@ -1925,25 +1926,9 @@ kill_leftover_session() {
   return 0
 }
 
-# stop_orphans [<pid>]: stop every live or setup run whose recorded watcher is
-# not alive (stop_ws_run), except the runs of watcher <pid>, which
-# halt_watcher has already handled
-stop_orphans() {
-  local list ws
-  list=$(workspaces)
-  while IFS= read -r ws; do
-    [ -n "$ws" ] || continue
-    lock_classify "$ws"
-    case $lk_state in live | setup) ;; *) continue ;; esac
-    [ -z "${1:-}" ] || [ "$lk_wpid" != "$1" ] || continue
-    [ -n "$lk_wpid" ] && alive "$lk_wpid" && continue
-    stop_ws_run "$ws"
-  done <<<"$list"
-  return 0
-}
-
 # report_left: after a forced stop, one line per workspace whose lock is still
-# there; 1 when a run is still live or in setup
+# there; 1 when a run is still live or in setup. A run whose watcher is gone
+# is not signaled, only named.
 report_left() {
   local list ws rc=0
   list=$(workspaces)
@@ -1953,7 +1938,7 @@ report_left() {
     case $lk_state in
       none) ;;
       live | setup)
-        echo "chirat-watch: $ws/${lk_rel:--} is still running ($(lock_owner))" >&2
+        echo "chirat-watch: $ws/${lk_rel:--} is still running ($(lock_owner)); stop --force stops only the runs of the watcher it stops — see docs/safety.md" >&2
         rc=1 ;;
       *) echo "chirat-watch: $ws: lock left for recovery (${lk_state#stale }, ${lk_rel:--}); the next chirat-watch start recovers it, chirat-watch recover --dry-run shows it" >&2 ;;
     esac
@@ -1994,7 +1979,6 @@ cmd_stop() {
   else
     echo "no watcher running"
   fi
-  [ "$force" = 0 ] || stop_orphans "$pid"
   kill_leftover_session
   # Only what is verified counts as stopped.
   if [ -n "$pid" ] && alive "$pid"; then
