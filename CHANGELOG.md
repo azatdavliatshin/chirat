@@ -5,6 +5,8 @@ All notable changes are listed here, in the
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-11-27
+
 ### Added
 
 - `chirat-watch install` also links `chirat-init`.
@@ -281,7 +283,8 @@ were internal.
   upgrade path from relay.
 - The default permission mode is `auto` instead of `acceptEdits`.
 
-[Unreleased]: https://github.com/azatdavliatshin/chirat/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/azatdavliatshin/chirat/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.3.3
 [0.3.2]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.3.2
 [0.3.1]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.3.1
 [0.3.0]: https://github.com/azatdavliatshin/chirat/releases/tag/v0.3.0
