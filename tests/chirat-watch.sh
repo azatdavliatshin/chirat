@@ -1355,30 +1355,56 @@ for _c in env bash ps git sed awk date sleep cat stat tr head tail dirname basen
   PATH=$nt_path command -v "$_c" >/dev/null 2>&1 || nt_missing="$nt_missing $_c"
 done
 eq "no tmux: the tools the watcher needs are on that PATH" "" "${nt_missing# }"
+nt_ready() { # nt_ready <flags>: watcher.pid holds $wpid, it is alive, watcher.flags is there with exactly that content
+  [ "$(cat "$wfile" 2>/dev/null)" = "$wpid" ] && kill -0 "$wpid" 2>/dev/null &&
+    [ -f "$ffile" ] && [ "$(cat "$ffile" 2>/dev/null)" = "$1" ]
+}
+nt_found() { echo "pid [$(cat "$wfile" 2>/dev/null)] want [$wpid], alive [$(kill -0 "$wpid" 2>/dev/null && echo yes || echo no)], flags [$(cat "$ffile" 2>/dev/null)]"; }
+nt_reap() { # nt_reap <pid>: end the process this test started, never anything else; wait only once it is gone
+  if kill -0 "$1" 2>/dev/null; then
+    kill -TERM "$1" 2>/dev/null
+    gone "$1" || { kill -KILL "$1" 2>/dev/null; gone "$1"; }
+  fi
+  if kill -0 "$1" 2>/dev/null; then echo "     process $1 survived KILL; not waiting for it"; return 1; fi
+  wait "$1" 2>/dev/null
+  return 0
+}
 PATH=$nt_path "$watch" --interval 1000 >/dev/null 2>&1 &
 wpid=$!
-until_true 100 test -s "$ffile"
-if [ "$(cat "$wfile" 2>/dev/null)" = "$wpid" ] && kill -0 "$wpid" 2>/dev/null &&
-  [ "$(cat "$ffile" 2>/dev/null)" = "$(printf '%s\n' --interval 1000)" ]; then ok "no tmux: the watcher started"; else ko "no tmux: the watcher started" "pid [$(cat "$wfile" 2>/dev/null)] want [$wpid], flags [$(cat "$ffile" 2>/dev/null)]"; fi
-PATH=$nt_path "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
-eq "no tmux: stop exits 0" 0 $?
-wait "$wpid" 2>/dev/null
-if kill -0 "$wpid" 2>/dev/null; then ko "no tmux: the watcher is gone"; else ok "no tmux: the watcher is gone"; fi
-has "no tmux: stopped line" "$tmp/out" "stopped watcher $wpid (flags: --interval 1000)"
-eq "no tmux: the foreground again line" "run again with: chirat-watch --interval 1000" "$(grep 'again with:' "$tmp/out")"
-lacks "no tmux: no start form" "$tmp/out" "chirat-watch start"
-lacks "no tmux: not refused for tmux" "$tmp/stderr" "tmux not installed"
+nt_flags=$(printf '%s\n' --interval 1000)
+if until_true 100 nt_ready "$nt_flags"; then
+  ok "no tmux: the watcher started"
+  PATH=$nt_path "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+  eq "no tmux: stop exits 0" 0 $?
+  if gone "$wpid"; then ok "no tmux: the watcher is gone"; else ko "no tmux: the watcher is gone"; fi
+  nt_reap "$wpid"
+  has "no tmux: stopped line" "$tmp/out" "stopped watcher $wpid (flags: --interval 1000)"
+  eq "no tmux: the foreground again line" "run again with: chirat-watch --interval 1000" "$(grep 'again with:' "$tmp/out")"
+  lacks "no tmux: no start form" "$tmp/out" "chirat-watch start"
+  lacks "no tmux: not refused for tmux" "$tmp/stderr" "tmux not installed"
+else
+  ko "no tmux: the watcher started" "$(nt_found)"
+  ko "no tmux: stop and its assertions not run, the watcher was not ready"
+  nt_reap "$wpid"
+  : >"$tmp/out"
+fi
 cp "$tmp/out" "$tmp/stopnotmux.out"
 PATH=$nt_path "$watch" >/dev/null 2>&1 &
 wpid=$!
-until_true 100 test -f "$ffile"
-if [ "$(cat "$wfile" 2>/dev/null)" = "$wpid" ] && kill -0 "$wpid" 2>/dev/null &&
-  [ -f "$ffile" ] && [ ! -s "$ffile" ]; then ok "no tmux, no flags: the watcher started"; else ko "no tmux, no flags: the watcher started" "pid [$(cat "$wfile" 2>/dev/null)] want [$wpid], flags [$(cat "$ffile" 2>/dev/null)]"; fi
-PATH=$nt_path "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
-eq "no tmux, no flags: stop exits 0" 0 $?
-wait "$wpid" 2>/dev/null
-eq "no tmux, no flags: the bare again line" "run again with: chirat-watch" "$(grep 'again with:' "$tmp/out")"
-lacks "no tmux, no flags: no start form" "$tmp/out" "chirat-watch start"
+if until_true 100 nt_ready ""; then
+  ok "no tmux, no flags: the watcher started"
+  PATH=$nt_path "$watch" stop >"$tmp/out" 2>"$tmp/stderr"
+  eq "no tmux, no flags: stop exits 0" 0 $?
+  if gone "$wpid"; then ok "no tmux, no flags: the watcher is gone"; else ko "no tmux, no flags: the watcher is gone"; fi
+  nt_reap "$wpid"
+  eq "no tmux, no flags: the bare again line" "run again with: chirat-watch" "$(grep 'again with:' "$tmp/out")"
+  lacks "no tmux, no flags: no start form" "$tmp/out" "chirat-watch start"
+else
+  ko "no tmux, no flags: the watcher started" "$(nt_found)"
+  ko "no tmux, no flags: stop and its assertions not run, the watcher was not ready"
+  nt_reap "$wpid"
+  : >"$tmp/out"
+fi
 cat "$tmp/out" >>"$tmp/stopnotmux.out"
 rm -f "$wfile" "$ffile"
 
